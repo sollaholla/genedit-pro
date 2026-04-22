@@ -34,6 +34,12 @@ npm run lint         # eslint
 
 The dev/preview servers send `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers to keep the door open for the multi-threaded FFmpeg core (currently we use the single-thread core).
 
+## Deploy (GitHub Pages)
+
+`.github/workflows/deploy.yml` builds and publishes to GitHub Pages on every push to `main` (or the active feature branch). The Vite `base` is `/genedit-pro/`; override with `VITE_BASE` for a custom domain (e.g. `VITE_BASE=/ npm run build`).
+
+One-time setup in GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions**. After that, every push triggers a deploy and the site is served at `https://<owner>.github.io/genedit-pro/`.
+
 ## What's intentionally not built yet
 
 - Multi-layer compositing (Phase 1 picks the top-most clip per kind; the engine returns a structure ready for canvas blending in Phase 2).
