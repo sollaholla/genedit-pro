@@ -296,6 +296,8 @@ export function Timeline() {
 
     const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
     if (!clip) return;
+    const sourceAsset = assetById.get(clip.assetId);
+    const maxSourceSec = sourceAsset?.durationSec;
 
     beginTx();
     const startX = e.clientX;
@@ -309,7 +311,7 @@ export function Timeline() {
         updateSilent((p) => trimClipLeft(p, clipId, snapped));
       } else {
         const snapped = snapTime(origEnd + dt, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-        updateSilent((p) => trimClipRight(p, clipId, snapped));
+        updateSilent((p) => trimClipRight(p, clipId, snapped, maxSourceSec));
       }
     };
     const up = () => {

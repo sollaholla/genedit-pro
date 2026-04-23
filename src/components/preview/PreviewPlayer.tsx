@@ -6,6 +6,7 @@ import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
 import { projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { PlayerControls } from './PlayerControls';
+import { FullscreenScrubBar } from './FullscreenScrubBar';
 
 function effectiveVolume(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -35,9 +36,14 @@ export function PreviewPlayer() {
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Pools keyed by CLIP id (not asset id). Overlapping clips of the same asset
+  // each need their own HTMLMediaElement, otherwise a single element's
+  // currentTime is fought over by multiple layers each frame, producing a
+  // rapid "flipping" effect in audio and video.
   const videoPool = useRef<ElementPool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
-  const urlCache = useRef<Map<string, string>>(new Map());
+  const clipAssetRef = useRef<Map<string, string>>(new Map()); // clipId -> assetId that el.src is set to
+  const urlCache = useRef<Map<string, string>>(new Map()); // assetId -> object URL
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
@@ -60,16 +66,58 @@ export function PreviewPlayer() {
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
 
-  // Create one HTMLMediaElement per asset.
+  // Reconcile: one HTMLMediaElement per clip (not per asset). Shared blob URLs
+  // are cached per-asset in urlCache. Each clip's element uses the URL of its
+  // assetId; when the assetId changes (e.g. via Replace), we update el.src.
   useEffect(() => {
     let cancelled = false;
+    const assetsById = new Map(assets.map((a) => [a.id, a]));
+
+    // Set of clip IDs that should currently exist in a pool.
+    const wantedClipIds = new Set<string>();
+    for (const clip of project.clips) {
+      const asset = assetsById.get(clip.assetId);
+      if (!asset || asset.kind === 'image') continue;
+      wantedClipIds.add(clip.id);
+    }
+
+    // Remove elements for clips that no longer exist.
+    for (const [clipId, el] of videoPool.current) {
+      if (!wantedClipIds.has(clipId)) {
+        el.pause();
+        (el as HTMLVideoElement).remove();
+        videoPool.current.delete(clipId);
+        clipAssetRef.current.delete(clipId);
+      }
+    }
+    for (const [clipId, el] of audioPool.current) {
+      if (!wantedClipIds.has(clipId)) {
+        el.pause();
+        audioPool.current.delete(clipId);
+        clipAssetRef.current.delete(clipId);
+      }
+    }
+
+    // Revoke URLs for assets that are fully gone.
+    const aliveAssetIds = new Set(assets.map((a) => a.id));
+    for (const [assetId, url] of urlCache.current) {
+      if (!aliveAssetIds.has(assetId)) {
+        URL.revokeObjectURL(url);
+        urlCache.current.delete(assetId);
+      }
+    }
+
     (async () => {
-      for (const asset of assets) {
-        if (asset.kind === 'image') continue;
+      for (const clip of project.clips) {
+        if (cancelled) return;
+        const asset = assetsById.get(clip.assetId);
+        if (!asset || asset.kind === 'image') continue;
         const isAudio = asset.kind === 'audio';
         const pool = isAudio ? audioPool.current : videoPool.current;
-        if (pool.has(asset.id)) continue;
+        const existing = pool.get(clip.id);
+        const previousAssetId = clipAssetRef.current.get(clip.id);
 
+        // Look up or create the blob URL for this asset.
         let url = urlCache.current.get(asset.id);
         if (!url) {
           const u = await objectUrlFor(asset.id);
@@ -79,41 +127,35 @@ export function PreviewPlayer() {
         }
         if (cancelled) return;
 
-        if (isAudio) {
-          const a = new Audio();
-          a.preload = 'auto';
-          a.src = url;
-          pool.set(asset.id, a);
-        } else {
-          const v = document.createElement('video');
-          v.preload = 'auto';
-          v.playsInline = true;
-          v.muted = true; // will be unmuted in RAF when needed
-          v.src = url;
-          v.className = 'absolute inset-0 h-full w-full object-contain';
-          v.style.display = 'none';
-          videoHostRef.current?.appendChild(v);
-          pool.set(asset.id, v);
+        if (!existing) {
+          if (isAudio) {
+            const a = new Audio();
+            a.preload = 'auto';
+            a.src = url;
+            pool.set(clip.id, a);
+          } else {
+            const v = document.createElement('video');
+            v.preload = 'auto';
+            v.playsInline = true;
+            v.muted = true;
+            v.src = url;
+            v.className = 'absolute inset-0 h-full w-full object-contain';
+            v.style.display = 'none';
+            videoHostRef.current?.appendChild(v);
+            pool.set(clip.id, v);
+          }
+          clipAssetRef.current.set(clip.id, asset.id);
+        } else if (previousAssetId !== asset.id) {
+          // Asset was swapped on this clip (Replace dialog).
+          existing.src = url;
+          clipAssetRef.current.set(clip.id, asset.id);
         }
       }
       if (!cancelled) setReady(true);
     })();
-    return () => { cancelled = true; };
-  }, [assets, objectUrlFor]);
 
-  // Clean up deleted assets.
-  useEffect(() => {
-    const ids = new Set(assets.map((a) => a.id));
-    for (const [id, el] of videoPool.current) {
-      if (!ids.has(id)) { el.pause(); (el as HTMLVideoElement).remove(); videoPool.current.delete(id); }
-    }
-    for (const [id, el] of audioPool.current) {
-      if (!ids.has(id)) { el.pause(); audioPool.current.delete(id); }
-    }
-    for (const [id, url] of urlCache.current) {
-      if (!ids.has(id)) { URL.revokeObjectURL(url); urlCache.current.delete(id); }
-    }
-  }, [assets]);
+    return () => { cancelled = true; };
+  }, [project.clips, assets, objectUrlFor]);
 
   // Main RAF loop.
   useEffect(() => {
@@ -135,41 +177,44 @@ export function PreviewPlayer() {
       const frame = resolveFrame(proj, t);
 
       // ---- VIDEO DISPLAY ----
-      // Always update display styles so elements created after RAF startup are shown.
-      const nextVideoAssetId = frame.video?.clip.assetId ?? null;
-      for (const [id, el] of videoPool.current) {
-        (el as HTMLVideoElement).style.display = id === nextVideoAssetId ? '' : 'none';
+      // Show only the top-most active video clip's element; hide all others.
+      const nextVideoClipId = frame.video?.clip.id ?? null;
+      for (const [clipId, el] of videoPool.current) {
+        (el as HTMLVideoElement).style.display = clipId === nextVideoClipId ? '' : 'none';
       }
-      const hasVideo = nextVideoAssetId !== null;
+      const hasVideo = nextVideoClipId !== null;
       if (hasVideo !== prevHasVideoRef.current) {
         prevHasVideoRef.current = hasVideo;
         setHasActiveVideo(hasVideo);
       }
 
       // ---- AUDIO MIX ----
-      // Build set of asset IDs contributing audio this frame.
-      const activeAudioAssetIds = new Set<string>();
-      for (const layer of frame.audios) activeAudioAssetIds.add(layer.clip.assetId);
+      // Set of CLIP ids contributing audio this frame.
+      const activeClipIds = new Set<string>();
+      for (const layer of frame.audios) activeClipIds.add(layer.clip.id);
 
-      // Pause any pool elements not in this frame's mix.
-      for (const [id, el] of videoPool.current) {
-        if (!activeAudioAssetIds.has(id)) el.muted = true;
+      // Mute + pause any elements not in this frame's mix.
+      for (const [clipId, el] of videoPool.current) {
+        if (!activeClipIds.has(clipId)) {
+          el.muted = true;
+          if (!el.paused) el.pause();
+        }
       }
-      for (const [id, el] of audioPool.current) {
-        if (!activeAudioAssetIds.has(id) && !el.paused) el.pause();
+      for (const [clipId, el] of audioPool.current) {
+        if (!activeClipIds.has(clipId) && !el.paused) el.pause();
       }
 
-      // Drive each active audio layer.
+      // Drive each active audio layer using its own per-clip element.
       for (const layer of frame.audios) {
-        const assetId = layer.clip.assetId;
-        const isVideoEl = videoPool.current.has(assetId);
+        const clipId = layer.clip.id;
+        const isVideoEl = videoPool.current.has(clipId);
         const el = isVideoEl
-          ? videoPool.current.get(assetId)!
-          : (audioPool.current.get(assetId) ?? videoPool.current.get(assetId));
+          ? videoPool.current.get(clipId)!
+          : audioPool.current.get(clipId);
         if (!el) continue;
 
         const vol = effectiveVolume(layer);
-        el.volume = Math.max(0, Math.min(1, vol)); // HTMLMediaElement.volume ∈ [0,1]
+        el.volume = Math.max(0, Math.min(1, vol));
 
         if (isVideoEl) (el as HTMLVideoElement).muted = false;
 
@@ -178,15 +223,9 @@ export function PreviewPlayer() {
         if (state.playing && el.paused) el.play().catch(() => undefined);
       }
 
-      // Video display element's position (separate from audio).
-      if (nextVideoAssetId && frame.video) {
-        const el = videoPool.current.get(nextVideoAssetId);
-        if (el) {
-          if (!state.playing && !el.paused) el.pause();
-          seekIfNeeded(el, frame.video.sourceTimeSec, state.playing);
-          if (state.playing && el.paused) el.play().catch(() => undefined);
-        }
-      }
+      // The visible video element is the same one already handled above via
+      // the audio mix loop (the top video clip is in frame.audios too), so no
+      // extra seek/play is needed here.
 
       raf = requestAnimationFrame(tick);
     };
@@ -248,6 +287,11 @@ export function PreviewPlayer() {
           )}
         </div>
       </div>
+      {isFullscreen && (
+        <div className="shrink-0 bg-surface-900 pt-2">
+          <FullscreenScrubBar />
+        </div>
+      )}
       <PlayerControls isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
     </div>
   );

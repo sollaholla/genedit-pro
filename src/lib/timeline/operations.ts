@@ -74,6 +74,12 @@ export function moveClip(
   };
 }
 
+/**
+ * Trim from the left. startSec and inSec slide together so the right edge
+ * (startSec + outSec - inSec) stays put. Clamped so inSec >= 0 (can't expose
+ * source earlier than its own start), startSec >= 0 (no timeline before 0),
+ * and the clip stays at least MIN_CLIP_DURATION long.
+ */
 export function trimClipLeft(
   project: Project,
   clipId: string,
@@ -81,10 +87,12 @@ export function trimClipLeft(
 ): Project {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) return project;
-  const delta = newStartSec - clip.startSec;
-  const nextInSec = Math.max(0, clip.inSec + delta);
-  const nextStart = Math.max(0, clip.startSec + delta);
-  if (clip.outSec - nextInSec < MIN_CLIP_DURATION) return project;
+  const rawDelta = newStartSec - clip.startSec;
+  const minDelta = Math.max(-clip.inSec, -clip.startSec);
+  const maxDelta = clip.outSec - clip.inSec - MIN_CLIP_DURATION;
+  const delta = Math.max(minDelta, Math.min(maxDelta, rawDelta));
+  const nextInSec = clip.inSec + delta;
+  const nextStart = clip.startSec + delta;
   return {
     ...project,
     clips: project.clips.map((c) =>
@@ -93,16 +101,25 @@ export function trimClipLeft(
   };
 }
 
+/**
+ * Trim from the right. startSec and inSec are fixed; outSec moves. Clamped
+ * so the clip stays at least MIN_CLIP_DURATION long and outSec never exceeds
+ * the underlying asset's duration (if provided).
+ */
 export function trimClipRight(
   project: Project,
   clipId: string,
   newEndSec: number,
+  maxSourceSec?: number,
 ): Project {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) return project;
-  const onTimelineDuration = Math.max(MIN_CLIP_DURATION, newEndSec - clip.startSec);
-  const nextOutSec = clip.inSec + onTimelineDuration;
-  if (nextOutSec - clip.inSec < MIN_CLIP_DURATION) return project;
+  const requestedDur = newEndSec - clip.startSec;
+  const maxDurFromSource = maxSourceSec !== undefined
+    ? Math.max(MIN_CLIP_DURATION, maxSourceSec - clip.inSec)
+    : Infinity;
+  const dur = Math.max(MIN_CLIP_DURATION, Math.min(maxDurFromSource, requestedDur));
+  const nextOutSec = clip.inSec + dur;
   return {
     ...project,
     clips: project.clips.map((c) =>
