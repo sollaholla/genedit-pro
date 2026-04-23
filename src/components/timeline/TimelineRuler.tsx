@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import { RULER_HEIGHT_PX, timeToPx } from '@/lib/timeline/geometry';
+import { useProjectStore } from '@/state/projectStore';
+import { usePlaybackStore } from '@/state/playbackStore';
 
 type Props = {
   pxPerSec: number;
@@ -8,6 +10,8 @@ type Props = {
   scrollLeft: number;
   onScrub: (timeSec: number) => void;
 };
+
+const BUFFER_BAR_HEIGHT = 2;
 
 function niceStep(pxPerSec: number): number {
   const targetPx = 100;
@@ -72,6 +76,44 @@ export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft
             {formatTickLabel(t)}
           </div>
         ))}
+      <BufferBar pxPerSec={pxPerSec} />
+    </div>
+  );
+}
+
+/**
+ * Thin green strip at the bottom of the ruler showing which timeline ranges
+ * have a buffered/ready clip — similar to Premiere's render bar. Ranges come
+ * from clips whose media element has readyState >= HAVE_FUTURE_DATA, as
+ * published by PreviewPlayer on each RAF frame.
+ */
+function BufferBar({ pxPerSec }: { pxPerSec: number }) {
+  const clips = useProjectStore((s) => s.project.clips);
+  const readiness = usePlaybackStore((s) => s.clipReadiness);
+
+  const segments = useMemo(() => {
+    return clips
+      .filter((c) => readiness[c.id])
+      .map((c) => ({
+        id: c.id,
+        left: timeToPx(c.startSec, pxPerSec),
+        width: Math.max(1, timeToPx(c.outSec - c.inSec, pxPerSec)),
+      }));
+  }, [clips, readiness, pxPerSec]);
+
+  return (
+    <div
+      className="pointer-events-none absolute left-0 right-0"
+      style={{ bottom: 0, height: BUFFER_BAR_HEIGHT }}
+      title="Buffered / ready to play"
+    >
+      {segments.map((s) => (
+        <div
+          key={s.id}
+          className="absolute bg-emerald-500/80"
+          style={{ left: s.left, width: s.width, height: '100%' }}
+        />
+      ))}
     </div>
   );
 }

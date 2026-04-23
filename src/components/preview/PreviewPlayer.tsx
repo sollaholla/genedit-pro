@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
-import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
+import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
 import { projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { PlayerControls } from './PlayerControls';
@@ -46,6 +46,9 @@ export function PreviewPlayer() {
   const urlCache = useRef<Map<string, string>>(new Map()); // assetId -> object URL
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
+  const prerolledRef = useRef<Set<string>>(new Set());
+  const prevReadinessRef = useRef<Record<string, boolean>>({});
+  const lastReadinessPublishRef = useRef(0);
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -188,20 +191,62 @@ export function PreviewPlayer() {
         setHasActiveVideo(hasVideo);
       }
 
-      // ---- AUDIO MIX ----
-      // Set of CLIP ids contributing audio this frame.
+      // ---- AUDIO MIX + PREROLL ----
       const activeClipIds = new Set<string>();
       for (const layer of frame.audios) activeClipIds.add(layer.clip.id);
 
-      // Mute + pause any elements not in this frame's mix.
+      // Preroll / hot-priming window: clips starting within the next 2s should
+      // be seeked to their inSec so the decoder has buffered data ready. Clips
+      // within 0.3s should be kept playing muted so they don't cold-start at
+      // the handoff (this is what causes the pop/frame skip at clip boundaries).
+      const PREROLL_SEC = 2.0;
+      const HOT_PRIMING_SEC = 0.3;
+      const upcoming = upcomingClips(proj, t, PREROLL_SEC);
+      const hotPrimedIds = new Set<string>();
+      for (const clip of upcoming) {
+        const el = videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
+        if (!el) continue;
+        const timeUntilActive = clip.startSec - t;
+
+        // Seek once to the clip's inSec so its buffer lines up.
+        if (!prerolledRef.current.has(clip.id) && el.readyState >= 1 && !el.seeking) {
+          if (Math.abs(el.currentTime - clip.inSec) > 0.2) {
+            try { el.currentTime = clip.inSec; } catch { /* noop */ }
+          }
+          prerolledRef.current.add(clip.id);
+        }
+
+        // Keep decoder warm just before handoff: play muted while we're close.
+        if (state.playing && timeUntilActive <= HOT_PRIMING_SEC && timeUntilActive >= 0) {
+          hotPrimedIds.add(clip.id);
+          el.muted = true;
+          if (videoPool.current.has(clip.id)) {
+            (el as HTMLVideoElement).muted = true;
+          }
+          if (el.paused) el.play().catch(() => undefined);
+        }
+      }
+
+      // Forget preroll markers for clips that are now far in the future (or past) so
+      // scrubbing backward / jumping around re-seeks the decoder buffer.
+      for (const id of prerolledRef.current) {
+        const c = proj.clips.find((cl) => cl.id === id);
+        if (!c || c.startSec - t > PREROLL_SEC + 0.5 || t > c.startSec) {
+          prerolledRef.current.delete(id);
+        }
+      }
+
+      // Mute + pause any elements not active and not hot-primed.
       for (const [clipId, el] of videoPool.current) {
-        if (!activeClipIds.has(clipId)) {
+        if (!activeClipIds.has(clipId) && !hotPrimedIds.has(clipId)) {
           el.muted = true;
           if (!el.paused) el.pause();
         }
       }
       for (const [clipId, el] of audioPool.current) {
-        if (!activeClipIds.has(clipId) && !el.paused) el.pause();
+        if (!activeClipIds.has(clipId) && !hotPrimedIds.has(clipId) && !el.paused) {
+          el.pause();
+        }
       }
 
       // Drive each active audio layer using its own per-clip element.
@@ -223,9 +268,27 @@ export function PreviewPlayer() {
         if (state.playing && el.paused) el.play().catch(() => undefined);
       }
 
-      // The visible video element is the same one already handled above via
-      // the audio mix loop (the top video clip is in frame.audios too), so no
-      // extra seek/play is needed here.
+      // ---- PUBLISH READINESS (throttled to ~4Hz; diff-guarded) ----
+      if (ts - lastReadinessPublishRef.current > 250) {
+        lastReadinessPublishRef.current = ts;
+        const next: Record<string, boolean> = {};
+        for (const [id, el] of videoPool.current) next[id] = el.readyState >= 3;
+        for (const [id, el] of audioPool.current) next[id] = el.readyState >= 3;
+        const prev = prevReadinessRef.current;
+        let changed = false;
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(next);
+        if (prevKeys.length !== nextKeys.length) changed = true;
+        else {
+          for (const k of nextKeys) {
+            if (prev[k] !== next[k]) { changed = true; break; }
+          }
+        }
+        if (changed) {
+          prevReadinessRef.current = next;
+          usePlaybackStore.getState().setClipReadiness(next);
+        }
+      }
 
       raf = requestAnimationFrame(tick);
     };

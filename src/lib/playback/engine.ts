@@ -42,3 +42,13 @@ function activeClipOnTrack(clips: Clip[], trackId: string, t: number): Clip | nu
   }
   return null;
 }
+
+/** Clips whose start lies within (t, t + lookaheadSec]. Used to preroll decoders. */
+export function upcomingClips(project: Project, t: number, lookaheadSec: number): Clip[] {
+  const out: Clip[] = [];
+  const horizon = t + lookaheadSec;
+  for (const c of project.clips) {
+    if (c.startSec > t && c.startSec <= horizon) out.push(c);
+  }
+  return out;
+}
