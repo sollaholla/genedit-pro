@@ -69,6 +69,22 @@ export function TrackHeader({
           {label}
         </span>
         <div className="flex items-center gap-1">
+          <button
+            className="rounded p-0.5 text-slate-500 hover:bg-surface-700 hover:text-slate-200 disabled:opacity-30"
+            title="Move track up"
+            onClick={onMoveUp}
+            disabled={!canMoveUp}
+          >
+            <ArrowUp size={12} />
+          </button>
+          <button
+            className="rounded p-0.5 text-slate-500 hover:bg-surface-700 hover:text-slate-200 disabled:opacity-30"
+            title="Move track down"
+            onClick={onMoveDown}
+            disabled={!canMoveDown}
+          >
+            <ArrowDown size={12} />
+          </button>
           {track.kind === 'video' ? (
             <button
               className="rounded p-0.5 text-slate-400 hover:bg-surface-700 hover:text-slate-200"
