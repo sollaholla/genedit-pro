@@ -8,7 +8,7 @@ type PlaybackState = {
   pxPerSec: number;
   /** IDs of all currently selected clips. Empty = nothing selected. */
   selectedClipIds: string[];
-  clipboard: Clip | null;
+  clipboard: Clip[];
   /** Map of clipId -> true when the underlying media element has enough data
    *  (readyState >= HAVE_FUTURE_DATA) to play without stutter. Updated by
    *  PreviewPlayer each RAF frame, diff-guarded so renders are rare. */
@@ -27,7 +27,7 @@ type PlaybackState = {
   toggleClipSelection: (id: string) => void;
   /** Replace the selection with the provided list (marquee commits this). */
   setClipSelection: (ids: string[]) => void;
-  setClipboard: (clip: Clip | null) => void;
+  setClipboard: (clips: Clip[]) => void;
   setClipReadiness: (readiness: Record<string, boolean>) => void;
   setMasterVolume: (v: number) => void;
 };
@@ -37,7 +37,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   currentTimeSec: 0,
   pxPerSec: DEFAULT_PX_PER_SEC,
   selectedClipIds: [],
-  clipboard: null,
+  clipboard: [],
   clipReadiness: {},
   masterVolume: 1,
   play: () => set({ playing: true }),
@@ -54,7 +54,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     });
   },
   setClipSelection: (ids) => set({ selectedClipIds: ids }),
-  setClipboard: (clip) => set({ clipboard: clip }),
+  setClipboard: (clips) => set({ clipboard: clips }),
   setClipReadiness: (readiness) => set({ clipReadiness: readiness }),
   setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(2, v)) }),
 }));

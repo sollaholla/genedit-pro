@@ -178,6 +178,14 @@ export function splitClipAt(
 }
 
 export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
+  return insertTrack(project, kind, project.tracks.length);
+}
+
+export function insertTrack(
+  project: Project,
+  kind: 'video' | 'audio',
+  insertIndex: number,
+): Project {
   const track: Track = {
     id: nanoid(8),
     kind,
@@ -185,8 +193,30 @@ export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
     muted: false,
     hidden: false,
   };
-  const reindexed = [...project.tracks, track].map((t, i) => ({ ...t, index: i }));
-  return { ...project, tracks: reindexed };
+  const next = [...project.tracks];
+  const at = Math.max(0, Math.min(insertIndex, next.length));
+  next.splice(at, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrack(project: Project, trackId: string, targetIndex: number): Project {
+  const tracks = sortedTracks(project);
+  const from = tracks.findIndex((t) => t.id === trackId);
+  if (from < 0) return project;
+  const to = Math.max(0, Math.min(targetIndex, tracks.length - 1));
+  if (from === to) return project;
+  const next = [...tracks];
+  const [track] = next.splice(from, 1);
+  if (!track) return project;
+  next.splice(to, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrackBy(project: Project, trackId: string, delta: number): Project {
+  const tracks = sortedTracks(project);
+  const idx = tracks.findIndex((t) => t.id === trackId);
+  if (idx < 0) return project;
+  return moveTrack(project, trackId, idx + delta);
 }
 
 export function removeTrack(project: Project, trackId: string): Project {
@@ -261,6 +291,36 @@ export function pasteClipFrom(
       : undefined,
   };
   return { ...project, clips: [...project.clips, newClip] };
+}
+
+/**
+ * Paste a group of copied clips at `startSec`, preserving their relative
+ * time offsets and original track assignments.
+ */
+export function pasteClipsFrom(
+  project: Project,
+  sources: Clip[],
+  startSec: number,
+): Project {
+  if (sources.length === 0) return project;
+  const minStart = Math.min(...sources.map((c) => c.startSec));
+  const tracks = new Set(project.tracks.map((t) => t.id));
+  const newClips: Clip[] = [];
+  for (const source of sources) {
+    if (!tracks.has(source.trackId)) continue;
+    const offset = source.startSec - minStart;
+    const pasted: Clip = {
+      ...source,
+      id: nanoid(8),
+      startSec: Math.max(0, startSec + offset),
+      volumeEnvelope: source.volumeEnvelope
+        ? { ...source.volumeEnvelope, points: source.volumeEnvelope.points.map((p) => ({ ...p })) }
+        : undefined,
+    };
+    newClips.push(pasted);
+  }
+  if (newClips.length === 0) return project;
+  return { ...project, clips: [...project.clips, ...newClips] };
 }
 
 /** Replace a clip's underlying asset and source-trim points; timeline position unchanged. */

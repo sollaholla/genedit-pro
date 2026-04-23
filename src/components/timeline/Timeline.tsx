@@ -24,9 +24,12 @@ import {
   addTrack,
   duplicateClip,
   extractAudioFromClip,
+  insertTrack,
   moveClip,
   moveClipsBy,
+  moveTrack,
   pasteClipFrom,
+  pasteClipsFrom,
   projectDurationSec,
   removeClip,
   sortedTracks,
@@ -74,6 +77,8 @@ export function Timeline() {
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
   const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
+  const [dragTrackId, setDragTrackId] = useState<string | null>(null);
+  const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
 
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
   // A Set version for O(1) membership checks in the render path.
@@ -135,16 +140,29 @@ export function Timeline() {
       if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
 
       if (mod && (e.key === 'c' || e.key === 'C')) {
-        if (!selectedClipId) return;
-        const source = useProjectStore.getState().project.clips.find((c) => c.id === selectedClipId);
-        if (source) setClipboard(source);
+        const selected = usePlaybackStore.getState().selectedClipIds;
+        if (selected.length === 0) return;
+        const idSet = new Set(selected);
+        const copied = useProjectStore.getState().project.clips
+          .filter((c) => idSet.has(c.id))
+          .map((c) => ({
+            ...c,
+            volumeEnvelope: c.volumeEnvelope
+              ? { ...c.volumeEnvelope, points: c.volumeEnvelope.points.map((p) => ({ ...p })) }
+              : undefined,
+          }));
+        setClipboard(copied);
         return;
       }
       if (mod && (e.key === 'v' || e.key === 'V')) {
-        const source = usePlaybackStore.getState().clipboard;
-        if (!source) return;
-        // Paste onto the same track, at the playhead.
-        update((p) => pasteClipFrom(p, source, source.trackId, currentTime));
+        const copied = usePlaybackStore.getState().clipboard;
+        if (copied.length === 0) return;
+        if (copied.length === 1) {
+          const source = copied[0]!;
+          update((p) => pasteClipFrom(p, source, source.trackId, currentTime));
+        } else {
+          update((p) => pasteClipsFrom(p, copied, currentTime));
+        }
         return;
       }
       if (mod && (e.key === 'd' || e.key === 'D')) {
@@ -187,7 +205,15 @@ export function Timeline() {
         break;
       case 'copy': {
         const source = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
-        if (source) setClipboard(source);
+        if (source) {
+          const copied = {
+            ...source,
+            volumeEnvelope: source.volumeEnvelope
+              ? { ...source.volumeEnvelope, points: source.volumeEnvelope.points.map((p) => ({ ...p })) }
+              : undefined,
+          };
+          setClipboard([copied]);
+        }
         break;
       }
       case 'replace':
@@ -417,6 +443,27 @@ export function Timeline() {
   const replaceClip = replaceClipId ? project.clips.find((c) => c.id === replaceClipId) : null;
   const replaceAssetKind = replaceClip ? assetById.get(replaceClip.assetId)?.kind : undefined;
 
+  const handleTrackDrop = useCallback(() => {
+    if (!dragTrackId || !trackDropTarget) return;
+    const ordered = sortedTracks(useProjectStore.getState().project);
+    const from = ordered.findIndex((t) => t.id === dragTrackId);
+    const target = ordered.findIndex((t) => t.id === trackDropTarget.trackId);
+    if (from < 0 || target < 0 || from === target) {
+      setDragTrackId(null);
+      setTrackDropTarget(null);
+      return;
+    }
+    let to = target;
+    if (trackDropTarget.position === 'before') {
+      if (from < target) to = target - 1;
+    } else if (from > target) {
+      to = target + 1;
+    }
+    update((p) => moveTrack(p, dragTrackId, to));
+    setDragTrackId(null);
+    setTrackDropTarget(null);
+  }, [dragTrackId, trackDropTarget, update]);
+
   // Ghost clip for audio extraction preview
   const ghostClip = dragOverlay?.isAudioExtraction
     ? project.clips.find((c) => c.id === dragOverlay.clipId)
@@ -450,7 +497,29 @@ export function Timeline() {
         <div className="shrink-0" style={{ width: TRACK_HEADER_WIDTH_PX }}>
           <div className="border-b border-r border-surface-700 bg-surface-900" style={{ height: RULER_HEIGHT_PX }} />
           {tracks.map((t) => (
-            <TrackHeader key={`h-${t.id}`} track={t} label={labelForTrack(t.id)} />
+            <TrackHeader
+              key={`h-${t.id}`}
+              track={t}
+              label={labelForTrack(t.id)}
+              isDragging={dragTrackId === t.id}
+              showDropBefore={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'before'}
+              showDropAfter={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'after'}
+              onDragStart={() => {
+                setDragTrackId(t.id);
+                setTrackDropTarget(null);
+              }}
+              onDragOver={(position) => {
+                if (!dragTrackId || dragTrackId === t.id) return;
+                setTrackDropTarget({ trackId: t.id, position });
+              }}
+              onDrop={handleTrackDrop}
+              onDragEnd={() => {
+                setDragTrackId(null);
+                setTrackDropTarget(null);
+              }}
+              onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
+              onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
+            />
           ))}
         </div>
 
