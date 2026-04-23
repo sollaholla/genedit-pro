@@ -10,16 +10,26 @@ import { formatTimecode } from '@/lib/timeline/geometry';
 const kindIcon = { video: Film, audio: Music, image: ImageIcon };
 
 export function ClipInspector() {
-  const selection = usePlaybackStore((s) => s.selection);
-  const selectedId = selection.kind === 'clip' ? selection.id : null;
+  const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
+  const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
   const assets = useMediaStore((s) => s.assets);
 
-  if (!selectedId) {
+  if (selectedClipIds.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-sm text-slate-500">
         Select a clip on the timeline to inspect it.
+      </div>
+    );
+  }
+  if (selectedClipIds.length > 1 || !selectedId) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-slate-400">
+        <div className="font-semibold text-slate-200">{selectedClipIds.length} clips selected</div>
+        <div className="text-[11px] text-slate-500">
+          Select a single clip to edit its properties.
+        </div>
       </div>
     );
   }

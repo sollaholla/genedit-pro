@@ -7,26 +7,28 @@ type Props = {
   track: Track;
   clips: Clip[];
   pxPerSec: number;
-  selectedClipId: string | null;
+  selectedClipIds: Set<string>;
   contentWidth: number;
   onDropAsset: (trackId: string, assetId: string, startSec: number) => void;
   onClipBodyMouseDown: (clipId: string, e: React.MouseEvent) => void;
   onClipTrimMouseDown: (clipId: string, side: ClipDragSide, e: React.MouseEvent) => void;
   onClipContextMenu: (clipId: string, e: React.MouseEvent) => void;
-  onClipSelect: (clipId: string | null) => void;
+  /** Fired when the user mousedowns on empty track area (not on a clip).
+   *  The Timeline uses this to start a marquee selection. */
+  onEmptyMouseDown: (e: React.MouseEvent) => void;
 };
 
 export function TimelineTrack({
   track,
   clips,
   pxPerSec,
-  selectedClipId,
+  selectedClipIds,
   contentWidth,
   onDropAsset,
   onClipBodyMouseDown,
   onClipTrimMouseDown,
   onClipContextMenu,
-  onClipSelect,
+  onEmptyMouseDown,
 }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const assetById = new Map(assets.map((a) => [a.id, a]));
@@ -54,7 +56,7 @@ export function TimelineTrack({
         onDropAsset(track.id, assetId, startSec);
       }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClipSelect(null);
+        if (e.target === e.currentTarget) onEmptyMouseDown(e);
       }}
     >
       {clips.map((clip) => (
@@ -65,7 +67,7 @@ export function TimelineTrack({
           trackKind={track.kind}
           pxPerSec={pxPerSec}
           height={TRACK_HEIGHT_PX}
-          selected={selectedClipId === clip.id}
+          selected={selectedClipIds.has(clip.id)}
           onBodyMouseDown={onClipBodyMouseDown}
           onTrimMouseDown={onClipTrimMouseDown}
           onContextMenu={onClipContextMenu}

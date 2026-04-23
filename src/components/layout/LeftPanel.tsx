@@ -11,8 +11,8 @@ type Tab = 'media' | 'inspector';
 
 export function LeftPanel({ onImportClick }: Props) {
   const [tab, setTab] = useState<Tab>('media');
-  const selection = usePlaybackStore((s) => s.selection);
-  const hasSelection = selection.kind === 'clip';
+  const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
+  const hasSelection = selectedClipIds.length > 0;
 
   // Auto-switch to inspector when a clip is selected.
   useEffect(() => {

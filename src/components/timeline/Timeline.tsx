@@ -25,6 +25,7 @@ import {
   duplicateClip,
   extractAudioFromClip,
   moveClip,
+  moveClipsBy,
   pasteClipFrom,
   projectDurationSec,
   removeClip,
@@ -57,9 +58,12 @@ export function Timeline() {
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const pxPerSec = usePlaybackStore((s) => s.pxPerSec);
   const setPxPerSec = usePlaybackStore((s) => s.setPxPerSec);
-  const selection = usePlaybackStore((s) => s.selection);
-  const selectedClipId = selection.kind === 'clip' ? selection.id : null;
+  const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const selectClip = usePlaybackStore((s) => s.selectClip);
+  const toggleClipSelection = usePlaybackStore((s) => s.toggleClipSelection);
+  const setClipSelection = usePlaybackStore((s) => s.setClipSelection);
+  // Convenience: the single-selected clip ID (when exactly one is selected).
+  const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
 
   const assets = useMediaStore((s) => s.assets);
 
@@ -69,8 +73,11 @@ export function Timeline() {
   const [dragOverlay, setDragOverlay] = useState<DragOverlay | null>(null);
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
   const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
+  const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
 
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
+  // A Set version for O(1) membership checks in the render path.
+  const selectedSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -151,8 +158,11 @@ export function Timeline() {
         if (!selectedClipId) return;
         update((p) => splitClipAt(p, selectedClipId, currentTime));
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (!selectedClipId) return;
-        update((p) => removeClip(p, selectedClipId));
+        const ids = usePlaybackStore.getState().selectedClipIds;
+        if (ids.length === 0) return;
+        update((p) => ids.reduce((proj, id) => removeClip(proj, id), p));
+        selectClip(null);
+      } else if (e.key === 'Escape') {
         selectClip(null);
       }
     };
@@ -195,7 +205,18 @@ export function Timeline() {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    selectClip(clipId);
+
+    // Ctrl/Cmd-click toggles the clip in the selection and does NOT initiate a drag.
+    if (e.ctrlKey || e.metaKey) {
+      toggleClipSelection(clipId);
+      return;
+    }
+
+    // If the clicked clip is already part of a multi-selection, drag the whole
+    // group. Otherwise replace the selection with this clip and drag it alone.
+    const priorSelection = usePlaybackStore.getState().selectedClipIds;
+    const isGroupDrag = priorSelection.length > 1 && priorSelection.includes(clipId);
+    if (!isGroupDrag) selectClip(clipId);
 
     const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
     if (!clip) return;
@@ -240,7 +261,14 @@ export function Timeline() {
       // Compatible = same kind of track, or audio extraction.
       const compatible = isAudioExtraction || targetTrack.kind === origTrack?.kind;
 
-      if (isAudioExtraction) {
+      if (isGroupDrag) {
+        // Multi-selection drag: shift all selected clips by dt (time-only, no
+        // track change). This keeps the group's relative spacing and track
+        // assignment; cross-track moves for multi-select aren't supported.
+        updateSilent((p) => moveClipsBy(p, priorSelection, dt));
+        lastGhost = null;
+        setDragOverlay(null);
+      } else if (isAudioExtraction) {
         // Video stays put; show ghost on target audio track
         updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         const ghost: DragOverlay = { clipId, ghostTrackIdx: trackIdx, isAudioExtraction: true };
@@ -285,7 +313,7 @@ export function Timeline() {
 
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [tracks, pxPerSec, snapTargets, assetById, selectClip, beginTx, cancelTx, update, updateSilent]);
+  }, [tracks, pxPerSec, snapTargets, assetById, selectClip, toggleClipSelection, beginTx, cancelTx, update, updateSilent]);
 
   // ---- Clip trim ----
   const handleClipTrimMouseDown = useCallback((clipId: string, side: ClipDragSide, e: React.MouseEvent) => {
@@ -328,6 +356,56 @@ export function Timeline() {
     if (!asset) return;
     update((p) => addClip(p, asset, trackId, startSec));
   }, [assetById, update]);
+
+  // ---- Marquee selection from empty track area ----
+  const handleEmptyMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    // Ctrl/Cmd-click on empty area starts an additive marquee; otherwise replaces.
+    const additive = e.ctrlKey || e.metaKey;
+    const baseline = additive ? usePlaybackStore.getState().selectedClipIds : [];
+    const el = scrollRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const startX = e.clientX - rect.left + el.scrollLeft;
+    const startY = e.clientY - rect.top + el.scrollTop;
+    setMarquee({ startX, startY, curX: startX, curY: startY });
+    if (!additive) selectClip(null);
+
+    const move = (ev: MouseEvent) => {
+      const s = scrollRef.current;
+      if (!s) return;
+      const r = s.getBoundingClientRect();
+      const curX = Math.max(0, ev.clientX - r.left + s.scrollLeft);
+      const curY = Math.max(0, ev.clientY - r.top + s.scrollTop);
+      setMarquee({ startX, startY, curX, curY });
+
+      // Compute clips intersecting the box.
+      const x0 = Math.min(startX, curX);
+      const x1 = Math.max(startX, curX);
+      const y0 = Math.min(startY, curY);
+      const y1 = Math.max(startY, curY);
+      const tStart = x0 / pxPerSec;
+      const tEnd = x1 / pxPerSec;
+      const idxStart = Math.floor((y0 - RULER_HEIGHT_PX) / TRACK_HEIGHT_PX);
+      const idxEnd = Math.floor((y1 - RULER_HEIGHT_PX) / TRACK_HEIGHT_PX);
+      const hitIds = new Set(baseline);
+      for (const clip of useProjectStore.getState().project.clips) {
+        const trackIdx = tracks.findIndex((t) => t.id === clip.trackId);
+        if (trackIdx < idxStart || trackIdx > idxEnd) continue;
+        const clipEnd = clip.startSec + (clip.outSec - clip.inSec);
+        if (clipEnd < tStart || clip.startSec > tEnd) continue;
+        hitIds.add(clip.id);
+      }
+      setClipSelection([...hitIds]);
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      setMarquee(null);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [pxPerSec, tracks, selectClip, setClipSelection]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -402,13 +480,13 @@ export function Timeline() {
                   track={track}
                   clips={project.clips.filter((c) => c.trackId === track.id)}
                   pxPerSec={pxPerSec}
-                  selectedClipId={selectedClipId}
+                  selectedClipIds={selectedSet}
                   contentWidth={contentWidth}
                   onDropAsset={handleDropAsset}
                   onClipBodyMouseDown={handleClipBodyMouseDown}
                   onClipTrimMouseDown={handleClipTrimMouseDown}
                   onClipContextMenu={handleClipContextMenu}
-                  onClipSelect={selectClip}
+                  onEmptyMouseDown={handleEmptyMouseDown}
                 />
               ))}
             </div>
@@ -420,6 +498,19 @@ export function Timeline() {
                 assetName={ghostAsset?.name ?? ''}
                 pxPerSec={pxPerSec}
                 trackIdx={dragOverlay.ghostTrackIdx}
+              />
+            )}
+
+            {/* Marquee selection rectangle */}
+            {marquee && (
+              <div
+                className="pointer-events-none absolute rounded-sm border border-brand-400 bg-brand-400/15"
+                style={{
+                  left: Math.min(marquee.startX, marquee.curX),
+                  top: Math.min(marquee.startY, marquee.curY),
+                  width: Math.abs(marquee.curX - marquee.startX),
+                  height: Math.abs(marquee.curY - marquee.startY),
+                }}
               />
             )}
 

@@ -48,6 +48,30 @@ export function removeClip(project: Project, clipId: string): Project {
   return { ...project, clips: project.clips.filter((c) => c.id !== clipId) };
 }
 
+/**
+ * Move a group of clips by the same deltaSec. The group's leftmost clip is
+ * clamped so it doesn't go below t=0; the delta is uniformly reduced so the
+ * group preserves its relative spacing.
+ */
+export function moveClipsBy(
+  project: Project,
+  clipIds: string[],
+  deltaSec: number,
+): Project {
+  const idsSet = new Set(clipIds);
+  const selected = project.clips.filter((c) => idsSet.has(c.id));
+  if (selected.length === 0) return project;
+  const minStart = Math.min(...selected.map((c) => c.startSec));
+  const clampedDelta = Math.max(deltaSec, -minStart);
+  if (clampedDelta === 0) return project;
+  return {
+    ...project,
+    clips: project.clips.map((c) =>
+      idsSet.has(c.id) ? { ...c, startSec: c.startSec + clampedDelta } : c,
+    ),
+  };
+}
+
 export function moveClip(
   project: Project,
   clipId: string,
