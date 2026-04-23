@@ -62,6 +62,7 @@ export function TrackHeader({
       {showDropAfter && (
         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-0.5 bg-brand-400" />
       )}
+
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 font-mono font-semibold text-slate-300">
           <GripVertical size={12} className="text-slate-500" />
@@ -94,6 +95,7 @@ export function TrackHeader({
           </button>
         </div>
       </div>
+
       <div className="flex items-center justify-between">
         <div className="text-[10px] uppercase tracking-wider text-slate-500">{track.kind}</div>
         <div className="flex items-center gap-1 text-[10px] text-slate-500">
