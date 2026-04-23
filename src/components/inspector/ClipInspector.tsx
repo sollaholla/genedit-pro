@@ -1,8 +1,10 @@
-import { Film, Image as ImageIcon, Music, Volume2 } from 'lucide-react';
+import { useState } from 'react';
+import { Film, Image as ImageIcon, Music, RotateCcw, Volume2 } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
 import { setClipProp } from '@/lib/timeline/operations';
+import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
 
 const kindIcon = { video: Film, audio: Music, image: ImageIcon };
@@ -31,6 +33,11 @@ export function ClipInspector() {
   const Icon = asset ? kindIcon[asset.kind] : Film;
 
   const setVolume = (v: number) => update((p) => setClipProp(p, selectedId, 'volume', v));
+  const envelopeEnabled = clip.volumeEnvelope?.enabled ?? false;
+  const hasCustomEnvelope =
+    !!clip.volumeEnvelope &&
+    (clip.volumeEnvelope.points.length !== 2 ||
+      clip.volumeEnvelope.points.some((p) => p.v !== 1 || p.curvature !== 0));
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -77,7 +84,7 @@ export function ClipInspector() {
           <div className="flex items-center justify-between">
             <label className="flex items-center gap-1.5 text-xs text-slate-400">
               <Volume2 size={12} />
-              Volume
+              Master Volume
             </label>
             <span className="font-mono text-xs text-slate-300">
               {Math.round((clip.volume ?? 1) * 100)}%
@@ -98,6 +105,12 @@ export function ClipInspector() {
             <span>200%</span>
           </div>
         </div>
+
+        <EnvelopeControls
+          clipId={selectedId}
+          enabled={envelopeEnabled}
+          hasCustomEnvelope={hasCustomEnvelope}
+        />
       </Section>
 
       {/* Source asset info */}
@@ -134,6 +147,79 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 function Divider() {
   return <div className="h-px bg-surface-700" />;
+}
+
+function EnvelopeControls({
+  clipId,
+  enabled,
+  hasCustomEnvelope,
+}: {
+  clipId: string;
+  enabled: boolean;
+  hasCustomEnvelope: boolean;
+}) {
+  const update = useProjectStore((s) => s.update);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+
+  const toggle = () => update((p) => setEnvelopeEnabled(p, clipId, !enabled));
+  const doReset = () => {
+    update((p) => resetEnvelope(p, clipId));
+    setConfirmingReset(false);
+  };
+
+  return (
+    <div className="mt-3 space-y-2 rounded border border-surface-700 bg-surface-900/60 p-2.5">
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+        <input
+          type="checkbox"
+          className="h-3.5 w-3.5 accent-brand-500"
+          checked={enabled}
+          onChange={toggle}
+        />
+        Enable Editable Curve
+      </label>
+
+      {enabled && (
+        <>
+          <p className="text-[10px] leading-tight text-slate-500">
+            Double-click the clip&apos;s curve to add a point. Drag points to move them,
+            right-click for options.
+          </p>
+          {confirmingReset ? (
+            <div className="flex items-center justify-between gap-2 rounded bg-surface-800 p-2">
+              <span className="text-[11px] text-slate-300">Reset this curve?</span>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  className="rounded bg-surface-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-surface-600"
+                  onClick={() => setConfirmingReset(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-brand-500 px-2 py-0.5 text-[11px] text-white hover:bg-brand-400"
+                  onClick={doReset}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-slate-200 disabled:opacity-40"
+              disabled={!hasCustomEnvelope}
+              onClick={() => setConfirmingReset(true)}
+            >
+              <RotateCcw size={11} />
+              Reset curve
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 // Intentionally a named export so React DevTools show the component name.

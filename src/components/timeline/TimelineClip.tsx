@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { Clip, MediaAsset } from '@/types';
 import { timeToPx } from '@/lib/timeline/geometry';
+import { ClipEnvelopeOverlay } from './ClipEnvelopeOverlay';
 
 const HANDLE_WIDTH = 6;
 
@@ -91,6 +92,9 @@ export function TimelineClip({
       <div className="pointer-events-none absolute inset-0 flex items-center px-2 font-medium">
         <span className="truncate">{asset?.name ?? 'missing asset'}</span>
       </div>
+      {!ghost && clip.volumeEnvelope?.enabled && (
+        <ClipEnvelopeOverlay clip={clip} width={width} height={height - 8} />
+      )}
     </div>
   );
 }

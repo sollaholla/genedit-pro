@@ -2,9 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
-import { resolveFrame } from '@/lib/playback/engine';
+import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
 import { projectDurationSec } from '@/lib/timeline/operations';
+import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { PlayerControls } from './PlayerControls';
+
+function effectiveVolume(layer: ActiveLayer): number {
+  const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
+  const clipDur = Math.max(1e-6, layer.clip.outSec - layer.clip.inSec);
+  const localT = Math.max(0, Math.min(1, (layer.sourceTimeSec - layer.clip.inSec) / clipDur));
+  const envMul = evalEnvelopeAt(layer.clip.volumeEnvelope, localT);
+  return master * envMul;
+}
 
 type ElementPool = Map<string, HTMLMediaElement>;
 
@@ -143,8 +152,8 @@ export function PreviewPlayer() {
           : (audioPool.current.get(assetId) ?? videoPool.current.get(assetId));
         if (!el) continue;
 
-        const vol = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
-        el.volume = Math.min(1, vol); // HTMLMediaElement.volume ∈ [0,1]
+        const vol = effectiveVolume(layer);
+        el.volume = Math.max(0, Math.min(1, vol)); // HTMLMediaElement.volume ∈ [0,1]
 
         if (isVideoEl) (el as HTMLVideoElement).muted = false;
 
