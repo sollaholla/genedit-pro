@@ -29,7 +29,8 @@ export function PreviewPlayer() {
   const audioPool = useRef<ElementPool>(new Map());
   const urlCache = useRef<Map<string, string>>(new Map());
   const lastTickRef = useRef<number | null>(null);
-  const lastVideoAssetIdRef = useRef<string | null>(null);
+  const prevHasVideoRef = useRef(false);
+  const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
@@ -109,13 +110,15 @@ export function PreviewPlayer() {
       const frame = resolveFrame(proj, t);
 
       // ---- VIDEO DISPLAY ----
+      // Always update display styles so elements created after RAF startup are shown.
       const nextVideoAssetId = frame.video?.clip.assetId ?? null;
-      if (nextVideoAssetId !== lastVideoAssetIdRef.current) {
-        for (const [id, el] of videoPool.current) {
-          (el as HTMLVideoElement).style.display = id === nextVideoAssetId ? '' : 'none';
-          if (id !== nextVideoAssetId) el.pause();
-        }
-        lastVideoAssetIdRef.current = nextVideoAssetId;
+      for (const [id, el] of videoPool.current) {
+        (el as HTMLVideoElement).style.display = id === nextVideoAssetId ? '' : 'none';
+      }
+      const hasVideo = nextVideoAssetId !== null;
+      if (hasVideo !== prevHasVideoRef.current) {
+        prevHasVideoRef.current = hasVideo;
+        setHasActiveVideo(hasVideo);
       }
 
       // ---- AUDIO MIX ----
@@ -202,7 +205,7 @@ export function PreviewPlayer() {
           style={{ maxHeight: '100%' }}
         >
           <div ref={videoHostRef} className="absolute inset-0" />
-          {!lastVideoAssetIdRef.current && (
+          {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {ready ? 'No clip at playhead' : 'Loading…'}
             </div>

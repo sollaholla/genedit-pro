@@ -56,6 +56,7 @@ export function TimelineTrack({
           key={clip.id}
           clip={clip}
           asset={assetById.get(clip.assetId)}
+          trackKind={track.kind}
           pxPerSec={pxPerSec}
           height={TRACK_HEIGHT_PX}
           selected={selectedClipId === clip.id}

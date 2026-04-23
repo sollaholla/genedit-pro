@@ -9,6 +9,7 @@ export type ClipDragSide = 'l' | 'r';
 type Props = {
   clip: Clip;
   asset: MediaAsset | undefined;
+  trackKind: 'video' | 'audio';
   pxPerSec: number;
   height: number;
   selected: boolean;
@@ -23,6 +24,7 @@ type Props = {
 export function TimelineClip({
   clip,
   asset,
+  trackKind,
   pxPerSec,
   height,
   selected,
@@ -38,10 +40,11 @@ export function TimelineClip({
 
   const bg = useMemo(() => {
     if (!asset) return 'bg-surface-600';
-    if (asset.kind === 'audio') return 'bg-clip-audio/80 hover:bg-clip-audio';
+    // Color by track kind so video clips on audio tracks look like audio clips.
+    if (trackKind === 'audio') return 'bg-clip-audio/80 hover:bg-clip-audio';
     if (asset.kind === 'image') return 'bg-clip-image/80 hover:bg-clip-image';
     return 'bg-clip-video/80 hover:bg-clip-video';
-  }, [asset]);
+  }, [asset, trackKind]);
 
   return (
     <div
@@ -50,6 +53,8 @@ export function TimelineClip({
         ${selected && !ghost ? 'ring-2 ring-brand-400' : 'ring-1 ring-black/30'}
         ${ghost ? 'pointer-events-none opacity-60 ring-2 ring-brand-400 ring-dashed' : 'cursor-grab active:cursor-grabbing'}`}
       style={{ left, width, height: height - 8 }}
+      draggable={false}
+      onDragStart={(e) => e.preventDefault()}
       onMouseDown={ghost ? undefined : (e) => {
         const target = e.target as HTMLElement;
         const role = target.closest('[data-role]')?.getAttribute('data-role');
@@ -74,7 +79,7 @@ export function TimelineClip({
           />
         </>
       )}
-      {asset?.thumbnailDataUrl && asset.kind !== 'audio' && width > 40 && (
+      {asset?.thumbnailDataUrl && trackKind !== 'audio' && width > 40 && (
         <img
           src={asset.thumbnailDataUrl}
           alt=""
