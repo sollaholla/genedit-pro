@@ -262,10 +262,16 @@ export function PreviewPlayer() {
           prerolledRef.current.add(clip.id);
         }
 
-        // Keep decoder running muted just before handoff.
+        // Keep decoder running just before handoff. Unmute video so audio flows
+        // through the Web Audio graph (Chrome silences MediaElementSourceNode when
+        // el.muted=true). GainNode stays at 0 so no audible output yet.
         if (state.playing && timeUntilActive <= HOT_PRIMING_SEC && timeUntilActive >= 0) {
           hotPrimedIds.add(clip.id);
-          // Gain stays at 0 while hot-primed; gainNode was already set to 0 at creation.
+          const gn = gainNodes.current.get(clip.id);
+          if (gn) gn.gain.value = 0;
+          if (videoPool.current.has(clip.id)) {
+            (el as HTMLVideoElement).muted = false; // allow audio into Web Audio graph
+          }
           if (el.paused) el.play().catch(() => undefined);
         }
       }

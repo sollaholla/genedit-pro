@@ -19,7 +19,7 @@ export function AppShell({ topBar, mediaPanel, preview, rightPanel, timeline, st
           <div className="flex min-h-0 flex-1">
             <div className="min-h-0 flex-1 bg-surface-950">{preview}</div>
             {rightPanel && (
-              <div className="w-24 shrink-0 border-l border-surface-700 bg-surface-900">
+              <div className="w-28 shrink-0 border-l border-surface-700 bg-surface-900">
                 {rightPanel}
               </div>
             )}
