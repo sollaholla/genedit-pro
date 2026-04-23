@@ -178,6 +178,14 @@ export function splitClipAt(
 }
 
 export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
+  return insertTrack(project, kind, project.tracks.length);
+}
+
+export function insertTrack(
+  project: Project,
+  kind: 'video' | 'audio',
+  insertIndex: number,
+): Project {
   const track: Track = {
     id: nanoid(8),
     kind,
@@ -185,8 +193,30 @@ export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
     muted: false,
     hidden: false,
   };
-  const reindexed = [...project.tracks, track].map((t, i) => ({ ...t, index: i }));
-  return { ...project, tracks: reindexed };
+  const next = [...project.tracks];
+  const at = Math.max(0, Math.min(insertIndex, next.length));
+  next.splice(at, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrack(project: Project, trackId: string, targetIndex: number): Project {
+  const tracks = sortedTracks(project);
+  const from = tracks.findIndex((t) => t.id === trackId);
+  if (from < 0) return project;
+  const to = Math.max(0, Math.min(targetIndex, tracks.length - 1));
+  if (from === to) return project;
+  const next = [...tracks];
+  const [track] = next.splice(from, 1);
+  if (!track) return project;
+  next.splice(to, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrackBy(project: Project, trackId: string, delta: number): Project {
+  const tracks = sortedTracks(project);
+  const idx = tracks.findIndex((t) => t.id === trackId);
+  if (idx < 0) return project;
+  return moveTrack(project, trackId, idx + delta);
 }
 
 export function removeTrack(project: Project, trackId: string): Project {

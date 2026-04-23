@@ -83,6 +83,14 @@ export function TimelineClip({
           />
         </>
       )}
+      {asset?.thumbnailDataUrl && trackKind === 'audio' && width > 24 && (
+        <img
+          src={asset.thumbnailDataUrl}
+          alt=""
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-45"
+          draggable={false}
+        />
+      )}
       {asset?.thumbnailDataUrl && trackKind !== 'audio' && width > 40 && (
         <img
           src={asset.thumbnailDataUrl}
