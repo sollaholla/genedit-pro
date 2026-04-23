@@ -1,9 +1,10 @@
-import { useCallback, useMemo } from 'react';
+import { useMemo } from 'react';
 import type { Clip, MediaAsset } from '@/types';
-import { timeToPx, pxToTime, SNAP_TOLERANCE_PX, snapTime } from '@/lib/timeline/geometry';
-import { useProjectStore } from '@/state/projectStore';
-import { usePlaybackStore } from '@/state/playbackStore';
-import { moveClip, trimClipLeft, trimClipRight } from '@/lib/timeline/operations';
+import { timeToPx } from '@/lib/timeline/geometry';
+
+const HANDLE_WIDTH = 6;
+
+export type ClipDragSide = 'l' | 'r';
 
 type Props = {
   clip: Clip;
@@ -11,17 +12,29 @@ type Props = {
   pxPerSec: number;
   height: number;
   selected: boolean;
-  snapTargets: number[];
+  /** Render as a semi-transparent ghost (drag preview). */
+  ghost?: boolean;
+  /** Override the clip's startSec for rendering (used during ghost drag). */
+  overrideStartSec?: number;
+  onBodyMouseDown: (clipId: string, e: React.MouseEvent) => void;
+  onTrimMouseDown: (clipId: string, side: ClipDragSide, e: React.MouseEvent) => void;
 };
 
-const HANDLE_WIDTH = 6;
-
-export function TimelineClip({ clip, asset, pxPerSec, height, selected, snapTargets }: Props) {
+export function TimelineClip({
+  clip,
+  asset,
+  pxPerSec,
+  height,
+  selected,
+  ghost = false,
+  overrideStartSec,
+  onBodyMouseDown,
+  onTrimMouseDown,
+}: Props) {
+  const startSec = overrideStartSec ?? clip.startSec;
   const duration = clip.outSec - clip.inSec;
-  const left = timeToPx(clip.startSec, pxPerSec);
+  const left = timeToPx(startSec, pxPerSec);
   const width = Math.max(4, timeToPx(duration, pxPerSec));
-  const selectClip = usePlaybackStore((s) => s.selectClip);
-  const update = useProjectStore((s) => s.update);
 
   const bg = useMemo(() => {
     if (!asset) return 'bg-surface-600';
@@ -30,93 +43,38 @@ export function TimelineClip({ clip, asset, pxPerSec, height, selected, snapTarg
     return 'bg-clip-video/80 hover:bg-clip-video';
   }, [asset]);
 
-  const onDragBody = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.button !== 0) return;
-      const targetEl = (e.target as HTMLElement).closest('[data-role]');
-      if (targetEl && (targetEl.getAttribute('data-role') === 'trim-l' ||
-          targetEl.getAttribute('data-role') === 'trim-r')) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      selectClip(clip.id);
-
-      const startX = e.clientX;
-      const origStart = clip.startSec;
-
-      const move = (ev: MouseEvent) => {
-        const dxPx = ev.clientX - startX;
-        const dt = pxToTime(dxPx, pxPerSec);
-        const candidate = Math.max(0, origStart + dt);
-        const snapped = snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-        update((p) => moveClip(p, clip.id, snapped));
-      };
-      const up = () => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
-      };
-      window.addEventListener('mousemove', move);
-      window.addEventListener('mouseup', up);
-    },
-    [clip.id, clip.startSec, pxPerSec, selectClip, snapTargets, update],
-  );
-
-  const onTrim = useCallback(
-    (side: 'l' | 'r') => (e: React.MouseEvent) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      selectClip(clip.id);
-
-      const startX = e.clientX;
-      const origStart = clip.startSec;
-      const origEnd = clip.startSec + (clip.outSec - clip.inSec);
-
-      const move = (ev: MouseEvent) => {
-        const dxPx = ev.clientX - startX;
-        const dt = pxToTime(dxPx, pxPerSec);
-        if (side === 'l') {
-          const candidate = Math.max(0, origStart + dt);
-          const snapped = snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-          update((p) => trimClipLeft(p, clip.id, snapped));
-        } else {
-          const candidate = origEnd + dt;
-          const snapped = snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-          update((p) => trimClipRight(p, clip.id, snapped));
-        }
-      };
-      const up = () => {
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', up);
-      };
-      window.addEventListener('mousemove', move);
-      window.addEventListener('mouseup', up);
-    },
-    [clip.id, clip.inSec, clip.outSec, clip.startSec, pxPerSec, selectClip, snapTargets, update],
-  );
-
   return (
     <div
-      className={`absolute top-1 overflow-hidden rounded-sm text-[10px] text-white no-select ${bg} ${
-        selected ? 'ring-2 ring-brand-400' : 'ring-1 ring-black/30'
-      }`}
+      className={`absolute top-1 overflow-hidden rounded-sm text-[10px] text-white no-select
+        ${bg}
+        ${selected && !ghost ? 'ring-2 ring-brand-400' : 'ring-1 ring-black/30'}
+        ${ghost ? 'pointer-events-none opacity-60 ring-2 ring-brand-400 ring-dashed' : 'cursor-grab active:cursor-grabbing'}`}
       style={{ left, width, height: height - 8 }}
-      onMouseDown={onDragBody}
+      onMouseDown={ghost ? undefined : (e) => {
+        const target = e.target as HTMLElement;
+        const role = target.closest('[data-role]')?.getAttribute('data-role');
+        if (role === 'trim-l' || role === 'trim-r') return;
+        onBodyMouseDown(clip.id, e);
+      }}
       data-clip-id={clip.id}
     >
-      <div
-        data-role="trim-l"
-        className="absolute left-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
-        style={{ width: HANDLE_WIDTH }}
-        onMouseDown={onTrim('l')}
-      />
-      <div
-        data-role="trim-r"
-        className="absolute right-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
-        style={{ width: HANDLE_WIDTH }}
-        onMouseDown={onTrim('r')}
-      />
-      {asset?.thumbnailDataUrl && asset.kind !== 'audio' && width > 40 ? (
+      {!ghost && (
+        <>
+          <div
+            data-role="trim-l"
+            className="absolute left-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
+            style={{ width: HANDLE_WIDTH }}
+            onMouseDown={(e) => { e.stopPropagation(); onTrimMouseDown(clip.id, 'l', e); }}
+          />
+          <div
+            data-role="trim-r"
+            className="absolute right-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
+            style={{ width: HANDLE_WIDTH }}
+            onMouseDown={(e) => { e.stopPropagation(); onTrimMouseDown(clip.id, 'r', e); }}
+          />
+        </>
+      )}
+      {asset?.thumbnailDataUrl && asset.kind !== 'audio' && width > 40 && (
         <img
           src={asset.thumbnailDataUrl}
           alt=""
@@ -124,7 +82,7 @@ export function TimelineClip({ clip, asset, pxPerSec, height, selected, snapTarg
           draggable={false}
           style={{ width: Math.min(80, Math.max(20, width * 0.25)) }}
         />
-      ) : null}
+      )}
       <div className="pointer-events-none absolute inset-0 flex items-center px-2 font-medium">
         <span className="truncate">{asset?.name ?? 'missing asset'}</span>
       </div>

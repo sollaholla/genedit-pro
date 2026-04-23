@@ -4,6 +4,7 @@ import * as ops from '@/lib/timeline/operations';
 import { createInitialProject } from '@/lib/timeline/operations';
 
 const STORAGE_KEY = 'genedit-pro:project';
+const MAX_HISTORY = 500;
 
 function loadProject(): Project {
   try {
@@ -11,6 +12,8 @@ function loadProject(): Project {
     if (!raw) return createInitialProject();
     const parsed = JSON.parse(raw) as Project;
     if (!parsed.tracks || !parsed.clips) return createInitialProject();
+    // Backfill volume for clips saved before it was added.
+    parsed.clips = parsed.clips.map((c) => ({ ...c, volume: (c as { volume?: number }).volume ?? 1 }));
     return parsed;
   } catch {
     return createInitialProject();
@@ -19,8 +22,18 @@ function loadProject(): Project {
 
 type ProjectState = {
   project: Project;
-  setProject: (p: Project) => void;
+  _past: Project[];
+  _future: Project[];
+  /** Push fn(project) to history and update project. Clears redo stack. */
   update: (fn: (p: Project) => Project) => void;
+  /** Update project without touching history (use during a drag gesture). */
+  updateSilent: (fn: (p: Project) => Project) => void;
+  /** Snapshot current project into _past before starting a gesture. */
+  beginTx: () => void;
+  /** Revert to the snapshot pushed by beginTx (cancel a gesture). */
+  cancelTx: () => void;
+  undo: () => void;
+  redo: () => void;
   rename: (name: string) => void;
   reset: () => void;
 };
@@ -39,24 +52,60 @@ function scheduleSave(p: Project) {
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: loadProject(),
-  setProject: (p) => {
-    scheduleSave(p);
-    set({ project: p });
-  },
+  _past: [],
+  _future: [],
+
   update: (fn) => {
+    const { project, _past } = get();
+    const next = fn(project);
+    const past = [..._past.slice(-(MAX_HISTORY - 1)), project];
+    scheduleSave(next);
+    set({ project: next, _past: past, _future: [] });
+  },
+
+  updateSilent: (fn) => {
     const next = fn(get().project);
     scheduleSave(next);
     set({ project: next });
   },
-  rename: (name) => {
-    const next = { ...get().project, name };
-    scheduleSave(next);
-    set({ project: next });
+
+  beginTx: () => {
+    const { project, _past } = get();
+    set({ _past: [..._past.slice(-(MAX_HISTORY - 1)), project], _future: [] });
   },
+
+  cancelTx: () => {
+    const { _past } = get();
+    if (_past.length === 0) return;
+    const prev = _past[_past.length - 1]!;
+    scheduleSave(prev);
+    set({ project: prev, _past: _past.slice(0, -1) });
+  },
+
+  undo: () => {
+    const { project, _past, _future } = get();
+    if (_past.length === 0) return;
+    const prev = _past[_past.length - 1]!;
+    scheduleSave(prev);
+    set({ project: prev, _past: _past.slice(0, -1), _future: [project, ..._future] });
+  },
+
+  redo: () => {
+    const { project, _past, _future } = get();
+    if (_future.length === 0) return;
+    const next = _future[0]!;
+    scheduleSave(next);
+    set({ project: next, _past: [..._past.slice(-(MAX_HISTORY - 1)), project], _future: _future.slice(1) });
+  },
+
+  rename: (name) => {
+    get().update((p) => ({ ...p, name }));
+  },
+
   reset: () => {
     const fresh = createInitialProject();
     scheduleSave(fresh);
-    set({ project: fresh });
+    set({ project: fresh, _past: [], _future: [] });
   },
 }));
 

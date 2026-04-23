@@ -8,6 +8,14 @@ import { PlayerControls } from './PlayerControls';
 
 type ElementPool = Map<string, HTMLMediaElement>;
 
+function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
+  const drift = Math.abs(el.currentTime - target);
+  const threshold = playing ? 0.15 : 0.015;
+  if (drift > threshold && !el.seeking && el.readyState >= 1) {
+    try { el.currentTime = target; } catch { /* noop */ }
+  }
+}
+
 export function PreviewPlayer() {
   const project = useProjectStore((s) => s.project);
   const assets = useMediaStore((s) => s.assets);
@@ -20,22 +28,20 @@ export function PreviewPlayer() {
   const videoPool = useRef<ElementPool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
   const urlCache = useRef<Map<string, string>>(new Map());
-  const lastFrameRef = useRef<{ videoAssetId: string | null; audioAssetId: string | null }>({
-    videoAssetId: null,
-    audioAssetId: null,
-  });
   const lastTickRef = useRef<number | null>(null);
+  const lastVideoAssetIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
 
-  // Ensure one <video>/<audio> element exists per asset that might be active.
+  // Create one HTMLMediaElement per asset.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       for (const asset of assets) {
         if (asset.kind === 'image') continue;
-        const pool = asset.kind === 'audio' ? audioPool.current : videoPool.current;
+        const isAudio = asset.kind === 'audio';
+        const pool = isAudio ? audioPool.current : videoPool.current;
         if (pool.has(asset.id)) continue;
 
         let url = urlCache.current.get(asset.id);
@@ -47,7 +53,7 @@ export function PreviewPlayer() {
         }
         if (cancelled) return;
 
-        if (asset.kind === 'audio') {
+        if (isAudio) {
           const a = new Audio();
           a.preload = 'auto';
           a.src = url;
@@ -56,7 +62,7 @@ export function PreviewPlayer() {
           const v = document.createElement('video');
           v.preload = 'auto';
           v.playsInline = true;
-          v.muted = true;
+          v.muted = true; // will be unmuted in RAF when needed
           v.src = url;
           v.className = 'absolute inset-0 h-full w-full object-contain';
           v.style.display = 'none';
@@ -66,122 +72,90 @@ export function PreviewPlayer() {
       }
       if (!cancelled) setReady(true);
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [assets, objectUrlFor]);
 
-  // Clean up elements/URLs for deleted assets
+  // Clean up deleted assets.
   useEffect(() => {
     const ids = new Set(assets.map((a) => a.id));
     for (const [id, el] of videoPool.current) {
-      if (!ids.has(id)) {
-        el.pause();
-        el.remove();
-        videoPool.current.delete(id);
-      }
+      if (!ids.has(id)) { el.pause(); (el as HTMLVideoElement).remove(); videoPool.current.delete(id); }
     }
     for (const [id, el] of audioPool.current) {
-      if (!ids.has(id)) {
-        el.pause();
-        audioPool.current.delete(id);
-      }
+      if (!ids.has(id)) { el.pause(); audioPool.current.delete(id); }
     }
     for (const [id, url] of urlCache.current) {
-      if (!ids.has(id)) {
-        URL.revokeObjectURL(url);
-        urlCache.current.delete(id);
-      }
+      if (!ids.has(id)) { URL.revokeObjectURL(url); urlCache.current.delete(id); }
     }
   }, [assets]);
 
-  // Main RAF loop: resolve active frame and drive playback
+  // Main RAF loop.
   useEffect(() => {
     let raf = 0;
     const tick = (ts: number) => {
       const state = usePlaybackStore.getState();
       const proj = useProjectStore.getState().project;
-      const totalDuration = projectDurationSec(proj);
+      const total = projectDurationSec(proj);
 
       if (state.playing) {
-        const last = lastTickRef.current ?? ts;
-        const dt = (ts - last) / 1000;
-        let next = state.currentTimeSec + dt;
-        if (totalDuration > 0 && next >= totalDuration) {
-          next = totalDuration;
-          state.setCurrentTime(next);
-          pause();
-        } else {
-          state.setCurrentTime(next);
-        }
+        const dt = (ts - (lastTickRef.current ?? ts)) / 1000;
+        const next = Math.min(total, state.currentTimeSec + dt);
+        state.setCurrentTime(next);
+        if (total > 0 && next >= total) pause();
       }
       lastTickRef.current = ts;
 
       const t = usePlaybackStore.getState().currentTimeSec;
       const frame = resolveFrame(proj, t);
 
-      // --- video ---
+      // ---- VIDEO DISPLAY ----
       const nextVideoAssetId = frame.video?.clip.assetId ?? null;
-      if (nextVideoAssetId !== lastFrameRef.current.videoAssetId) {
+      if (nextVideoAssetId !== lastVideoAssetIdRef.current) {
         for (const [id, el] of videoPool.current) {
-          el.style.display = id === nextVideoAssetId ? '' : 'none';
+          (el as HTMLVideoElement).style.display = id === nextVideoAssetId ? '' : 'none';
           if (id !== nextVideoAssetId) el.pause();
         }
-        lastFrameRef.current.videoAssetId = nextVideoAssetId;
-      }
-      if (nextVideoAssetId) {
-        const el = videoPool.current.get(nextVideoAssetId) as HTMLVideoElement | undefined;
-        if (el && frame.video) {
-          const target = frame.video.sourceTimeSec;
-          if (!state.playing && !el.paused) el.pause();
-          const drift = Math.abs(el.currentTime - target);
-          const threshold = state.playing ? 0.15 : 0.015;
-          if (drift > threshold && !el.seeking && el.readyState >= 1) {
-            try {
-              el.currentTime = target;
-            } catch {
-              // noop
-            }
-          }
-          if (state.playing && el.paused) el.play().catch(() => undefined);
-        }
+        lastVideoAssetIdRef.current = nextVideoAssetId;
       }
 
-      // --- audio ---
-      const nextAudioAssetId = frame.audio?.clip.assetId ?? null;
-      if (nextAudioAssetId !== lastFrameRef.current.audioAssetId) {
-        for (const [id, el] of audioPool.current) {
-          if (id !== nextAudioAssetId) el.pause();
-        }
-        lastFrameRef.current.audioAssetId = nextAudioAssetId;
+      // ---- AUDIO MIX ----
+      // Build set of asset IDs contributing audio this frame.
+      const activeAudioAssetIds = new Set<string>();
+      for (const layer of frame.audios) activeAudioAssetIds.add(layer.clip.assetId);
+
+      // Pause any pool elements not in this frame's mix.
+      for (const [id, el] of videoPool.current) {
+        if (!activeAudioAssetIds.has(id)) el.muted = true;
+      }
+      for (const [id, el] of audioPool.current) {
+        if (!activeAudioAssetIds.has(id) && !el.paused) el.pause();
       }
 
-      // Audio routing:
-      //   - If a dedicated audio clip matches the active video asset, let the <video>
-      //     element play the sound (single source of truth, no A/V drift).
-      //   - If there's no audio clip at all, the video clip still plays its own audio
-      //     (matches user expectations: "MP4s should have sound").
-      //   - Otherwise route audio through the audio pool element and mute the video.
-      const audioSharesVideo = !!nextAudioAssetId && nextAudioAssetId === nextVideoAssetId;
-      const videoProvidesOwnAudio = !nextAudioAssetId && !!nextVideoAssetId;
-      if (nextVideoAssetId) {
-        const videoEl = videoPool.current.get(nextVideoAssetId);
-        if (videoEl) videoEl.muted = !(audioSharesVideo || videoProvidesOwnAudio);
+      // Drive each active audio layer.
+      for (const layer of frame.audios) {
+        const assetId = layer.clip.assetId;
+        const isVideoEl = videoPool.current.has(assetId);
+        const el = isVideoEl
+          ? videoPool.current.get(assetId)!
+          : (audioPool.current.get(assetId) ?? videoPool.current.get(assetId));
+        if (!el) continue;
+
+        const vol = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
+        el.volume = Math.min(1, vol); // HTMLMediaElement.volume ∈ [0,1]
+
+        if (isVideoEl) (el as HTMLVideoElement).muted = false;
+
+        if (!state.playing && !el.paused) el.pause();
+        seekIfNeeded(el, layer.sourceTimeSec, state.playing);
+        if (state.playing && el.paused) el.play().catch(() => undefined);
       }
-      if (nextAudioAssetId && !audioSharesVideo) {
-        const el = audioPool.current.get(nextAudioAssetId) ?? videoPool.current.get(nextAudioAssetId);
-        if (el && frame.audio) {
-          const target = frame.audio.sourceTimeSec;
+
+      // Video display element's position (separate from audio).
+      if (nextVideoAssetId && frame.video) {
+        const el = videoPool.current.get(nextVideoAssetId);
+        if (el) {
           if (!state.playing && !el.paused) el.pause();
-          const drift = Math.abs(el.currentTime - target);
-          const threshold = state.playing ? 0.15 : 0.015;
-          if (drift > threshold && !el.seeking && el.readyState >= 1) {
-            try {
-              el.currentTime = target;
-            } catch {
-              // noop
-            }
-          }
+          seekIfNeeded(el, frame.video.sourceTimeSec, state.playing);
           if (state.playing && el.paused) el.play().catch(() => undefined);
         }
       }
@@ -192,6 +166,7 @@ export function PreviewPlayer() {
     return () => cancelAnimationFrame(raf);
   }, [pause]);
 
+  // Cleanup on unmount.
   useEffect(() => {
     const videoEls = videoPool.current;
     const audioEls = audioPool.current;
@@ -204,34 +179,20 @@ export function PreviewPlayer() {
     };
   }, []);
 
-  // Keyboard shortcuts for playback
+  // Playback keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        usePlaybackStore.getState().toggle();
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        setCurrentTime(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        setCurrentTime(duration);
-      } else if (e.key === ',' || e.key === '<') {
-        e.preventDefault();
-        setCurrentTime(Math.max(0, currentTime - 1 / project.fps));
-      } else if (e.key === '.' || e.key === '>') {
-        e.preventDefault();
-        setCurrentTime(Math.min(duration, currentTime + 1 / project.fps));
-      }
+      if (e.code === 'Space') { e.preventDefault(); usePlaybackStore.getState().toggle(); }
+      else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0); }
+      else if (e.key === 'End') { e.preventDefault(); setCurrentTime(duration); }
+      else if (e.key === ',' || e.key === '<') { e.preventDefault(); setCurrentTime(Math.max(0, currentTime - 1 / project.fps)); }
+      else if (e.key === '.' || e.key === '>') { e.preventDefault(); setCurrentTime(Math.min(duration, currentTime + 1 / project.fps)); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [currentTime, duration, project.fps, setCurrentTime]);
-
-  const activeVideoId = lastFrameRef.current.videoAssetId;
 
   return (
     <div className="flex h-full flex-col">
@@ -241,7 +202,7 @@ export function PreviewPlayer() {
           style={{ maxHeight: '100%' }}
         >
           <div ref={videoHostRef} className="absolute inset-0" />
-          {!activeVideoId && (
+          {!lastVideoAssetIdRef.current && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {ready ? 'No clip at playhead' : 'Loading…'}
             </div>

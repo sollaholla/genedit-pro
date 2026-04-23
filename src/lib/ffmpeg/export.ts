@@ -50,7 +50,7 @@ export function planSegments(project: Project): Segment[] {
       startSec: start,
       endSec: end,
       videoLayer: frame.video ? { clip: frame.video.clip, track: frame.video.track } : null,
-      audioLayer: frame.audio ? { clip: frame.audio.clip, track: frame.audio.track } : null,
+      audioLayer: frame.audios[0] ? { clip: frame.audios[0].clip, track: frame.audios[0].track } : null,
     });
   }
   return segments;

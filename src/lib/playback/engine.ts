@@ -3,41 +3,35 @@ import type { Clip, Project, Track } from '@/types';
 export type ActiveLayer = {
   track: Track;
   clip: Clip;
-  sourceTimeSec: number; // where to seek inside the asset
+  sourceTimeSec: number;
 };
 
 export type ResolvedFrame = {
   video: ActiveLayer | null;
-  audio: ActiveLayer | null;
+  /** All active audio sources across all non-muted/non-hidden tracks. */
+  audios: ActiveLayer[];
 };
 
-/**
- * Phase-1 compositor: returns the top-most visible video layer and the
- * top-most non-muted audio layer at time `t`. Phase 2 will return the full
- * stack so a canvas compositor can blend them.
- */
 export function resolveFrame(project: Project, t: number): ResolvedFrame {
   const sorted = [...project.tracks].sort((a, b) => a.index - b.index);
   let video: ActiveLayer | null = null;
-  let audio: ActiveLayer | null = null;
+  const audios: ActiveLayer[] = [];
 
-  // Iterate top-to-bottom so earlier matches win for video.
   for (const track of sorted) {
-    if (track.kind === 'video' && !track.hidden && !video) {
-      const clip = activeClipOnTrack(project.clips, track.id, t);
-      if (clip) {
-        video = { track, clip, sourceTimeSec: clip.inSec + (t - clip.startSec) };
-      }
-    }
-    if (track.kind === 'audio' && !track.muted && !audio) {
-      const clip = activeClipOnTrack(project.clips, track.id, t);
-      if (clip) {
-        audio = { track, clip, sourceTimeSec: clip.inSec + (t - clip.startSec) };
-      }
+    const clip = activeClipOnTrack(project.clips, track.id, t);
+    if (!clip) continue;
+    const layer: ActiveLayer = { track, clip, sourceTimeSec: clip.inSec + (t - clip.startSec) };
+
+    if (track.kind === 'video' && !track.hidden) {
+      if (!video) video = layer;
+      // Video tracks contribute their embedded audio to the mix.
+      audios.push(layer);
+    } else if (track.kind === 'audio' && !track.muted) {
+      audios.push(layer);
     }
   }
 
-  return { video, audio };
+  return { video, audios };
 }
 
 function activeClipOnTrack(clips: Clip[], trackId: string, t: number): Clip | null {

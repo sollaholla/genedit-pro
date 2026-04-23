@@ -1,18 +1,18 @@
 import type { Clip, Track } from '@/types';
 import { TRACK_HEIGHT_PX, pxToTime } from '@/lib/timeline/geometry';
-import { TimelineClip } from './TimelineClip';
-import { useProjectStore } from '@/state/projectStore';
-import { usePlaybackStore } from '@/state/playbackStore';
+import { TimelineClip, type ClipDragSide } from './TimelineClip';
 import { useMediaStore } from '@/state/mediaStore';
-import { addClip, isAssetCompatibleWithTrack } from '@/lib/timeline/operations';
 
 type Props = {
   track: Track;
   clips: Clip[];
   pxPerSec: number;
   selectedClipId: string | null;
-  snapTargets: number[];
   contentWidth: number;
+  onDropAsset: (trackId: string, assetId: string, startSec: number) => void;
+  onClipBodyMouseDown: (clipId: string, e: React.MouseEvent) => void;
+  onClipTrimMouseDown: (clipId: string, side: ClipDragSide, e: React.MouseEvent) => void;
+  onClipSelect: (clipId: string | null) => void;
 };
 
 export function TimelineTrack({
@@ -20,26 +20,14 @@ export function TimelineTrack({
   clips,
   pxPerSec,
   selectedClipId,
-  snapTargets,
   contentWidth,
+  onDropAsset,
+  onClipBodyMouseDown,
+  onClipTrimMouseDown,
+  onClipSelect,
 }: Props) {
-  const update = useProjectStore((s) => s.update);
-  const selectClip = usePlaybackStore((s) => s.selectClip);
   const assets = useMediaStore((s) => s.assets);
   const assetById = new Map(assets.map((a) => [a.id, a]));
-
-  const onDropAsset = (e: React.DragEvent) => {
-    const assetId = e.dataTransfer.getData('application/x-genedit-asset');
-    if (!assetId) return;
-    const asset = assetById.get(assetId);
-    if (!asset) return;
-    if (!isAssetCompatibleWithTrack(asset, track)) return;
-    e.preventDefault();
-    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const startSec = Math.max(0, pxToTime(x, pxPerSec));
-    update((p) => addClip(p, asset, track.id, startSec));
-  };
 
   return (
     <div
@@ -51,9 +39,16 @@ export function TimelineTrack({
           e.dataTransfer.dropEffect = 'copy';
         }
       }}
-      onDrop={onDropAsset}
+      onDrop={(e) => {
+        const assetId = e.dataTransfer.getData('application/x-genedit-asset');
+        if (!assetId) return;
+        e.preventDefault();
+        const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+        const startSec = Math.max(0, pxToTime(e.clientX - rect.left, pxPerSec));
+        onDropAsset(track.id, assetId, startSec);
+      }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) selectClip(null);
+        if (e.target === e.currentTarget) onClipSelect(null);
       }}
     >
       {clips.map((clip) => (
@@ -64,7 +59,8 @@ export function TimelineTrack({
           pxPerSec={pxPerSec}
           height={TRACK_HEIGHT_PX}
           selected={selectedClipId === clip.id}
-          snapTargets={snapTargets}
+          onBodyMouseDown={onClipBodyMouseDown}
+          onTrimMouseDown={onClipTrimMouseDown}
         />
       ))}
     </div>

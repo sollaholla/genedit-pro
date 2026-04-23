@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { TopBar } from '@/components/layout/TopBar';
 import { StatusBar } from '@/components/layout/StatusBar';
-import { MediaBin } from '@/components/media/MediaBin';
+import { LeftPanel } from '@/components/layout/LeftPanel';
 import { MediaImporter, type MediaImporterHandle } from '@/components/media/MediaImporter';
 import { Timeline } from '@/components/timeline/Timeline';
 import { PreviewPlayer } from '@/components/preview/PreviewPlayer';
@@ -32,7 +32,7 @@ export default function App() {
             onNewProject={handleNewProject}
           />
         }
-        mediaPanel={<MediaBin onImportClick={openImport} />}
+        mediaPanel={<LeftPanel onImportClick={openImport} />}
         preview={<PreviewPlayer />}
         timeline={<Timeline />}
         statusBar={<StatusBar />}

@@ -39,6 +39,7 @@ export function addClip(
     startSec: Math.max(0, startSec),
     inSec: 0,
     outSec: duration,
+    volume: 1,
   };
   return { ...project, clips: [...project.clips, clip] };
 }
@@ -167,6 +168,41 @@ export function setTrackProp<K extends keyof Track>(
     ...project,
     tracks: project.tracks.map((t) => (t.id === trackId ? { ...t, [key]: value } : t)),
   };
+}
+
+export function setClipProp<K extends keyof Clip>(
+  project: Project,
+  clipId: string,
+  key: K,
+  value: Clip[K],
+): Project {
+  return {
+    ...project,
+    clips: project.clips.map((c) => (c.id === clipId ? { ...c, [key]: value } : c)),
+  };
+}
+
+/**
+ * Creates an audio-only copy of a video clip on a target audio track,
+ * keeping the original clip in place. Used when the user drags a video
+ * clip onto an audio track.
+ */
+export function extractAudioFromClip(
+  project: Project,
+  clipId: string,
+  targetTrackId: string,
+): Project {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return project;
+  const targetTrack = project.tracks.find((t) => t.id === targetTrackId);
+  if (!targetTrack || targetTrack.kind !== 'audio') return project;
+  const newClip: Clip = {
+    ...clip,
+    id: nanoid(8),
+    trackId: targetTrackId,
+    volume: 1,
+  };
+  return { ...project, clips: [...project.clips, newClip] };
 }
 
 export function isAssetCompatibleWithTrack(asset: MediaAsset, track: Track): boolean {

@@ -30,6 +30,8 @@ export type Clip = {
   startSec: number;
   inSec: number;
   outSec: number;
+  /** 0–2, default 1 */
+  volume: number;
 };
 
 export type Project = {
