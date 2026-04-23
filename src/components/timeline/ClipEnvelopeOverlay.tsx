@@ -28,7 +28,6 @@ const HIT_R = 9;
 export function ClipEnvelopeOverlay({ clip, width, height }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
-  const update = useProjectStore((s) => s.update);
   const updateSilent = useProjectStore((s) => s.updateSilent);
   const beginTx = useProjectStore((s) => s.beginTx);
 
@@ -124,14 +123,34 @@ export function ClipEnvelopeOverlay({ clip, width, height }: Props) {
     window.addEventListener('mouseup', up);
   }, [clip.id, points, beginTx, updateSilent, clientToLocal]);
 
-  // Double-click empty space to add a new point.
-  const onBackgroundDoubleClick = useCallback((e: React.MouseEvent) => {
+  // Click on the curve line to add a new point at that position and begin
+  // dragging it in the same gesture.
+  const onCurveMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     const { t, v } = clientToLocal(e.clientX, e.clientY);
-    if (t <= 0 || t >= 1) return; // endpoints can't be added
-    update((p) => addEnvelopePoint(p, clip.id, t, v));
-  }, [clip.id, update, clientToLocal]);
+    if (t <= 0 || t >= 1) return;
+
+    // Determine the index the new point will occupy so we can drag it.
+    let newIndex = points.length;
+    for (let i = 0; i < points.length; i++) {
+      if (points[i]!.t > t) { newIndex = i; break; }
+    }
+
+    beginTx();
+    updateSilent((p) => addEnvelopePoint(p, clip.id, t, v));
+    const move = (ev: MouseEvent) => {
+      const next = clientToLocal(ev.clientX, ev.clientY);
+      updateSilent((p) => updateEnvelopePoint(p, clip.id, newIndex, { t: next.t, v: next.v }));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [clip.id, points, beginTx, updateSilent, clientToLocal]);
 
   const onPointContextMenu = useCallback((index: number, e: React.MouseEvent) => {
     e.preventDefault();
@@ -149,20 +168,36 @@ export function ClipEnvelopeOverlay({ clip, width, height }: Props) {
 
   return (
     <>
+      {/* The SVG itself is pointer-events: none so clicks on empty space fall
+          through to the clip body (for drag/trim). Only the curve path and
+          individual points/handles are interactive. */}
       <svg
         ref={svgRef}
-        className="pointer-events-auto absolute inset-0"
+        className="pointer-events-none absolute inset-0"
         width={width}
         height={height}
-        onDoubleClick={onBackgroundDoubleClick}
-        onMouseDown={(e) => e.stopPropagation()}
-        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
         style={{ overflow: 'visible' }}
       >
-        {/* Shaded area under the curve */}
+        {/* Shaded area under the curve (decorative, non-interactive) */}
         <path d={fillD} fill="rgba(255, 255, 255, 0.08)" stroke="none" />
-        {/* The curve itself */}
-        <path d={pathD} fill="none" stroke="rgba(255, 255, 255, 0.9)" strokeWidth={1.5} />
+
+        {/* Invisible thick hit area for the curve — click/drag to add a point */}
+        <path
+          d={pathD}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={12}
+          style={{ cursor: 'copy', pointerEvents: 'stroke' }}
+          onMouseDown={onCurveMouseDown}
+        />
+        {/* The visible curve on top */}
+        <path
+          d={pathD}
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.9)"
+          strokeWidth={1.5}
+          pointerEvents="none"
+        />
 
         {/* Segment midpoint handles (for curvature adjustment) */}
         {points.slice(0, -1).map((p0, i) => {
@@ -174,10 +209,10 @@ export function ClipEnvelopeOverlay({ clip, width, height }: Props) {
               key={`seg-${i}`}
               cx={cx}
               cy={cy}
-              r={2.5}
+              r={4}
               fill="rgba(255, 255, 255, 0.5)"
               stroke="none"
-              style={{ cursor: 'ns-resize' }}
+              style={{ cursor: 'ns-resize', pointerEvents: 'auto' }}
               onMouseDown={(e) => startSegmentDrag(i, e)}
               onContextMenu={(e) => onSegmentContextMenu(i, e)}
             />
@@ -197,7 +232,7 @@ export function ClipEnvelopeOverlay({ clip, width, height }: Props) {
                 cy={cy}
                 r={HIT_R}
                 fill="transparent"
-                style={{ cursor: 'grab' }}
+                style={{ cursor: 'grab', pointerEvents: 'auto' }}
                 onMouseDown={(e) => startPointDrag(i, e)}
                 onContextMenu={(e) => onPointContextMenu(i, e)}
               />

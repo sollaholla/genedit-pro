@@ -182,8 +182,8 @@ function EnvelopeControls({
       {enabled && (
         <>
           <p className="text-[10px] leading-tight text-slate-500">
-            Double-click the clip&apos;s curve to add a point. Drag points to move them,
-            right-click for options.
+            Click the curve to add a point, drag points to move them,
+            drag segment midpoints to bend, and right-click for options.
           </p>
           {confirmingReset ? (
             <div className="flex items-center justify-between gap-2 rounded bg-surface-800 p-2">
