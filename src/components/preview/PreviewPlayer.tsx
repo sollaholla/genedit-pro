@@ -59,6 +59,12 @@ export function PreviewPlayer() {
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const prerolledRef = useRef<Set<string>>(new Set());
+  // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
+  // `currentTime = inSec - timeUntilActive` so after playing for
+  // `timeUntilActive` seconds muted, currentTime naturally arrives at inSec at
+  // the exact moment of handoff — avoiding a seek inside the active loop (which
+  // briefly silences audio and creates the "eeee---eeee" gap on snapped clips).
+  const hotPrimedSeekRef = useRef<Set<string>>(new Set());
   const prevReadinessRef = useRef<Record<string, boolean>>({});
   const lastReadinessPublishRef = useRef(0);
 
@@ -112,6 +118,8 @@ export function PreviewPlayer() {
         sourceNodes.current.delete(clipId);
         fadingOut.current.delete(clipId);
         fadingIn.current.delete(clipId);
+        hotPrimedSeekRef.current.delete(clipId);
+        prerolledRef.current.delete(clipId);
       }
     }
     for (const [clipId, el] of audioPool.current) {
@@ -125,6 +133,8 @@ export function PreviewPlayer() {
         sourceNodes.current.delete(clipId);
         fadingOut.current.delete(clipId);
         fadingIn.current.delete(clipId);
+        hotPrimedSeekRef.current.delete(clipId);
+        prerolledRef.current.delete(clipId);
       }
     }
 
@@ -265,12 +275,27 @@ export function PreviewPlayer() {
         // Keep decoder running just before handoff. Unmute video so audio flows
         // through the Web Audio graph (Chrome silences MediaElementSourceNode when
         // el.muted=true). GainNode stays at 0 so no audible output yet.
+        //
+        // CRITICAL: align currentTime to (inSec - timeUntilActive) the first frame
+        // we enter the hot-priming window, so playing forward for `timeUntilActive`
+        // seconds lands us on inSec at the boundary. Without this alignment the
+        // element would reach inSec + HOT_PRIMING_SEC by handoff, the active-loop
+        // seekIfNeeded would see >150ms drift, and the backward seek would briefly
+        // silence audio — the "eeee---eeee" gap the user hears on snapped clips.
         if (state.playing && timeUntilActive <= HOT_PRIMING_SEC && timeUntilActive >= 0) {
           hotPrimedIds.add(clip.id);
           const gn = gainNodes.current.get(clip.id);
           if (gn) gn.gain.value = 0;
           if (videoPool.current.has(clip.id)) {
-            (el as HTMLVideoElement).muted = false; // allow audio into Web Audio graph
+            (el as HTMLVideoElement).muted = false;
+          }
+
+          if (!hotPrimedSeekRef.current.has(clip.id)) {
+            const alignedStart = Math.max(0, clip.inSec - timeUntilActive);
+            if (el.readyState >= 1 && !el.seeking) {
+              try { el.currentTime = alignedStart; } catch { /* noop */ }
+              hotPrimedSeekRef.current.add(clip.id);
+            }
           }
           if (el.paused) el.play().catch(() => undefined);
         }
@@ -281,6 +306,14 @@ export function PreviewPlayer() {
         const c = proj.clips.find((cl) => cl.id === id);
         if (!c || c.startSec - t > PREROLL_SEC + 0.5 || t > c.startSec) {
           prerolledRef.current.delete(id);
+        }
+      }
+      // Reset hot-prime alignment markers when a clip moves past handoff or far
+      // away (e.g. user scrubbed backward into the pre-hot-prime range).
+      for (const id of hotPrimedSeekRef.current) {
+        const c = proj.clips.find((cl) => cl.id === id);
+        if (!c || t >= c.startSec || c.startSec - t > HOT_PRIMING_SEC + 0.1) {
+          hotPrimedSeekRef.current.delete(id);
         }
       }
 
