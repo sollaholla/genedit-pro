@@ -14,6 +14,7 @@ export function FullscreenScrubBar() {
   const project = useProjectStore((s) => s.project);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
+  const pause = usePlaybackStore((s) => s.pause);
   const assets = useMediaStore((s) => s.assets);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
 
@@ -116,6 +117,7 @@ export function FullscreenScrubBar() {
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    pause();
     const t = xToTime(e.clientX);
     setCurrentTime(t);
 
@@ -133,7 +135,7 @@ export function FullscreenScrubBar() {
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [xToTime, setCurrentTime, updatePreview]);
+  }, [xToTime, setCurrentTime, updatePreview, pause]);
 
   if (duration === 0) return null;
 

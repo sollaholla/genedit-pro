@@ -7,6 +7,7 @@ import { MediaImporter, type MediaImporterHandle } from '@/components/media/Medi
 import { Timeline } from '@/components/timeline/Timeline';
 import { PreviewPlayer } from '@/components/preview/PreviewPlayer';
 import { ExportDialog } from '@/components/export/ExportDialog';
+import { MasterBussPanel } from '@/components/audio/MasterBussPanel';
 import { useProjectStore } from '@/state/projectStore';
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
         }
         mediaPanel={<LeftPanel onImportClick={openImport} />}
         preview={<PreviewPlayer />}
+        rightPanel={<MasterBussPanel />}
         timeline={<Timeline />}
         statusBar={<StatusBar />}
       />

@@ -5,18 +5,25 @@ import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
 import { projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
+import {
+  getAudioContext,
+  getMasterGain,
+  resumeAudioContext,
+} from '@/lib/audio/context';
 import { PlayerControls } from './PlayerControls';
 import { FullscreenScrubBar } from './FullscreenScrubBar';
 
-function effectiveVolume(layer: ActiveLayer): number {
+function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
   const clipDur = Math.max(1e-6, layer.clip.outSec - layer.clip.inSec);
   const localT = Math.max(0, Math.min(1, (layer.sourceTimeSec - layer.clip.inSec) / clipDur));
-  const envMul = evalEnvelopeAt(layer.clip.volumeEnvelope, localT);
-  return master * envMul;
+  return master * evalEnvelopeAt(layer.clip.volumeEnvelope, localT);
 }
 
 type ElementPool = Map<string, HTMLMediaElement>;
+
+const FADE_OUT_MS = 80;
+const FADE_IN_MS = 40;
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -36,19 +43,30 @@ export function PreviewPlayer() {
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Pools keyed by CLIP id (not asset id). Overlapping clips of the same asset
-  // each need their own HTMLMediaElement, otherwise a single element's
-  // currentTime is fought over by multiple layers each frame, producing a
-  // rapid "flipping" effect in audio and video.
+
+  // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
+  // overlapping same-asset clips don't fight over currentTime.
   const videoPool = useRef<ElementPool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
-  const clipAssetRef = useRef<Map<string, string>>(new Map()); // clipId -> assetId that el.src is set to
-  const urlCache = useRef<Map<string, string>>(new Map()); // assetId -> object URL
+  // clipId → assetId that el.src is currently set to (for Replace detection)
+  const clipAssetRef = useRef<Map<string, string>>(new Map());
+  // clipId → GainNode connected to the master bus
+  const gainNodes = useRef<Map<string, GainNode>>(new Map());
+  // clipId → MediaElementAudioSourceNode (keep ref so it isn't GC'd)
+  const sourceNodes = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
+
+  const urlCache = useRef<Map<string, string>>(new Map()); // assetId → object URL
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const prerolledRef = useRef<Set<string>>(new Set());
   const prevReadinessRef = useRef<Record<string, boolean>>({});
   const lastReadinessPublishRef = useRef(0);
+
+  // Smooth transitions: track which clips are fading out/in to avoid pops.
+  const fadingOut = useRef<Map<string, { startTs: number; fromGain: number }>>(new Map());
+  const fadingIn = useRef<Map<string, { startTs: number; targetGain: number }>>(new Map());
+  const prevActiveAudioIds = useRef<Set<string>>(new Set());
+
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -69,14 +87,11 @@ export function PreviewPlayer() {
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
 
-  // Reconcile: one HTMLMediaElement per clip (not per asset). Shared blob URLs
-  // are cached per-asset in urlCache. Each clip's element uses the URL of its
-  // assetId; when the assetId changes (e.g. via Replace), we update el.src.
+  // Reconcile: one HTMLMediaElement + one GainNode per clip.
   useEffect(() => {
     let cancelled = false;
     const assetsById = new Map(assets.map((a) => [a.id, a]));
 
-    // Set of clip IDs that should currently exist in a pool.
     const wantedClipIds = new Set<string>();
     for (const clip of project.clips) {
       const asset = assetsById.get(clip.assetId);
@@ -91,6 +106,12 @@ export function PreviewPlayer() {
         (el as HTMLVideoElement).remove();
         videoPool.current.delete(clipId);
         clipAssetRef.current.delete(clipId);
+        gainNodes.current.get(clipId)?.disconnect();
+        gainNodes.current.delete(clipId);
+        sourceNodes.current.get(clipId)?.disconnect();
+        sourceNodes.current.delete(clipId);
+        fadingOut.current.delete(clipId);
+        fadingIn.current.delete(clipId);
       }
     }
     for (const [clipId, el] of audioPool.current) {
@@ -98,10 +119,16 @@ export function PreviewPlayer() {
         el.pause();
         audioPool.current.delete(clipId);
         clipAssetRef.current.delete(clipId);
+        gainNodes.current.get(clipId)?.disconnect();
+        gainNodes.current.delete(clipId);
+        sourceNodes.current.get(clipId)?.disconnect();
+        sourceNodes.current.delete(clipId);
+        fadingOut.current.delete(clipId);
+        fadingIn.current.delete(clipId);
       }
     }
 
-    // Revoke URLs for assets that are fully gone.
+    // Revoke URLs for gone assets.
     const aliveAssetIds = new Set(assets.map((a) => a.id));
     for (const [assetId, url] of urlCache.current) {
       if (!aliveAssetIds.has(assetId)) {
@@ -120,7 +147,6 @@ export function PreviewPlayer() {
         const existing = pool.get(clip.id);
         const previousAssetId = clipAssetRef.current.get(clip.id);
 
-        // Look up or create the blob URL for this asset.
         let url = urlCache.current.get(asset.id);
         if (!url) {
           const u = await objectUrlFor(asset.id);
@@ -131,25 +157,42 @@ export function PreviewPlayer() {
         if (cancelled) return;
 
         if (!existing) {
+          let el: HTMLMediaElement;
           if (isAudio) {
             const a = new Audio();
             a.preload = 'auto';
             a.src = url;
             pool.set(clip.id, a);
+            el = a;
           } else {
             const v = document.createElement('video');
             v.preload = 'auto';
             v.playsInline = true;
-            v.muted = true;
+            v.muted = true; // starts muted; unmuted by RAF when active for audio
             v.src = url;
             v.className = 'absolute inset-0 h-full w-full object-contain';
             v.style.display = 'none';
             videoHostRef.current?.appendChild(v);
             pool.set(clip.id, v);
+            el = v;
           }
           clipAssetRef.current.set(clip.id, asset.id);
+
+          // Wire up to the Web Audio graph.
+          try {
+            const ctx = getAudioContext();
+            const source = ctx.createMediaElementSource(el);
+            const gain = ctx.createGain();
+            gain.gain.value = 0; // silent until activated
+            source.connect(gain);
+            gain.connect(getMasterGain());
+            sourceNodes.current.set(clip.id, source);
+            gainNodes.current.set(clip.id, gain);
+          } catch {
+            // Fallback: element won't route through Web Audio; volume stays at el.volume
+          }
         } else if (previousAssetId !== asset.id) {
-          // Asset was swapped on this clip (Replace dialog).
+          // Asset replaced on this clip.
           existing.src = url;
           clipAssetRef.current.set(clip.id, asset.id);
         }
@@ -169,6 +212,7 @@ export function PreviewPlayer() {
       const total = projectDurationSec(proj);
 
       if (state.playing) {
+        resumeAudioContext();
         const dt = (ts - (lastTickRef.current ?? ts)) / 1000;
         const next = Math.min(total, state.currentTimeSec + dt);
         state.setCurrentTime(next);
@@ -176,11 +220,17 @@ export function PreviewPlayer() {
       }
       lastTickRef.current = ts;
 
+      // Apply master volume to the master GainNode each frame.
+      const masterVol = state.masterVolume;
+      const masterGain = getMasterGain();
+      if (Math.abs(masterGain.gain.value - masterVol) > 0.001) {
+        masterGain.gain.setTargetAtTime(masterVol, getAudioContext().currentTime, 0.01);
+      }
+
       const t = usePlaybackStore.getState().currentTimeSec;
       const frame = resolveFrame(proj, t);
 
       // ---- VIDEO DISPLAY ----
-      // Show only the top-most active video clip's element; hide all others.
       const nextVideoClipId = frame.video?.clip.id ?? null;
       for (const [clipId, el] of videoPool.current) {
         (el as HTMLVideoElement).style.display = clipId === nextVideoClipId ? '' : 'none';
@@ -192,13 +242,10 @@ export function PreviewPlayer() {
       }
 
       // ---- AUDIO MIX + PREROLL ----
-      const activeClipIds = new Set<string>();
-      for (const layer of frame.audios) activeClipIds.add(layer.clip.id);
+      const activeAudioIds = new Set<string>();
+      for (const layer of frame.audios) activeAudioIds.add(layer.clip.id);
 
-      // Preroll / hot-priming window: clips starting within the next 2s should
-      // be seeked to their inSec so the decoder has buffered data ready. Clips
-      // within 0.3s should be kept playing muted so they don't cold-start at
-      // the handoff (this is what causes the pop/frame skip at clip boundaries).
+      // Preroll: seek upcoming clips so their decoder buffer is warm.
       const PREROLL_SEC = 2.0;
       const HOT_PRIMING_SEC = 0.3;
       const upcoming = upcomingClips(proj, t, PREROLL_SEC);
@@ -208,7 +255,6 @@ export function PreviewPlayer() {
         if (!el) continue;
         const timeUntilActive = clip.startSec - t;
 
-        // Seek once to the clip's inSec so its buffer lines up.
         if (!prerolledRef.current.has(clip.id) && el.readyState >= 1 && !el.seeking) {
           if (Math.abs(el.currentTime - clip.inSec) > 0.2) {
             try { el.currentTime = clip.inSec; } catch { /* noop */ }
@@ -216,19 +262,15 @@ export function PreviewPlayer() {
           prerolledRef.current.add(clip.id);
         }
 
-        // Keep decoder warm just before handoff: play muted while we're close.
+        // Keep decoder running muted just before handoff.
         if (state.playing && timeUntilActive <= HOT_PRIMING_SEC && timeUntilActive >= 0) {
           hotPrimedIds.add(clip.id);
-          el.muted = true;
-          if (videoPool.current.has(clip.id)) {
-            (el as HTMLVideoElement).muted = true;
-          }
+          // Gain stays at 0 while hot-primed; gainNode was already set to 0 at creation.
           if (el.paused) el.play().catch(() => undefined);
         }
       }
 
-      // Forget preroll markers for clips that are now far in the future (or past) so
-      // scrubbing backward / jumping around re-seeks the decoder buffer.
+      // Reset preroll markers for clips that moved out of the lookahead window.
       for (const id of prerolledRef.current) {
         const c = proj.clips.find((cl) => cl.id === id);
         if (!c || c.startSec - t > PREROLL_SEC + 0.5 || t > c.startSec) {
@@ -236,20 +278,58 @@ export function PreviewPlayer() {
         }
       }
 
-      // Mute + pause any elements not active and not hot-primed.
+      // Snapshot previous active set BEFORE updating it, so we can detect entries/exits.
+      const prevIds = prevActiveAudioIds.current;
+
+      // ---- FADE-OUT for clips leaving active ----
+      for (const id of prevIds) {
+        if (!activeAudioIds.has(id) && !fadingOut.current.has(id)) {
+          const gn = gainNodes.current.get(id);
+          if (gn) {
+            fadingOut.current.set(id, { startTs: ts, fromGain: gn.gain.value });
+          }
+        }
+      }
+      // Update for next frame.
+      prevActiveAudioIds.current = new Set(activeAudioIds);
+
+      // ---- PROCESS FADING-OUT clips ----
+      const toRemoveFromFade: string[] = [];
+      for (const [id, fadeInfo] of fadingOut.current) {
+        const el = videoPool.current.get(id) ?? audioPool.current.get(id);
+        const gn = gainNodes.current.get(id);
+        if (!el || !gn) { toRemoveFromFade.push(id); continue; }
+
+        const alpha = Math.min(1, (ts - fadeInfo.startTs) / FADE_OUT_MS);
+        gn.gain.value = fadeInfo.fromGain * (1 - alpha);
+
+        if (alpha >= 1) {
+          // Fade complete: silence and pause.
+          gn.gain.value = 0;
+          if (!el.paused) el.pause();
+          toRemoveFromFade.push(id);
+        }
+      }
+      for (const id of toRemoveFromFade) fadingOut.current.delete(id);
+
+      // ---- SILENCE + PAUSE fully inactive elements ----
       for (const [clipId, el] of videoPool.current) {
-        if (!activeClipIds.has(clipId) && !hotPrimedIds.has(clipId)) {
+        if (!activeAudioIds.has(clipId) && !fadingOut.current.has(clipId) && !hotPrimedIds.has(clipId)) {
+          const gn = gainNodes.current.get(clipId);
+          if (gn) gn.gain.value = 0;
           el.muted = true;
           if (!el.paused) el.pause();
         }
       }
       for (const [clipId, el] of audioPool.current) {
-        if (!activeClipIds.has(clipId) && !hotPrimedIds.has(clipId) && !el.paused) {
-          el.pause();
+        if (!activeAudioIds.has(clipId) && !fadingOut.current.has(clipId) && !hotPrimedIds.has(clipId)) {
+          const gn = gainNodes.current.get(clipId);
+          if (gn) gn.gain.value = 0;
+          if (!el.paused) el.pause();
         }
       }
 
-      // Drive each active audio layer using its own per-clip element.
+      // ---- DRIVE ACTIVE AUDIO LAYERS ----
       for (const layer of frame.audios) {
         const clipId = layer.clip.id;
         const isVideoEl = videoPool.current.has(clipId);
@@ -258,8 +338,31 @@ export function PreviewPlayer() {
           : audioPool.current.get(clipId);
         if (!el) continue;
 
-        const vol = effectiveVolume(layer);
-        el.volume = Math.max(0, Math.min(1, vol));
+        const targetGain = Math.max(0, clipEffectiveGain(layer));
+        const gn = gainNodes.current.get(clipId);
+
+        // Fade-in: ramp gain from 0 if this clip just entered active (not in previous frame's set).
+        if (!prevIds.has(clipId) && !fadingIn.current.has(clipId) && !fadingOut.current.has(clipId)) {
+          fadingIn.current.set(clipId, { startTs: ts, targetGain });
+          if (gn) gn.gain.value = 0;
+        }
+
+        if (gn) {
+          const fadeInInfo = fadingIn.current.get(clipId);
+          if (fadeInInfo) {
+            const alpha = Math.min(1, (ts - fadeInInfo.startTs) / FADE_IN_MS);
+            gn.gain.value = fadeInInfo.targetGain * alpha;
+            if (alpha >= 1) {
+              gn.gain.value = targetGain;
+              fadingIn.current.delete(clipId);
+            }
+          } else {
+            gn.gain.value = targetGain;
+          }
+        } else {
+          // No Web Audio — fall back to element volume (capped at 1).
+          el.volume = Math.max(0, Math.min(1, targetGain));
+        }
 
         if (isVideoEl) (el as HTMLVideoElement).muted = false;
 

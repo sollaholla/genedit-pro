@@ -22,6 +22,7 @@ function niceStep(pxPerSec: number): number {
 }
 
 export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft, onScrub }: Props) {
+  const pause = usePlaybackStore((s) => s.pause);
   const step = niceStep(pxPerSec);
   const visibleEndSec = (scrollLeft + viewportWidth) / pxPerSec + step;
   const displayDuration = Math.max(durationSec + 5, visibleEndSec);
@@ -41,6 +42,7 @@ export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft
       className="relative shrink-0 border-b border-surface-700 bg-surface-900 no-select"
       style={{ height: RULER_HEIGHT_PX, width: displayDuration * pxPerSec }}
       onMouseDown={(e) => {
+        pause();
         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
         const move = (ev: MouseEvent) => {
           const x = ev.clientX - rect.left;
