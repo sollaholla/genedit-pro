@@ -12,6 +12,7 @@ type Props = {
   onDropAsset: (trackId: string, assetId: string, startSec: number) => void;
   onClipBodyMouseDown: (clipId: string, e: React.MouseEvent) => void;
   onClipTrimMouseDown: (clipId: string, side: ClipDragSide, e: React.MouseEvent) => void;
+  onClipContextMenu: (clipId: string, e: React.MouseEvent) => void;
   onClipSelect: (clipId: string | null) => void;
 };
 
@@ -24,6 +25,7 @@ export function TimelineTrack({
   onDropAsset,
   onClipBodyMouseDown,
   onClipTrimMouseDown,
+  onClipContextMenu,
   onClipSelect,
 }: Props) {
   const assets = useMediaStore((s) => s.assets);
@@ -66,6 +68,7 @@ export function TimelineTrack({
           selected={selectedClipId === clip.id}
           onBodyMouseDown={onClipBodyMouseDown}
           onTrimMouseDown={onClipTrimMouseDown}
+          onContextMenu={onClipContextMenu}
         />
       ))}
     </div>

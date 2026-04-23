@@ -22,8 +22,10 @@ import { useMediaStore } from '@/state/mediaStore';
 import {
   addClip,
   addTrack,
+  duplicateClip,
   extractAudioFromClip,
   moveClip,
+  pasteClipFrom,
   projectDurationSec,
   removeClip,
   sortedTracks,
@@ -31,6 +33,8 @@ import {
   trimClipLeft,
   trimClipRight,
 } from '@/lib/timeline/operations';
+import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
+import { ReplaceClipDialog } from './ReplaceClipDialog';
 
 type DragOverlay = {
   clipId: string;
@@ -63,6 +67,10 @@ export function Timeline() {
   const [viewportWidth, setViewportWidth] = useState(1200);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [dragOverlay, setDragOverlay] = useState<DragOverlay | null>(null);
+  const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
+  const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
+
+  const setClipboard = usePlaybackStore((s) => s.setClipboard);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -119,6 +127,26 @@ export function Timeline() {
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
       if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
 
+      if (mod && (e.key === 'c' || e.key === 'C')) {
+        if (!selectedClipId) return;
+        const source = useProjectStore.getState().project.clips.find((c) => c.id === selectedClipId);
+        if (source) setClipboard(source);
+        return;
+      }
+      if (mod && (e.key === 'v' || e.key === 'V')) {
+        const source = usePlaybackStore.getState().clipboard;
+        if (!source) return;
+        // Paste onto the same track, at the playhead.
+        update((p) => pasteClipFrom(p, source, source.trackId, currentTime));
+        return;
+      }
+      if (mod && (e.key === 'd' || e.key === 'D')) {
+        if (!selectedClipId) return;
+        e.preventDefault();
+        update((p) => duplicateClip(p, selectedClipId));
+        return;
+      }
+
       if (e.key === 's' || e.key === 'S') {
         if (!selectedClipId) return;
         update((p) => splitClipAt(p, selectedClipId, currentTime));
@@ -130,7 +158,37 @@ export function Timeline() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, undo, redo]);
+  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard]);
+
+  // ---- Clip right-click context menu ----
+  const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    selectClip(clipId);
+    setClipMenu({ x: e.clientX, y: e.clientY, clipId });
+  }, [selectClip]);
+
+  const handleClipMenuAction = useCallback((action: ClipMenuAction) => {
+    if (!clipMenu) return;
+    const { clipId } = clipMenu;
+    switch (action) {
+      case 'duplicate':
+        update((p) => duplicateClip(p, clipId));
+        break;
+      case 'copy': {
+        const source = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
+        if (source) setClipboard(source);
+        break;
+      }
+      case 'replace':
+        setReplaceClipId(clipId);
+        break;
+      case 'delete':
+        update((p) => removeClip(p, clipId));
+        if (selectedClipId === clipId) selectClip(null);
+        break;
+    }
+  }, [clipMenu, update, selectClip, selectedClipId, setClipboard]);
 
   // ---- Clip body drag (cross-track) ----
   const handleClipBodyMouseDown = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -276,6 +334,9 @@ export function Timeline() {
     return `${track.kind === 'video' ? 'V' : 'A'}${sameKind.findIndex((x) => x.id === trackId) + 1}`;
   };
 
+  const replaceClip = replaceClipId ? project.clips.find((c) => c.id === replaceClipId) : null;
+  const replaceAssetKind = replaceClip ? assetById.get(replaceClip.assetId)?.kind : undefined;
+
   // Ghost clip for audio extraction preview
   const ghostClip = dragOverlay?.isAudioExtraction
     ? project.clips.find((c) => c.id === dragOverlay.clipId)
@@ -344,6 +405,7 @@ export function Timeline() {
                   onDropAsset={handleDropAsset}
                   onClipBodyMouseDown={handleClipBodyMouseDown}
                   onClipTrimMouseDown={handleClipTrimMouseDown}
+                  onClipContextMenu={handleClipContextMenu}
                   onClipSelect={selectClip}
                 />
               ))}
@@ -368,6 +430,23 @@ export function Timeline() {
           </div>
         </div>
       </div>
+
+      {clipMenu && (
+        <ClipContextMenu
+          x={clipMenu.x}
+          y={clipMenu.y}
+          onPick={handleClipMenuAction}
+          onClose={() => setClipMenu(null)}
+        />
+      )}
+
+      {replaceClip && replaceAssetKind && (
+        <ReplaceClipDialog
+          clip={replaceClip}
+          requiredKind={replaceAssetKind}
+          onClose={() => setReplaceClipId(null)}
+        />
+      )}
     </div>
   );
 }

@@ -20,6 +20,7 @@ type Props = {
   overrideStartSec?: number;
   onBodyMouseDown: (clipId: string, e: React.MouseEvent) => void;
   onTrimMouseDown: (clipId: string, side: ClipDragSide, e: React.MouseEvent) => void;
+  onContextMenu: (clipId: string, e: React.MouseEvent) => void;
 };
 
 export function TimelineClip({
@@ -33,6 +34,7 @@ export function TimelineClip({
   overrideStartSec,
   onBodyMouseDown,
   onTrimMouseDown,
+  onContextMenu,
 }: Props) {
   const startSec = overrideStartSec ?? clip.startSec;
   const duration = clip.outSec - clip.inSec;
@@ -62,6 +64,7 @@ export function TimelineClip({
         if (role === 'trim-l' || role === 'trim-r') return;
         onBodyMouseDown(clip.id, e);
       }}
+      onContextMenu={ghost ? undefined : (e) => onContextMenu(clip.id, e)}
       data-clip-id={clip.id}
     >
       {!ghost && (

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { Clip } from '@/types';
 import { DEFAULT_PX_PER_SEC, clampPxPerSec } from '@/lib/timeline/geometry';
 
 type Selection = { kind: 'clip'; id: string } | { kind: 'none' };
@@ -8,6 +9,7 @@ type PlaybackState = {
   currentTimeSec: number;
   pxPerSec: number;
   selection: Selection;
+  clipboard: Clip | null;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -15,6 +17,7 @@ type PlaybackState = {
   setPxPerSec: (v: number) => void;
   zoomBy: (delta: number) => void;
   selectClip: (id: string | null) => void;
+  setClipboard: (clip: Clip | null) => void;
 };
 
 export const usePlaybackStore = create<PlaybackState>((set, get) => ({
@@ -22,6 +25,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   currentTimeSec: 0,
   pxPerSec: DEFAULT_PX_PER_SEC,
   selection: { kind: 'none' },
+  clipboard: null,
   play: () => set({ playing: true }),
   pause: () => set({ playing: false }),
   toggle: () => set({ playing: !get().playing }),
@@ -29,4 +33,5 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   setPxPerSec: (v) => set({ pxPerSec: clampPxPerSec(v) }),
   zoomBy: (delta) => set({ pxPerSec: clampPxPerSec(get().pxPerSec * (1 + delta)) }),
   selectClip: (id) => set({ selection: id ? { kind: 'clip', id } : { kind: 'none' } }),
+  setClipboard: (clip) => set({ clipboard: clip }),
 }));

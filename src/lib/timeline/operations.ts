@@ -182,6 +182,66 @@ export function setClipProp<K extends keyof Clip>(
   };
 }
 
+/** Place a duplicate of `clipId` immediately after the original on the same track. */
+export function duplicateClip(project: Project, clipId: string): Project {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return project;
+  const duration = clip.outSec - clip.inSec;
+  const newClip: Clip = {
+    ...clip,
+    id: nanoid(8),
+    startSec: clip.startSec + duration,
+    volumeEnvelope: clip.volumeEnvelope
+      ? { ...clip.volumeEnvelope, points: clip.volumeEnvelope.points.map((p) => ({ ...p })) }
+      : undefined,
+  };
+  return { ...project, clips: [...project.clips, newClip] };
+}
+
+/**
+ * Paste a previously-copied clip onto `trackId` at `startSec`. The asset and
+ * source trim points are preserved; envelope is deep-copied.
+ */
+export function pasteClipFrom(
+  project: Project,
+  source: Clip,
+  trackId: string,
+  startSec: number,
+): Project {
+  const track = project.tracks.find((t) => t.id === trackId);
+  if (!track) return project;
+  const newClip: Clip = {
+    ...source,
+    id: nanoid(8),
+    trackId,
+    startSec: Math.max(0, startSec),
+    volumeEnvelope: source.volumeEnvelope
+      ? { ...source.volumeEnvelope, points: source.volumeEnvelope.points.map((p) => ({ ...p })) }
+      : undefined,
+  };
+  return { ...project, clips: [...project.clips, newClip] };
+}
+
+/** Replace a clip's underlying asset and source-trim points; timeline position unchanged. */
+export function replaceClipAsset(
+  project: Project,
+  clipId: string,
+  newAssetId: string,
+  newInSec: number,
+  newOutSec: number,
+): Project {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return project;
+  const inClamped = Math.max(0, Math.min(newInSec, newOutSec - MIN_CLIP_DURATION));
+  const outClamped = Math.max(inClamped + MIN_CLIP_DURATION, newOutSec);
+  return {
+    ...project,
+    clips: project.clips.map((c) =>
+      c.id === clipId ? { ...c, assetId: newAssetId, inSec: inClamped, outSec: outClamped } : c,
+    ),
+  };
+}
+
 /**
  * Creates an audio-only copy of a video clip on a target audio track,
  * keeping the original clip in place. Used when the user drags a video
