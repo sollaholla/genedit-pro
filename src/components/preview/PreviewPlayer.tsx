@@ -133,8 +133,10 @@ export function PreviewPlayer() {
         const el = videoPool.current.get(nextVideoAssetId) as HTMLVideoElement | undefined;
         if (el && frame.video) {
           const target = frame.video.sourceTimeSec;
+          if (!state.playing && !el.paused) el.pause();
           const drift = Math.abs(el.currentTime - target);
-          if (drift > 0.08 || !state.playing) {
+          const threshold = state.playing ? 0.15 : 0.015;
+          if (drift > threshold && !el.seeking && el.readyState >= 1) {
             try {
               el.currentTime = target;
             } catch {
@@ -142,7 +144,6 @@ export function PreviewPlayer() {
             }
           }
           if (state.playing && el.paused) el.play().catch(() => undefined);
-          if (!state.playing && !el.paused) el.pause();
         }
       }
 
@@ -152,29 +153,29 @@ export function PreviewPlayer() {
         for (const [id, el] of audioPool.current) {
           if (id !== nextAudioAssetId) el.pause();
         }
-        // Mute the video element if the audio is coming from its own track
-        for (const [id, el] of videoPool.current) {
-          if (id === nextVideoAssetId && nextAudioAssetId && id !== nextAudioAssetId) {
-            el.muted = true;
-          } else if (id === nextVideoAssetId) {
-            el.muted = !!nextAudioAssetId && nextAudioAssetId !== id;
-          }
-        }
         lastFrameRef.current.audioAssetId = nextAudioAssetId;
       }
 
-      // If the audio source == the video source, let the <video> element play audio.
-      const audioSharesVideo = nextAudioAssetId && nextAudioAssetId === nextVideoAssetId;
+      // Audio routing:
+      //   - If a dedicated audio clip matches the active video asset, let the <video>
+      //     element play the sound (single source of truth, no A/V drift).
+      //   - If there's no audio clip at all, the video clip still plays its own audio
+      //     (matches user expectations: "MP4s should have sound").
+      //   - Otherwise route audio through the audio pool element and mute the video.
+      const audioSharesVideo = !!nextAudioAssetId && nextAudioAssetId === nextVideoAssetId;
+      const videoProvidesOwnAudio = !nextAudioAssetId && !!nextVideoAssetId;
       if (nextVideoAssetId) {
         const videoEl = videoPool.current.get(nextVideoAssetId);
-        if (videoEl) videoEl.muted = !audioSharesVideo;
+        if (videoEl) videoEl.muted = !(audioSharesVideo || videoProvidesOwnAudio);
       }
       if (nextAudioAssetId && !audioSharesVideo) {
         const el = audioPool.current.get(nextAudioAssetId) ?? videoPool.current.get(nextAudioAssetId);
         if (el && frame.audio) {
           const target = frame.audio.sourceTimeSec;
+          if (!state.playing && !el.paused) el.pause();
           const drift = Math.abs(el.currentTime - target);
-          if (drift > 0.08 || !state.playing) {
+          const threshold = state.playing ? 0.15 : 0.015;
+          if (drift > threshold && !el.seeking && el.readyState >= 1) {
             try {
               el.currentTime = target;
             } catch {
@@ -182,7 +183,6 @@ export function PreviewPlayer() {
             }
           }
           if (state.playing && el.paused) el.play().catch(() => undefined);
-          if (!state.playing && !el.paused) el.pause();
         }
       }
 
