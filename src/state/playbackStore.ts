@@ -13,6 +13,8 @@ type PlaybackState = {
    *  (readyState >= HAVE_FUTURE_DATA) to play without stutter. Updated by
    *  PreviewPlayer each RAF frame, diff-guarded so renders are rare. */
   clipReadiness: Record<string, boolean>;
+  /** Overall output gain (0–2). Applied at the master GainNode in PreviewPlayer. */
+  masterVolume: number;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -27,6 +29,7 @@ type PlaybackState = {
   setClipSelection: (ids: string[]) => void;
   setClipboard: (clip: Clip | null) => void;
   setClipReadiness: (readiness: Record<string, boolean>) => void;
+  setMasterVolume: (v: number) => void;
 };
 
 export const usePlaybackStore = create<PlaybackState>((set, get) => ({
@@ -36,6 +39,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   selectedClipIds: [],
   clipboard: null,
   clipReadiness: {},
+  masterVolume: 1,
   play: () => set({ playing: true }),
   pause: () => set({ playing: false }),
   toggle: () => set({ playing: !get().playing }),
@@ -52,4 +56,5 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   setClipSelection: (ids) => set({ selectedClipIds: ids }),
   setClipboard: (clip) => set({ clipboard: clip }),
   setClipReadiness: (readiness) => set({ clipReadiness: readiness }),
+  setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(2, v)) }),
 }));

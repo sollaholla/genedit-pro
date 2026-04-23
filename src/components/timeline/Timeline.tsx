@@ -442,9 +442,7 @@ export function Timeline() {
             <Scissors size={12} /> Split
           </button>
         </div>
-        <div className="text-[11px] text-slate-400">
-          Cmd/Ctrl-scroll to zoom · S split · Del remove · ⌘Z undo · ⌘⇧Z redo
-        </div>
+        <ShortcutHints />
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -540,6 +538,41 @@ export function Timeline() {
           onClose={() => setReplaceClipId(null)}
         />
       )}
+    </div>
+  );
+}
+
+// Detect Mac once at module level so there are no per-render allocations.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+const MOD = IS_MAC ? '⌘' : 'Ctrl';
+const ALT = IS_MAC ? '⌥' : 'Alt';
+
+function Key({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="inline-flex items-center justify-center rounded border border-surface-500 bg-surface-700 px-1 py-px font-sans text-[10px] text-slate-200 shadow-[0_1px_0_0_rgba(0,0,0,0.5)]">
+      {children}
+    </kbd>
+  );
+}
+
+function Hint({ keys, label }: { keys: React.ReactNode[]; label: string }) {
+  return (
+    <span className="flex items-center gap-0.5">
+      {keys.map((k, i) => <Key key={i}>{k}</Key>)}
+      <span className="ml-1 text-slate-500">{label}</span>
+    </span>
+  );
+}
+
+function ShortcutHints() {
+  return (
+    <div className="flex items-center gap-3 text-[11px]">
+      <Hint keys={[MOD, 'scroll']} label="zoom" />
+      <Hint keys={['S']} label="split" />
+      <Hint keys={['Del']} label="remove" />
+      <Hint keys={[MOD, 'Z']} label="undo" />
+      <Hint keys={[MOD, IS_MAC ? '⇧' : 'Shift', 'Z']} label="redo" />
+      <Hint keys={[ALT, '↕ drag']} label="change track" />
     </div>
   );
 }
