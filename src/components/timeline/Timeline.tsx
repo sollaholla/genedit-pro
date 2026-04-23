@@ -24,8 +24,10 @@ import {
   addTrack,
   duplicateClip,
   extractAudioFromClip,
+  insertTrack,
   moveClip,
   moveClipsBy,
+  moveTrackBy,
   pasteClipFrom,
   projectDurationSec,
   removeClip,
@@ -450,7 +452,17 @@ export function Timeline() {
         <div className="shrink-0" style={{ width: TRACK_HEADER_WIDTH_PX }}>
           <div className="border-b border-r border-surface-700 bg-surface-900" style={{ height: RULER_HEIGHT_PX }} />
           {tracks.map((t) => (
-            <TrackHeader key={`h-${t.id}`} track={t} label={labelForTrack(t.id)} />
+            <TrackHeader
+              key={`h-${t.id}`}
+              track={t}
+              label={labelForTrack(t.id)}
+              canMoveUp={t.index > 0}
+              canMoveDown={t.index < tracks.length - 1}
+              onMoveUp={() => update((p) => moveTrackBy(p, t.id, -1))}
+              onMoveDown={() => update((p) => moveTrackBy(p, t.id, 1))}
+              onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
+              onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
+            />
           ))}
         </div>
 
