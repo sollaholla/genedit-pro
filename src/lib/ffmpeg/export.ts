@@ -3,6 +3,7 @@ import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { getBlob } from '@/lib/media/storage';
 import { projectDurationSec } from '@/lib/timeline/operations';
 import { resolveFrame } from '@/lib/playback/engine';
+import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { getFFmpeg } from './client';
 
 type Segment = {
@@ -76,6 +77,53 @@ function segmentVideoFilter(width: number, height: number, fps: number): string 
     `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,` +
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`
   );
+}
+
+/**
+ * Build an FFmpeg audio filter that applies master volume and the volume
+ * envelope to the given audio clip for this segment. Returns null if no
+ * filter is needed (master=1 and no enabled envelope).
+ */
+function segmentAudioFilter(clip: Clip, segStartSec: number, segEndSec: number): string | null {
+  const master = clip.volume ?? 1;
+  const env = clip.volumeEnvelope;
+  const hasEnv = !!env && env.enabled && env.points.length >= 2;
+
+  if (!hasEnv) {
+    if (Math.abs(master - 1) < 1e-4) return null;
+    return `volume=${master.toFixed(4)}`;
+  }
+
+  const clipDur = Math.max(1e-6, clip.outSec - clip.inSec);
+  const segDur = Math.max(1e-6, segEndSec - segStartSec);
+  // Sample the envelope at N points along the segment, then emit a piecewise
+  // linear expression evaluated each frame. N=24 is plenty given the curve is
+  // already smooth and segments are short.
+  const N = 24;
+  const samples: { t: number; v: number }[] = [];
+  for (let i = 0; i <= N; i++) {
+    const tau = (i / N) * segDur;
+    const sourceTime = clip.inSec + (segStartSec - clip.startSec) + tau;
+    const localT = Math.max(0, Math.min(1, (sourceTime - clip.inSec) / clipDur));
+    const envV = evalEnvelopeAt(env, localT);
+    samples.push({ t: tau, v: Math.max(0, master * envV) });
+  }
+
+  // Build a nested if() expression, innermost = last sample's value.
+  let expr = samples[N]!.v.toFixed(5);
+  for (let i = N - 1; i >= 0; i--) {
+    const s0 = samples[i]!;
+    const s1 = samples[i + 1]!;
+    const t0 = s0.t.toFixed(5);
+    const dt = Math.max(1e-5, s1.t - s0.t).toFixed(5);
+    const v0 = s0.v.toFixed(5);
+    const dv = (s1.v - s0.v).toFixed(5);
+    expr = `if(lt(t,${s1.t.toFixed(5)}),${v0}+(${dv})*(t-${t0})/${dt},${expr})`;
+  }
+
+  // Wrap in single quotes so the filtergraph parser treats commas inside the
+  // expression as literal (not as filter-chain separators).
+  return `volume=eval=frame:volume='${expr}'`;
 }
 
 export async function exportProject(
@@ -179,6 +227,11 @@ export async function exportProject(
       args.push('-map', `${videoInputIndex}:v:0`);
       args.push('-map', `${audioInputIndex}:a:0?`);
       args.push('-vf', vFilter);
+      // Apply master volume + envelope to the mapped audio stream, if any.
+      if (seg.audioLayer) {
+        const aFilter = segmentAudioFilter(seg.audioLayer.clip, seg.startSec, seg.endSec);
+        if (aFilter) args.push('-af', aFilter);
+      }
       args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
       args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
       args.push('-video_track_timescale', '90000');

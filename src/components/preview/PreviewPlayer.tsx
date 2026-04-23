@@ -34,6 +34,7 @@ export function PreviewPlayer() {
   const pause = usePlaybackStore((s) => s.pause);
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const videoPool = useRef<ElementPool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
   const urlCache = useRef<Map<string, string>>(new Map());
@@ -41,6 +42,21 @@ export function PreviewPlayer() {
   const prevHasVideoRef = useRef(false);
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined);
+    } else {
+      void containerRef.current?.requestFullscreen().catch(() => undefined);
+    }
+  };
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
 
@@ -201,17 +217,28 @@ export function PreviewPlayer() {
       else if (e.key === 'End') { e.preventDefault(); setCurrentTime(duration); }
       else if (e.key === ',' || e.key === '<') { e.preventDefault(); setCurrentTime(Math.max(0, currentTime - 1 / project.fps)); }
       else if (e.key === '.' || e.key === '>') { e.preventDefault(); setCurrentTime(Math.min(duration, currentTime + 1 / project.fps)); }
+      else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFullscreen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [currentTime, duration, project.fps, setCurrentTime]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-4">
+    <div
+      ref={containerRef}
+      className={`flex h-full flex-col bg-black ${isFullscreen ? 'preview-fullscreen' : ''}`}
+    >
+      <div
+        className={`flex min-h-0 flex-1 items-center justify-center bg-black ${
+          isFullscreen ? '' : 'p-4'
+        }`}
+      >
         <div
-          className="relative aspect-video w-full max-w-full overflow-hidden rounded-md bg-black ring-1 ring-surface-700"
-          style={{ maxHeight: '100%' }}
+          className={`relative w-full max-w-full overflow-hidden bg-black ${
+            isFullscreen ? 'h-full' : 'aspect-video rounded-md ring-1 ring-surface-700'
+          }`}
+          style={isFullscreen ? undefined : { maxHeight: '100%' }}
+          onDoubleClick={toggleFullscreen}
         >
           <div ref={videoHostRef} className="absolute inset-0" />
           {!hasActiveVideo && (
@@ -221,7 +248,7 @@ export function PreviewPlayer() {
           )}
         </div>
       </div>
-      <PlayerControls />
+      <PlayerControls isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
     </div>
   );
 }

@@ -1,10 +1,24 @@
-import { ChevronFirst, ChevronLast, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
+import {
+  ChevronFirst,
+  ChevronLast,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
+  Pause,
+  Play,
+} from 'lucide-react';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { projectDurationSec } from '@/lib/timeline/operations';
 import { formatTimecode } from '@/lib/timeline/geometry';
 
-export function PlayerControls() {
+type Props = {
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
+};
+
+export function PlayerControls({ isFullscreen, onToggleFullscreen }: Props) {
   const playing = usePlaybackStore((s) => s.playing);
   const toggle = usePlaybackStore((s) => s.toggle);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
@@ -54,9 +68,18 @@ export function PlayerControls() {
           <ChevronLast size={16} />
         </button>
       </div>
-      <div className="font-mono text-xs tabular-nums text-slate-300">
-        {formatTimecode(currentTime, fps)} <span className="text-slate-500">/</span>{' '}
-        {formatTimecode(duration, fps)}
+      <div className="flex items-center gap-3">
+        <div className="font-mono text-xs tabular-nums text-slate-300">
+          {formatTimecode(currentTime, fps)} <span className="text-slate-500">/</span>{' '}
+          {formatTimecode(duration, fps)}
+        </div>
+        <button
+          className="rounded p-1.5 text-slate-300 hover:bg-surface-700"
+          onClick={onToggleFullscreen}
+          title={isFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+        >
+          {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        </button>
       </div>
     </div>
   );
