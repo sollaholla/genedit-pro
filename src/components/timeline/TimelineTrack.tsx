@@ -43,6 +43,10 @@ export function TimelineTrack({
         const assetId = e.dataTransfer.getData('application/x-genedit-asset');
         if (!assetId) return;
         e.preventDefault();
+        // Video assets cannot be dropped directly onto audio tracks from the media bin.
+        // Audio extraction happens by dragging an existing video clip from a video track.
+        const asset = assetById.get(assetId);
+        if (track.kind === 'audio' && asset?.kind === 'video') return;
         const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
         const startSec = Math.max(0, pxToTime(e.clientX - rect.left, pxPerSec));
         onDropAsset(track.id, assetId, startSec);

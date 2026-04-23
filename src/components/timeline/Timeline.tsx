@@ -23,7 +23,6 @@ import {
   addClip,
   addTrack,
   extractAudioFromClip,
-  isAssetCompatibleWithTrack,
   moveClip,
   projectDurationSec,
   removeClip,
@@ -145,12 +144,12 @@ export function Timeline() {
 
     const origStart = clip.startSec;
     const origTrackId = clip.trackId;
-    const origTrackIdx = tracks.findIndex((t) => t.id === origTrackId);
+    // The track the clip started on determines extraction eligibility.
+    const origTrack = tracks.find((t) => t.id === origTrackId);
 
     beginTx();
 
     const startX = e.clientX;
-    let committed = false;
     let lastGhost: DragOverlay | null = null;
 
     const move = (ev: MouseEvent) => {
@@ -161,11 +160,10 @@ export function Timeline() {
       const scrollT = el.scrollTop;
 
       // X → time
-      const relX = ev.clientX - rect.left + scrollL;
       const dxPx = ev.clientX - startX;
+      void scrollL;
       const dt = pxToTime(dxPx, pxPerSec);
       const candidate = snapTime(Math.max(0, origStart + dt), snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-      void relX;
 
       // Y → track index
       const relY = ev.clientY - rect.top + scrollT - RULER_HEIGHT_PX;
@@ -175,19 +173,18 @@ export function Timeline() {
       if (!targetTrack) return;
 
       const sourceAsset = assetById.get(clip.assetId);
+      // Audio extraction only applies when dragging FROM a video track TO an audio track.
+      // A video-asset clip that is already on an audio track moves normally.
       const isAudioExtraction =
-        sourceAsset?.kind === 'video' && targetTrack.kind === 'audio';
-      const compatible = isAudioExtraction || isAssetCompatibleWithTrack(
-        sourceAsset ?? { kind: 'video', id: '', name: '', durationSec: 0, mimeType: '', blobKey: '', createdAt: 0 },
-        targetTrack,
-      );
+        origTrack?.kind === 'video' &&
+        sourceAsset?.kind === 'video' &&
+        targetTrack.kind === 'audio';
+      // Compatible = same kind of track, or audio extraction.
+      const compatible = isAudioExtraction || targetTrack.kind === origTrack?.kind;
 
       if (isAudioExtraction) {
         // Video stays put; show ghost on target audio track
-        if (!committed) {
-          // Revert any silent moves to keep video in place
-          updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
-        }
+        updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         const ghost: DragOverlay = { clipId, ghostTrackIdx: trackIdx, isAudioExtraction: true };
         lastGhost = ghost;
         setDragOverlay(ghost);
@@ -216,22 +213,16 @@ export function Timeline() {
       const rawIdx = Math.floor(relY / TRACK_HEIGHT_PX);
       const trackIdx = Math.max(0, Math.min(tracks.length - 1, rawIdx));
       const targetTrack = tracks[trackIdx];
-      const sourceAsset = assetById.get(clip.assetId);
 
       if (lastGhost?.isAudioExtraction && targetTrack?.kind === 'audio') {
         // Commit audio extraction as a normal history entry
         cancelTx(); // cancel the beginTx snapshot (video never moved)
         update((p) => extractAudioFromClip(p, clipId, targetTrack.id));
-      } else if (targetTrack && !isAssetCompatibleWithTrack(
-        sourceAsset ?? { kind: 'video', id: '', name: '', durationSec: 0, mimeType: '', blobKey: '', createdAt: 0 },
-        targetTrack,
-      )) {
-        // Invalid drop — revert to original position
+      } else if (targetTrack && targetTrack.kind !== origTrack?.kind) {
+        // Cross-kind drop that isn't an audio extraction — revert
         cancelTx();
-        void origTrackIdx;
       }
       // Otherwise: committed via updateSilent; beginTx snapshot is the undo point
-      committed = true;
     };
 
     window.addEventListener('mousemove', move);
