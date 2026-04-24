@@ -1,4 +1,5 @@
 import { Eye, EyeOff, GripVertical, Plus, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { useState } from 'react';
 import type { Track } from '@/types';
 import { TRACK_HEIGHT_PX } from '@/lib/timeline/geometry';
 import { useProjectStore } from '@/state/projectStore';
@@ -32,6 +33,8 @@ export function TrackHeader({
   onInsertAudioBelow,
 }: Props) {
   const update = useProjectStore((s) => s.update);
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(track.name);
 
   return (
     <div
@@ -66,7 +69,40 @@ export function TrackHeader({
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 font-mono font-semibold text-slate-300">
           <GripVertical size={12} className="text-slate-500" />
-          {label}
+          {editingName ? (
+            <input
+              value={draftName}
+              autoFocus
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={() => {
+                const next = draftName.trim();
+                if (next) update((p) => setTrackProp(p, track.id, 'name', next));
+                setEditingName(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  (e.target as HTMLInputElement).blur();
+                }
+                if (e.key === 'Escape') {
+                  setDraftName(track.name);
+                  setEditingName(false);
+                }
+              }}
+              className="w-24 rounded bg-surface-800 px-1 py-0.5 text-[11px] text-slate-100 outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              className="truncate text-left hover:text-white"
+              title="Rename track"
+              onDoubleClick={() => {
+                setDraftName(track.name);
+                setEditingName(true);
+              }}
+            >
+              {track.name || label}
+            </button>
+          )}
         </span>
         <div className="flex items-center gap-1">
           {track.kind === 'video' ? (

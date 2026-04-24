@@ -442,6 +442,7 @@ export function Timeline() {
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
     if (!track) return '';
+    if (track.name) return track.name;
     const sameKind = tracks.filter((x) => x.kind === track.kind);
     return `${track.kind === 'video' ? 'V' : 'A'}${sameKind.findIndex((x) => x.id === trackId) + 1}`;
   };
@@ -501,7 +502,7 @@ export function Timeline() {
         {/* Track headers: pinned ruler + vertically synced track list */}
         <div className="relative min-h-0 shrink-0 overflow-hidden border-r border-surface-700" style={{ width: TRACK_HEADER_WIDTH_PX }}>
           <div className="sticky top-0 z-20 border-b border-surface-700 bg-surface-900" style={{ height: RULER_HEIGHT_PX }} />
-          <div className="relative" style={{ height: tracks.length * TRACK_HEIGHT_PX }}>
+          <div className="relative" style={{ height: tracks.length * TRACK_HEIGHT_PX + keyframeLaneHeight }}>
             <div style={{ transform: `translateY(-${scrollTop}px)` }}>
               {tracks.map((t) => (
                 <div key={`h-${t.id}`}>
@@ -528,7 +529,7 @@ export function Timeline() {
                     onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
                   />
                   {selectedTrackId === t.id && (
-                    <div className="border-b border-surface-800 bg-surface-900/70" style={{ height: keyframeLaneHeight }} />
+                    <KeyframeSidebarLane clip={selectedClip} />
                   )}
                 </div>
               ))}
@@ -637,20 +638,14 @@ function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number })
   if (transforms.length === 0) return null;
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(clipTimelineDurationSec(clip), pxPerSec));
-  const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
-  transforms.forEach((component, index) => {
-    properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
-    properties.push({ label: `Transform ${index + 1}.offsetY`, points: component.data.keyframes.offsetY });
-    properties.push({ label: `Transform ${index + 1}.scale`, points: component.data.keyframes.scale });
-  });
+  const properties = getKeyframeProperties(clip);
 
   return (
     <div className="border-b border-surface-800 bg-[#0c1222] px-3 py-1.5">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
       <div className="max-h-[220px] overflow-auto">
         {properties.map((row) => (
-          <div key={row.label} className="mb-1 grid grid-cols-[180px_1fr] items-center gap-2 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
-            <div className="text-[11px] text-slate-400">{row.label}</div>
+          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
             <div className="relative h-8 overflow-hidden rounded bg-[#0a0f1c]">
               <div
                 className="absolute inset-y-0 border border-brand-400/40 bg-brand-500/10"
@@ -688,10 +683,38 @@ function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number })
 }
 
 function laneHeightForClip(clip: Clip): number {
-  const transforms = getTransformComponents(clip);
-  if (transforms.length === 0) return 0;
-  const rows = transforms.length * 3;
+  const rows = getKeyframeProperties(clip).length;
+  if (rows === 0) return 0;
   return Math.min(240, 20 + rows * 40);
+}
+
+function getKeyframeProperties(clip: Clip): Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> {
+  const transforms = getTransformComponents(clip);
+  const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
+  transforms.forEach((component, index) => {
+    properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
+    properties.push({ label: `Transform ${index + 1}.offsetY`, points: component.data.keyframes.offsetY });
+    properties.push({ label: `Transform ${index + 1}.scale`, points: component.data.keyframes.scale });
+  });
+  return properties;
+}
+
+function KeyframeSidebarLane({ clip }: { clip: Clip | null }) {
+  if (!clip) return null;
+  const properties = getKeyframeProperties(clip);
+  if (properties.length === 0) return null;
+  return (
+    <div className="border-b border-surface-800 bg-[#0c1222] px-2 py-1.5" style={{ height: laneHeightForClip(clip) }}>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
+      <div className="max-h-[220px] overflow-auto">
+        {properties.map((row) => (
+          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1 text-[11px] text-slate-400">
+            {row.label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Detect Mac once at module level so there are no per-render allocations.

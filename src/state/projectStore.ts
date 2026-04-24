@@ -12,6 +12,10 @@ function loadProject(): Project {
     if (!raw) return createInitialProject();
     const parsed = JSON.parse(raw) as Project;
     if (!parsed.tracks || !parsed.clips) return createInitialProject();
+    parsed.tracks = parsed.tracks.map((t, i) => ({
+      ...t,
+      name: (t as { name?: string }).name ?? `${t.kind === 'video' ? 'Video' : 'Audio'} ${i + 1}`,
+    }));
     // Backfill clip props added after initial release.
     parsed.clips = parsed.clips.map((c) => ({
       ...c,

@@ -200,8 +200,10 @@ export function insertTrack(
   kind: 'video' | 'audio',
   insertIndex: number,
 ): Project {
+  const sameKindCount = project.tracks.filter((t) => t.kind === kind).length + 1;
   const track: Track = {
     id: nanoid(8),
+    name: `${kind === 'video' ? 'Video' : 'Audio'} ${sameKindCount}`,
     kind,
     index: project.tracks.length,
     muted: false,
@@ -386,10 +388,10 @@ export function isAssetCompatibleWithTrack(asset: MediaAsset, track: Track): boo
 }
 
 export function createInitialProject(): Project {
-  const v1: Track = { id: nanoid(8), kind: 'video', index: 0, muted: false, hidden: false };
-  const v2: Track = { id: nanoid(8), kind: 'video', index: 1, muted: false, hidden: false };
-  const a1: Track = { id: nanoid(8), kind: 'audio', index: 2, muted: false, hidden: false };
-  const a2: Track = { id: nanoid(8), kind: 'audio', index: 3, muted: false, hidden: false };
+  const v1: Track = { id: nanoid(8), name: 'Video 1', kind: 'video', index: 0, muted: false, hidden: false };
+  const v2: Track = { id: nanoid(8), name: 'Video 2', kind: 'video', index: 1, muted: false, hidden: false };
+  const a1: Track = { id: nanoid(8), name: 'Audio 1', kind: 'audio', index: 2, muted: false, hidden: false };
+  const a2: Track = { id: nanoid(8), name: 'Audio 2', kind: 'audio', index: 3, muted: false, hidden: false };
   return {
     id: nanoid(12),
     name: 'Untitled Project',

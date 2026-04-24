@@ -37,6 +37,7 @@ export type TrackKind = 'video' | 'audio';
 
 export type Track = {
   id: string;
+  name: string;
   kind: TrackKind;
   index: number;
   muted: boolean;
