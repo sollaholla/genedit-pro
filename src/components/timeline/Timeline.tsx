@@ -117,7 +117,6 @@ export function Timeline() {
     nudgeSelectedKeyframe,
     selectKeyframe,
     toggleComponentCollapse,
-    visibleKeyframeProperties,
   } = useKeyframeController({
     selectedClip,
     currentTimeSec: currentTime,
@@ -644,7 +643,7 @@ export function Timeline() {
                       clip={selectedClip}
                       pxPerSec={pxPerSec}
                       selectedKeyframe={selectedKeyframe}
-                      visibleProperties={visibleKeyframeProperties}
+                      collapsedComponents={collapsedComponents}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onBeginKeyframeDrag={beginKeyframeDrag}
                       onMoveKeyframe={moveKeyframe}

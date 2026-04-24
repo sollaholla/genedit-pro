@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { Clip, Project } from '@/types';
 import {
   getTransformComponents,
-  removeTransformKeyframe,
+  removeTransformKeyframeGroup,
   updateTransformKeyframe,
 } from '@/lib/components/transform';
 import { clipTimelineDurationSec } from '@/lib/timeline/operations';
@@ -43,7 +43,10 @@ export function useKeyframeController({
   }, [selectedClip, collapsedComponents]);
 
   const keyframeLaneHeight = selectedClip
-    ? laneHeightForClip(visibleKeyframeProperties.length, getTransformComponents(selectedClip).length)
+    ? laneHeightForClip(
+      visibleKeyframeProperties.length,
+      countComponentsWithKeyframes(selectedClip),
+    )
     : 0;
 
   const selectedKeyframeData = useMemo(
@@ -62,7 +65,7 @@ export function useKeyframeController({
 
   const deleteSelectedKeyframe = useCallback(() => {
     if (!selectedKeyframe) return;
-    patchSelectedClip((clip) => removeTransformKeyframe(clip, selectedKeyframe));
+    patchSelectedClip((clip) => removeTransformKeyframeGroup(clip, selectedKeyframe));
     setSelectedKeyframe(null);
   }, [patchSelectedClip, selectedKeyframe]);
 
@@ -137,4 +140,12 @@ export function useKeyframeController({
     toggleComponentCollapse,
     visibleKeyframeProperties,
   };
+}
+
+function countComponentsWithKeyframes(clip: Clip): number {
+  return getTransformComponents(clip).filter((component) => (
+    component.data.keyframes.scale.length > 0 ||
+    component.data.keyframes.offsetX.length > 0 ||
+    component.data.keyframes.offsetY.length > 0
+  )).length;
 }

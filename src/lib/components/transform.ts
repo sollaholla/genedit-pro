@@ -140,6 +140,37 @@ export function removeTransformKeyframe(
   };
 }
 
+export function removeTransformKeyframeGroup(
+  clip: Clip,
+  target: TransformTarget & { property: TransformProperty; keyframeId: string },
+  epsSec = KEYFRAME_EPS_SEC,
+): Clip {
+  const components = getTransformComponents(clip);
+  const componentIndex = findTransformComponentIndex(clip, target);
+  if (componentIndex < 0) return clip;
+  const component = components[componentIndex]!;
+  const selectedPoint = component.data.keyframes[target.property].find((point) => point.id === target.keyframeId);
+  if (!selectedPoint) return removeTransformKeyframe(clip, target);
+
+  return {
+    ...clip,
+    components: components.map((candidate, idx) => {
+      if (idx !== componentIndex) return candidate;
+      return {
+        ...candidate,
+        data: {
+          ...candidate.data,
+          keyframes: {
+            scale: candidate.data.keyframes.scale.filter((point) => Math.abs(point.timeSec - selectedPoint.timeSec) > epsSec),
+            offsetX: candidate.data.keyframes.offsetX.filter((point) => Math.abs(point.timeSec - selectedPoint.timeSec) > epsSec),
+            offsetY: candidate.data.keyframes.offsetY.filter((point) => Math.abs(point.timeSec - selectedPoint.timeSec) > epsSec),
+          },
+        },
+      };
+    }),
+  };
+}
+
 export function setTransformPropertyAtTime(
   clip: Clip,
   target: TransformTarget & { property: TransformProperty },

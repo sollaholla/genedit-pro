@@ -31,7 +31,7 @@ const PROPERTY_LABELS: Record<TransformProperty, string> = {
 
 export function laneHeightForClip(visibleRows: number, totalComponents: number): number {
   if (totalComponents === 0) return 0;
-  return Math.min(260, 20 + totalComponents * 26 + visibleRows * 34);
+  return Math.min(240, 18 + totalComponents * 22 + visibleRows * 30);
 }
 
 export function getKeyframeProperties(clip: Clip): KeyframePropertyRow[] {
@@ -40,6 +40,7 @@ export function getKeyframeProperties(clip: Clip): KeyframePropertyRow[] {
   transforms.forEach((component, index) => {
     (['offsetX', 'offsetY', 'scale'] as const).forEach((property) => {
       const points = component.data.keyframes[property];
+      if (points.length === 0) return;
       const baseValue = component.data[property];
       properties.push({
         label: `Transform ${index + 1}.${PROPERTY_LABELS[property]}`,
