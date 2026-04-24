@@ -32,11 +32,34 @@ export type GoogleVeoPredictRequest = {
   };
 };
 
-type VideoOperationResponse = {
+export type GenerationErrorType = 'NSFW' | 'GuidelinesViolation' | 'InternalError';
+
+export class VideoGenerationProviderError extends Error {
+  readonly type: GenerationErrorType;
+
+  constructor(type: GenerationErrorType, message: string) {
+    super(message);
+    this.name = 'VideoGenerationProviderError';
+    this.type = type;
+  }
+}
+
+export type GoogleVeoOperationError = {
+  code?: number;
+  message?: string;
+  status?: string;
+};
+
+export type GoogleVeoOperationResponse = {
+  name?: string;
+  done?: boolean;
+  error?: GoogleVeoOperationError;
   response?: {
     generatedVideos?: Array<{ video?: { uri?: string; fileUri?: string } }>;
     generateVideoResponse?: {
       generatedSamples?: Array<{ video?: { uri?: string; fileUri?: string } }>;
+      raiMediaFilteredCount?: number;
+      raiMediaFilteredReasons?: string[];
     };
   };
 };
@@ -83,11 +106,57 @@ export async function buildGoogleVeoPredictRequest(
   };
 }
 
-export function generatedVideoUriFromOperation(operation: VideoOperationResponse): string | undefined {
+export function generatedVideoUriFromOperation(operation: GoogleVeoOperationResponse): string | undefined {
   return operation.response?.generatedVideos?.[0]?.video?.uri ||
     operation.response?.generatedVideos?.[0]?.video?.fileUri ||
     operation.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ||
     operation.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.fileUri;
+}
+
+export function generationErrorFromOperation(operation: GoogleVeoOperationResponse): VideoGenerationProviderError | null {
+  if (operation.error) {
+    return new VideoGenerationProviderError(
+      classifyGoogleOperationError(operation.error),
+      formatGoogleOperationError(operation.error),
+    );
+  }
+
+  const filteredReasons = operation.response?.generateVideoResponse?.raiMediaFilteredReasons ?? [];
+  const filteredCount = operation.response?.generateVideoResponse?.raiMediaFilteredCount ?? 0;
+  if (filteredCount > 0 || filteredReasons.length > 0) {
+    return new VideoGenerationProviderError(
+      classifyRaiFilteredReasons(filteredReasons),
+      filteredReasons.join(' ') || 'Google filtered the generated media.',
+    );
+  }
+
+  return null;
+}
+
+function classifyGoogleOperationError(error: GoogleVeoOperationError): GenerationErrorType {
+  const text = `${error.status ?? ''} ${error.message ?? ''}`.toLowerCase();
+  if (isNsfwText(text)) return 'NSFW';
+  if (text.includes('policy') || text.includes('safety') || text.includes('guardrail') || text.includes('guideline')) {
+    return 'GuidelinesViolation';
+  }
+  if (error.status === 'INTERNAL' || error.status === 'UNKNOWN' || error.status === 'UNAVAILABLE' || (error.code ?? 0) >= 500) {
+    return 'InternalError';
+  }
+  return 'InternalError';
+}
+
+function classifyRaiFilteredReasons(reasons: string[]): GenerationErrorType {
+  const text = reasons.join(' ').toLowerCase();
+  return isNsfwText(text) ? 'NSFW' : 'GuidelinesViolation';
+}
+
+function isNsfwText(text: string): boolean {
+  return /\b(nsfw|sexual|explicit|nudity|nude|porn|adult)\b/.test(text);
+}
+
+function formatGoogleOperationError(error: GoogleVeoOperationError): string {
+  const message = error.message || 'Google returned an unknown generation error.';
+  return error.status ? `${error.status}: ${message}` : message;
 }
 
 function validateGoogleVeoMutation({
@@ -106,6 +175,9 @@ function validateGoogleVeoMutation({
   if (sourceVideos.length > 1) throw new Error('Veo extension accepts one source video.');
   if (sourceVideos.length > 0 && (startFrames.length > 0 || endFrames.length > 0 || referenceImages.length > 0)) {
     throw new Error('Veo video extension cannot be combined with frame or image references.');
+  }
+  if (referenceImages.length > 0 && (startFrames.length > 0 || endFrames.length > 0)) {
+    throw new Error('Veo start/end frame mode cannot be combined with image references.');
   }
   if (sourceVideos.length > 0 && mutation.config.resolution !== '720p') {
     throw new Error('Veo video extension requires 720p output.');
