@@ -23,7 +23,8 @@ function computeRms(buf: Float32Array): number {
 
 type ChannelState = { level: number; peak: number; clipping: boolean };
 
-// VuBar renders as a flex-1 column — parent MUST be a flex column with min-h-0.
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
 function VuBar({ level, peak, clipping }: ChannelState) {
   const pct = Math.min(100, level * 100);
   const peakPct = Math.min(100, peak * 100);
@@ -33,7 +34,7 @@ function VuBar({ level, peak, clipping }: ChannelState) {
   else if (level > 0.75) barColor = 'bg-yellow-400';
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden rounded-sm bg-surface-800 ring-1 ring-surface-700">
+    <div className="relative h-full w-3 overflow-hidden rounded-sm bg-surface-800 ring-1 ring-surface-700">
       {/* 0 dBFS clipping flash */}
       <div className={`absolute inset-x-0 top-0 h-1 transition-colors ${clipping ? 'bg-red-500' : 'bg-transparent'}`} />
       {/* Level bar filling from bottom */}
@@ -54,19 +55,97 @@ function VuBar({ level, peak, clipping }: ChannelState) {
 
 const DB_MARKS = [0, -6, -12, -18, -30, -48];
 
-// DbScale must be inside a positioned container that has explicit height.
 function DbScale() {
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="relative h-full w-5">
       {DB_MARKS.map((db) => (
         <div
           key={db}
-          className="absolute left-0 right-0 flex items-center justify-center"
+          className="absolute left-0 right-0 flex items-center justify-start"
           style={{ bottom: `${dbToNorm(db) * 100}%`, transform: 'translateY(50%)' }}
         >
-          <span className="select-none text-[7px] leading-none text-slate-500">{db}</span>
+          <span className="select-none font-mono text-[7px] leading-none text-slate-500">{db}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+type MasterFaderProps = {
+  value: number;
+  onChange: (value: number) => void;
+};
+
+function MasterFader({ value, onChange }: MasterFaderProps) {
+  const railRef = useRef<HTMLDivElement | null>(null);
+  const pct = clamp(Math.round(value * 100), 0, 200);
+  const norm = pct / 200;
+
+  const commitFromPointer = (clientY: number) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const rect = rail.getBoundingClientRect();
+    const nextNorm = clamp((rect.bottom - clientY) / rect.height, 0, 1);
+    onChange(Math.round(nextNorm * 200) / 100);
+  };
+
+  const commitPercent = (nextPct: number) => {
+    onChange(clamp(nextPct, 0, 200) / 100);
+  };
+
+  return (
+    <div
+      className="relative h-full w-7 touch-none select-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+      role="slider"
+      aria-label="Master volume"
+      aria-valuemin={0}
+      aria-valuemax={200}
+      aria-valuenow={pct}
+      aria-valuetext={`${pct}%`}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        commitFromPointer(event.clientY);
+      }}
+      onPointerMove={(event) => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        commitFromPointer(event.clientY);
+      }}
+      onPointerUp={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+      onDoubleClick={() => commitPercent(100)}
+      onKeyDown={(event) => {
+        let nextPct = pct;
+        if (event.key === 'ArrowUp' || event.key === 'ArrowRight') nextPct += 1;
+        else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') nextPct -= 1;
+        else if (event.key === 'PageUp') nextPct += 10;
+        else if (event.key === 'PageDown') nextPct -= 10;
+        else if (event.key === 'Home') nextPct = 0;
+        else if (event.key === 'End') nextPct = 200;
+        else return;
+
+        event.preventDefault();
+        commitPercent(nextPct);
+      }}
+      title={`Master volume: ${pct}%`}
+    >
+      <div ref={railRef} className="absolute inset-y-0 left-1/2 w-1.5 -translate-x-1/2 rounded-full bg-surface-700">
+        <div
+          className="absolute inset-x-0 bottom-0 rounded-full bg-brand-500/65"
+          style={{ height: `${norm * 100}%` }}
+        />
+      </div>
+      <div
+        className="absolute left-1/2 h-3.5 w-3.5 -translate-x-1/2 translate-y-1/2 rounded-full border border-brand-200 bg-brand-500 shadow-sm shadow-brand-950/50"
+        style={{ bottom: `${norm * 100}%` }}
+      />
+      <div
+        className="absolute left-1/2 h-px w-4 -translate-x-1/2 bg-white/30"
+        style={{ bottom: '50%' }}
+      />
     </div>
   );
 }
@@ -82,7 +161,7 @@ export function MasterBussPanel() {
 
   const peakRef = useRef<[number, number]>([0, 0]);
   const peakTsRef = useRef<[number, number]>([0, 0]);
-  const clipTsRef = useRef<[number, number]>([0, 0]);
+  const clipTsRef = useRef<[number, number]>([-Infinity, -Infinity]);
   const bufLRef = useRef<Float32Array | null>(null);
   const bufRRef = useRef<Float32Array | null>(null);
 
@@ -148,58 +227,48 @@ export function MasterBussPanel() {
   const isClipping = channels[0].clipping || channels[1].clipping;
 
   return (
-    <div className="flex h-full flex-col items-stretch gap-0 px-2 pt-2 pb-3">
-      {/* Header */}
-      <div className="shrink-0 pb-1 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-500">
+    <div className="flex h-full flex-col px-2 pb-3 pt-2">
+      <div className="shrink-0 pb-2 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-500">
         Master
       </div>
 
-      {/* ---- Meters: fills all remaining vertical space ---- */}
-      {/* Outer row: L-bar | dB-scale | R-bar */}
-      <div className="flex min-h-0 flex-1 flex-row gap-1">
-        {/* L channel: bar + label stacked vertically */}
-        <div className="flex min-h-0 flex-1 flex-col gap-0.5">
-          <VuBar {...channels[0]} />
-          <span className="shrink-0 text-center text-[8px] text-slate-500">L</span>
+      <div className="grid min-h-0 flex-1 grid-cols-[28px_14px_14px_24px] gap-2">
+        <div className="flex min-h-0 flex-col items-center">
+          <div className="relative min-h-0 flex-1">
+            <MasterFader value={masterVolume} onChange={setMasterVolume} />
+          </div>
+          <div className="shrink-0 pt-1 text-center font-mono text-[10px] text-slate-300">{Math.round(masterVolume * 100)}%</div>
+          <div className="shrink-0 text-center text-[8px] uppercase tracking-wide text-slate-600">Vol</div>
         </div>
-        {/* dB scale */}
-        <div className="flex min-h-0 w-5 flex-col">
-          <DbScale />
-          <div className="h-4 shrink-0" /> {/* spacer matching the L/R label row */}
-        </div>
-        {/* R channel */}
-        <div className="flex min-h-0 flex-1 flex-col gap-0.5">
-          <VuBar {...channels[1]} />
-          <span className="shrink-0 text-center text-[8px] text-slate-500">R</span>
-        </div>
-      </div>
 
-      {/* ---- Clip badge ---- */}
-      <div className="shrink-0 flex justify-center py-1" style={{ minHeight: 16 }}>
-        {isClipping && (
-          <span className="rounded bg-red-600 px-1.5 py-px text-[8px] font-bold text-white">
-            CLIP
-          </span>
-        )}
-      </div>
-
-      {/* ---- Vertical volume slider ---- */}
-      <div className="shrink-0 flex flex-col items-center gap-1">
-        <div className="relative flex h-24 w-6 items-center justify-center overflow-visible">
-          <input
-            type="range"
-            min={0}
-            max={200}
-            step={1}
-            value={Math.round(masterVolume * 100)}
-            onChange={(e) => setMasterVolume(Number(e.target.value) / 100)}
-            className="volume-slider"
-            style={{ width: 88, transform: 'rotate(-90deg)', transformOrigin: 'center' }}
-            title={`Master volume: ${Math.round(masterVolume * 100)}%`}
-          />
+        <div className="flex min-h-0 flex-col items-center">
+          <div className="min-h-0 flex-1">
+            <VuBar {...channels[0]} />
+          </div>
+          <span className="shrink-0 pt-1 text-center text-[8px] text-slate-500">L</span>
+          <div className="h-[10px] shrink-0" />
         </div>
-        <div className="font-mono text-[10px] text-slate-300">{Math.round(masterVolume * 100)}%</div>
-        <div className="text-[8px] uppercase tracking-wide text-slate-600">Vol</div>
+
+        <div className="flex min-h-0 flex-col items-center">
+          <div className="min-h-0 flex-1">
+            <VuBar {...channels[1]} />
+          </div>
+          <span className="shrink-0 pt-1 text-center text-[8px] text-slate-500">R</span>
+          <div className="h-[10px] shrink-0" />
+        </div>
+
+        <div className="flex min-h-0 flex-col">
+          <div className="relative min-h-0 flex-1">
+            <DbScale />
+          </div>
+          <div className="flex h-[19px] shrink-0 items-start justify-start pt-1">
+            {isClipping && (
+              <span className="rounded bg-red-600 px-1 py-px text-[7px] font-bold text-white">
+                CLIP
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
