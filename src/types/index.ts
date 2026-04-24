@@ -28,6 +28,8 @@ export type EditTrail = {
 export type GenerateRecipe = {
   model: string;
   prompt: string;
+  promptMode?: 'freeform' | 'structured';
+  structuredPrompt?: Record<string, string>;
   aspect: string;
   resolution: string;
   duration: string;

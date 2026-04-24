@@ -1,5 +1,27 @@
 export type Aspect = '16:9' | '9:16' | '1:1';
 
+export type StructuredPromptSectionIcon =
+  | 'subject'
+  | 'action'
+  | 'style'
+  | 'camera'
+  | 'composition'
+  | 'lens'
+  | 'ambience';
+
+export type StructuredPromptSectionDefinition = {
+  id: string;
+  label: string;
+  icon: StructuredPromptSectionIcon;
+  optional?: boolean;
+  description: string;
+  placeholder: string;
+};
+
+export type PromptGuidelines = {
+  structuredSections: StructuredPromptSectionDefinition[];
+};
+
 export type VideoModelCapabilities = {
   references: boolean;
   audio: boolean;
@@ -21,11 +43,68 @@ export type VideoModelDefinition = {
   provider: 'veo' | 'generic';
   priority: number;
   capabilities: VideoModelCapabilities;
+  promptGuidelines?: PromptGuidelines;
 };
 
 export const DEFAULT_ASPECTS: Aspect[] = ['16:9', '9:16', '1:1'];
 export const DEFAULT_RESOLUTIONS = ['720p', '1080p'] as const;
 export const DEFAULT_DURATIONS = ['4s', '6s', '8s'] as const;
+
+export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[] = [
+  {
+    id: 'subject',
+    label: 'Subject',
+    icon: 'subject',
+    description: 'The object, person, animal, or scenery that should appear in the video.',
+    placeholder: 'A rain-slick city street with a vintage taxi',
+  },
+  {
+    id: 'action',
+    label: 'Action',
+    icon: 'action',
+    description: 'What the subject is doing or how the scene changes.',
+    placeholder: 'The taxi rolls forward as steam rises from the street',
+  },
+  {
+    id: 'style',
+    label: 'Style',
+    icon: 'style',
+    description: 'Creative direction using specific film, genre, or animation keywords.',
+    placeholder: 'Cinematic film noir, high contrast, moody',
+  },
+  {
+    id: 'camera',
+    label: 'Camera positioning and motion',
+    icon: 'camera',
+    optional: true,
+    description: 'The camera location and movement.',
+    placeholder: 'Low-angle dolly shot moving beside the taxi',
+  },
+  {
+    id: 'composition',
+    label: 'Composition',
+    icon: 'composition',
+    optional: true,
+    description: 'How the shot is framed.',
+    placeholder: 'Wide shot with the taxi framed in the lower third',
+  },
+  {
+    id: 'focus',
+    label: 'Focus and lens effects',
+    icon: 'lens',
+    optional: true,
+    description: 'Focus behavior and lens treatment.',
+    placeholder: 'Shallow focus, soft bloom, anamorphic lens',
+  },
+  {
+    id: 'ambience',
+    label: 'Ambience',
+    icon: 'ambience',
+    optional: true,
+    description: 'How color and light contribute to the scene.',
+    placeholder: 'Cool blue tones, wet reflections, late night',
+  },
+];
 
 export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
   {
@@ -33,6 +112,9 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     label: 'Veo 3.1 (Preview)',
     provider: 'veo',
     priority: 100,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
     capabilities: {
       references: true,
       audio: true,
@@ -53,6 +135,9 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     label: 'Veo 3.1 Fast (Preview)',
     provider: 'veo',
     priority: 80,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
     capabilities: {
       references: true,
       audio: true,
@@ -100,6 +185,30 @@ export function isDurationFeatureSupported(model: VideoModelDefinition, value: s
   return model.capabilities.durations.includes(value);
 }
 
+export function structuredPromptSectionsFor(model: VideoModelDefinition): StructuredPromptSectionDefinition[] {
+  return model.promptGuidelines?.structuredSections ?? [];
+}
+
+export function missingRequiredStructuredSections(
+  model: VideoModelDefinition,
+  values: Record<string, string>,
+): StructuredPromptSectionDefinition[] {
+  return structuredPromptSectionsFor(model).filter((section) => !section.optional && !values[section.id]?.trim());
+}
+
+export function buildStructuredPromptText(
+  model: VideoModelDefinition,
+  values: Record<string, string>,
+): string {
+  return structuredPromptSectionsFor(model)
+    .map((section) => {
+      const value = values[section.id]?.trim();
+      return value ? `${section.label}: ${value}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function buildRemoteVideoModelDefinition(input: { name: string; displayName?: string }, fallback?: VideoModelDefinition): VideoModelDefinition {
   const id = input.name.replace('models/', '');
   const veo = id.toLowerCase().includes('veo');
@@ -108,6 +217,7 @@ export function buildRemoteVideoModelDefinition(input: { name: string; displayNa
     label: input.displayName || id,
     provider: veo ? 'veo' : 'generic',
     priority: fallback?.priority ?? (veo ? 50 : 10),
+    promptGuidelines: fallback?.promptGuidelines ?? (veo ? { structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS } : undefined),
     capabilities: fallback?.capabilities ?? {
       references: !veo,
       audio: veo,

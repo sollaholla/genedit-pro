@@ -1,16 +1,25 @@
 import {
+  Aperture,
   BookOpen,
+  Camera,
   Check,
   Clapperboard,
+  Crop,
   Film,
   FolderOpen,
   Image as ImageIcon,
+  ListChecks,
+  Palette,
   Plus,
   Save,
   Search,
+  SunMedium,
   Upload,
+  UserRound,
   X,
+  Zap,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { createMockGeneratedVideo } from '@/lib/media/mockVideoGenerator';
@@ -24,6 +33,7 @@ import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
 import {
   DEFAULT_VIDEO_MODELS,
   GOOGLE_ALLOWED_VIDEO_MODEL_IDS,
+  buildStructuredPromptText,
   buildRemoteVideoModelDefinition,
   isAspectFeatureSupported,
   isAudioFeatureSupported,
@@ -31,8 +41,12 @@ import {
   isReferencesFeatureSupported,
   isResolutionFeatureSupported,
   isVeoModel,
+  missingRequiredStructuredSections,
   sortModelsByPriority,
+  structuredPromptSectionsFor,
   type Aspect,
+  type StructuredPromptSectionDefinition,
+  type StructuredPromptSectionIcon,
   type VideoModelDefinition,
 } from '@/lib/videoModels/capabilities';
 import { useMediaStore } from '@/state/mediaStore';
@@ -53,6 +67,18 @@ type RefToken = {
   name: string;
   kind: 'image' | 'video' | 'audio';
   thumbnail?: string;
+};
+
+type PromptMode = 'freeform' | 'structured';
+
+const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
+  subject: UserRound,
+  action: Zap,
+  style: Palette,
+  camera: Camera,
+  composition: Crop,
+  lens: Aperture,
+  ambience: SunMedium,
 };
 
 type GoogleApiError = {
@@ -114,6 +140,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const [recipeQuery, setRecipeQuery] = useState('');
 
   const [prompt, setPrompt] = useState('');
+  const [promptMode, setPromptMode] = useState<PromptMode>('freeform');
+  const [structuredPrompt, setStructuredPrompt] = useState<Record<string, string>>({});
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [pickerMode, setPickerMode] = useState<'reference' | 'start' | 'end' | 'source-video'>('reference');
   const [references, setReferences] = useState<RefToken[]>([]);
@@ -130,6 +158,20 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     () => models.find((m) => m.id === model) ?? DEFAULT_VIDEO_MODELS[0],
     [model, models],
   );
+  const structuredSections = useMemo(() => structuredPromptSectionsFor(selectedModel), [selectedModel]);
+  const structuredPromptText = useMemo(
+    () => buildStructuredPromptText(selectedModel, structuredPrompt),
+    [selectedModel, structuredPrompt],
+  );
+  const missingStructuredRequired = useMemo(
+    () => missingRequiredStructuredSections(selectedModel, structuredPrompt),
+    [selectedModel, structuredPrompt],
+  );
+  const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
+  const structuredPromptSupported = structuredSections.length > 0;
+  const generateDisabled = isGenerating ||
+    Boolean(sourceVideo && !isVeoArtifactValid(sourceVideo)) ||
+    (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
     const seconds = Number(duration.replace('s', ''));
     if (!Number.isFinite(seconds) || seconds <= 0) return 0;
@@ -211,6 +253,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setLoadedRecipeId(initialRecipeAsset.id);
     setModel(recipe.model);
     setPrompt(recipe.prompt);
+    setPromptMode(recipe.promptMode ?? 'freeform');
+    setStructuredPrompt(recipe.structuredPrompt ?? {});
     setAspect((recipe.aspect as Aspect) || '16:9');
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
@@ -253,6 +297,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     if (!sourceVideoSupported || (sourceVideo && !isVeoArtifactValid(sourceVideo))) setSourceVideo(null);
     if (references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
     setAudioEnabled(isAudioFeatureSupported(selectedModel));
+    if (!selectedModel.promptGuidelines?.structuredSections.length && promptMode === 'structured') {
+      setPromptMode('freeform');
+    }
   }, [
     aspect,
     duration,
@@ -265,6 +312,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     selectedModel,
     sourceVideo,
     sourceVideoSupported,
+    promptMode,
   ]);
 
   const allMentionItems = [
@@ -300,6 +348,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         const haystack = [
           asset.name,
           recipe?.prompt,
+          ...(recipe?.structuredPrompt ? Object.values(recipe.structuredPrompt) : []),
           recipe?.model,
           recipe?.aspect,
           recipe?.resolution,
@@ -416,6 +465,18 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
   async function generate() {
     setGenerationError(null);
+    const promptForGeneration = activePrompt.trim();
+    if (promptMode === 'structured') {
+      const missing = missingRequiredStructuredSections(selectedModel, structuredPrompt);
+      if (missing.length > 0) {
+        setGenerationError(`Structured prompt needs: ${missing.map((section) => section.label).join(', ')}.`);
+        return;
+      }
+    }
+    if (!promptForGeneration) {
+      setGenerationError('Add a generation description first.');
+      return;
+    }
     if (sourceVideo && !isVeoArtifactValid(sourceVideo)) {
       setGenerationError('This Veo source video is older than 48 hours and can no longer be extended.');
       return;
@@ -432,7 +493,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     try {
       if (useLocalGenerator) {
         const file = await createMockGeneratedVideo({
-          prompt,
+          prompt: promptForGeneration,
           aspect,
           duration,
           resolution,
@@ -451,7 +512,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         .filter((asset): asset is MediaAsset => asset !== undefined)
         .filter((asset) => asset.kind === 'image');
       const mutation = buildVideoGenerationMutation({
-        prompt,
+        prompt: promptForGeneration,
         modelId,
         aspectRatio: aspect,
         duration,
@@ -516,6 +577,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     return {
       model,
       prompt,
+      promptMode,
+      structuredPrompt,
       aspect,
       resolution,
       duration,
@@ -544,6 +607,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setLoadedRecipeId(asset.id);
     setModel(recipe.model);
     setPrompt(recipe.prompt);
+    setPromptMode(recipe.promptMode ?? 'freeform');
+    setStructuredPrompt(recipe.structuredPrompt ?? {});
     setAspect((recipe.aspect as Aspect) || '16:9');
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
@@ -646,41 +711,57 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             />
           </div>
 
-          <div className="relative">
-            <textarea
-              ref={editorRef}
-              value={prompt}
-              onChange={(e) => onPromptChange(e.target.value)}
-              placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
-              className="h-32 w-full resize-none rounded-xl border border-white/10 bg-[#121833] px-3 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-400"
+          <div className="relative rounded-xl border border-white/10 bg-[#121833]">
+            <PromptModeSwatch
+              mode={promptMode}
+              structuredSupported={structuredPromptSupported}
+              onChange={setPromptMode}
             />
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {promptTokens.map((m, i) => {
-                const key = m[1].toLowerCase();
-                const meta = referenceMap.get(key);
-                const valid = Boolean(meta);
-                return (
-                  <span
-                    key={`${m.index}-${i}`}
-                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
-                    onMouseEnter={(e) => {
-                      if (meta && typeof meta !== 'string') {
-                        setHoveredToken(meta);
-                        setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                      }
-                    }}
-                    onMouseMove={(e) => {
-                      if (hoveredToken) setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                    }}
-                    onMouseLeave={() => setHoveredToken(null)}
-                  >
-                    {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
-                    @{m[1]}
-                  </span>
-                );
-              })}
-            </div>
+            {promptMode === 'structured' && structuredPromptSupported ? (
+              <StructuredPromptEditor
+                sections={structuredSections}
+                values={structuredPrompt}
+                onChange={(id, value) => setStructuredPrompt((prev) => ({ ...prev, [id]: value }))}
+                missingRequired={missingStructuredRequired.map((section) => section.id)}
+              />
+            ) : (
+              <textarea
+                ref={editorRef}
+                value={prompt}
+                onChange={(e) => onPromptChange(e.target.value)}
+                placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
+                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 py-3 pr-32 text-sm text-slate-100 outline-none placeholder:text-slate-400"
+              />
+            )}
           </div>
+          {promptMode === 'freeform' && (
+            <div className="flex flex-wrap gap-1.5">
+            {promptTokens.map((m, i) => {
+              const key = m[1].toLowerCase();
+              const meta = referenceMap.get(key);
+              const valid = Boolean(meta);
+              return (
+                <span
+                  key={`${m.index}-${i}`}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
+                  onMouseEnter={(e) => {
+                    if (meta && typeof meta !== 'string') {
+                      setHoveredToken(meta);
+                      setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
+                    }
+                  }}
+                  onMouseMove={(e) => {
+                    if (hoveredToken) setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
+                  }}
+                  onMouseLeave={() => setHoveredToken(null)}
+                >
+                  {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
+                  @{m[1]}
+                </span>
+              );
+            })}
+            </div>
+          )}
 
           <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
             <div className="mb-2 flex items-center justify-between">
@@ -754,7 +835,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             <button
               type="button"
               onClick={generate}
-              disabled={!prompt.trim() || isGenerating || Boolean(sourceVideo && !isVeoArtifactValid(sourceVideo))}
+              disabled={generateDisabled}
               className="inline-flex h-9 items-center rounded-full bg-white px-4 text-sm font-semibold text-black transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-500"
             >
               {isGenerating ? 'Generating...' : (
@@ -834,6 +915,87 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   );
 }
 
+function PromptModeSwatch({
+  mode,
+  structuredSupported,
+  onChange,
+}: {
+  mode: PromptMode;
+  structuredSupported: boolean;
+  onChange: (mode: PromptMode) => void;
+}) {
+  const buttonBase = 'inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition';
+  return (
+    <div className="absolute right-2 top-2 z-10 inline-flex items-center rounded-full border border-white/15 bg-black/40 p-0.5 shadow-lg backdrop-blur">
+      <button
+        type="button"
+        className={`${buttonBase} ${mode === 'freeform' ? 'bg-white text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+        onClick={() => onChange('freeform')}
+      >
+        Free
+      </button>
+      <button
+        type="button"
+        disabled={!structuredSupported}
+        title={structuredSupported ? 'Structured prompt mode' : 'Structured prompts are not available for this model'}
+        className={`${buttonBase} ${mode === 'structured' ? 'bg-emerald-400 text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-white'} disabled:cursor-not-allowed disabled:opacity-40`}
+        onClick={() => onChange('structured')}
+      >
+        <ListChecks size={12} />
+        Structured
+      </button>
+    </div>
+  );
+}
+
+function StructuredPromptEditor({
+  sections,
+  values,
+  missingRequired,
+  onChange,
+}: {
+  sections: StructuredPromptSectionDefinition[];
+  values: Record<string, string>;
+  missingRequired: string[];
+  onChange: (sectionId: string, value: string) => void;
+}) {
+  const missing = new Set(missingRequired);
+  return (
+    <div className="max-h-[330px] overflow-y-auto px-3 pb-3 pt-11">
+      <div className="grid gap-2 sm:grid-cols-2">
+        {sections.map((section) => {
+          const Icon = STRUCTURED_PROMPT_ICON[section.icon];
+          const isMissing = missing.has(section.id);
+          return (
+            <label
+              key={section.id}
+              className={`rounded-lg border bg-black/15 p-2.5 transition ${isMissing ? 'border-amber-300/55 bg-amber-500/5' : 'border-white/10 hover:border-white/20'}`}
+            >
+              <div className="mb-1.5 flex min-w-0 items-center gap-2">
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isMissing ? 'bg-amber-300/15 text-amber-200' : 'bg-white/10 text-slate-300'}`}>
+                  <Icon size={13} />
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-100">{section.label}</span>
+                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${section.optional ? 'bg-white/10 text-slate-400' : 'bg-emerald-400/15 text-emerald-200'}`}>
+                  {section.optional ? 'Optional' : 'Required'}
+                </span>
+              </div>
+              <textarea
+                value={values[section.id] ?? ''}
+                onChange={(e) => onChange(section.id, e.target.value)}
+                placeholder={section.placeholder}
+                aria-invalid={isMissing}
+                className="h-[58px] w-full resize-none rounded-md border border-white/10 bg-[#0b1020] px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-300/70"
+              />
+              <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{section.description}</div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function RecipePicker({
   recipes,
   totalCount,
@@ -906,7 +1068,7 @@ function RecipePicker({
                     <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.duration}</span>
                     <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.aspect}</span>
                   </div>
-                  <div className="mt-0.5 truncate text-[11px] text-slate-400">{recipe.prompt || 'No prompt text'}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-slate-400">{recipePreviewText(recipe) || 'No prompt text'}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
                     <span>{modelLabelFor(recipe.model)}</span>
                     <span>{recipe.resolution}</span>
@@ -1146,6 +1308,15 @@ function SortPills({
       ))}
     </div>
   );
+}
+
+function recipePreviewText(recipe: GenerateRecipe): string {
+  if (recipe.promptMode !== 'structured') return recipe.prompt;
+  const values = recipe.structuredPrompt ?? {};
+  return Object.values(values)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' / ');
 }
 
 function formatShortDate(timestamp: number) {

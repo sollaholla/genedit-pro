@@ -13,7 +13,7 @@ type Props = {
 export function EditTrailDialog({ assetId, onClose }: Props) {
   const asset = useMediaStore((s) => s.assets.find((item) => item.id === assetId) ?? null);
   const ensureEditTrail = useMediaStore((s) => s.ensureEditTrail);
-  const addEditTrailIteration = useMediaStore((s) => s.addEditTrailIteration);
+  const saveEditTrailIteration = useMediaStore((s) => s.saveEditTrailIteration);
   const undoEditTrail = useMediaStore((s) => s.undoEditTrail);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
@@ -58,12 +58,12 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     try {
       if (asset.kind === 'image') {
         const file = await renderEditedImageFile(asset, sourceUrl, draft);
-        await addEditTrailIteration(asset.id, file, draft);
+        await saveEditTrailIteration(asset.id, file, draft);
       } else {
         const thumbnail = asset.thumbnailDataUrl
           ? await renderEditedThumbnail(asset.thumbnailDataUrl, draft).catch(() => asset.thumbnailDataUrl)
           : undefined;
-        await addEditTrailIteration(asset.id, null, draft, thumbnail);
+        await saveEditTrailIteration(asset.id, null, draft, thumbnail);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save edit iteration.');
@@ -145,7 +145,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
           <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
             <div>
               <div className="text-sm font-semibold">{asset.kind === 'video' ? 'Video Edit' : 'Image Edit'}</div>
-              <div className="text-xs text-slate-500">Zoom and offset are saved as a new top iteration.</div>
+              <div className="text-xs text-slate-500">Zoom and offset update the active edit.</div>
             </div>
             <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-400">
               {iterations.length} {iterations.length === 1 ? 'iteration' : 'iterations'}
@@ -241,7 +241,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 onClick={saveIteration}
               >
                 <Save size={14} />
-                {saving ? 'Saving…' : 'Save iteration'}
+                {saving ? 'Saving…' : 'Save edit'}
               </button>
             </div>
           </div>

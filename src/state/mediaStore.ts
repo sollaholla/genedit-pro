@@ -44,6 +44,12 @@ type MediaState = {
     transform: EditTrailTransform,
     thumbnailDataUrl?: string,
   ) => Promise<void>;
+  saveEditTrailIteration: (
+    assetId: string,
+    file: File | null,
+    transform: EditTrailTransform,
+    thumbnailDataUrl?: string,
+  ) => Promise<void>;
   undoEditTrail: (assetId: string) => Promise<void>;
   createFolder: (name: string) => void;
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number) => string;
@@ -113,6 +119,52 @@ function applyIterationToAsset(asset: MediaAsset, iteration: EditTrailIteration)
     width: iteration.width,
     height: iteration.height,
     durationSec: iteration.durationSec,
+  };
+}
+
+async function buildManualEditIteration(
+  base: MediaAsset & { editTrail: EditTrail },
+  file: File | null,
+  transform: EditTrailTransform,
+  thumbnailDataUrl: string | undefined,
+  options: {
+    id?: string;
+    label: string;
+    createdAt?: number;
+  },
+): Promise<EditTrailIteration> {
+  if (file) {
+    const probed = await probe(file);
+    const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
+    const blobKey = `blob_${nanoid(12)}`;
+    await putBlob(blobKey, file, file.name);
+    return {
+      id: options.id ?? nanoid(10),
+      label: options.label,
+      source: 'manual',
+      blobKey,
+      thumbnailDataUrl: thumbnail || thumbnailDataUrl,
+      mimeType: file.type || base.mimeType,
+      width: probed.width ?? base.width,
+      height: probed.height ?? base.height,
+      durationSec: probed.durationSec || base.durationSec,
+      transform,
+      createdAt: options.createdAt ?? Date.now(),
+    };
+  }
+
+  return {
+    id: options.id ?? nanoid(10),
+    label: options.label,
+    source: 'manual',
+    blobKey: activeBlobKey(base),
+    thumbnailDataUrl: thumbnailDataUrl || base.thumbnailDataUrl,
+    mimeType: base.mimeType,
+    width: base.width,
+    height: base.height,
+    durationSec: base.durationSec,
+    transform,
+    createdAt: options.createdAt ?? Date.now(),
   };
 }
 
@@ -209,41 +261,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
     const base = withEditTrail(asset);
     const label = `Edit ${base.editTrail.iterations.length}`;
-    let iteration: EditTrailIteration;
-
-    if (file) {
-      const probed = await probe(file);
-      const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
-      const blobKey = `blob_${nanoid(12)}`;
-      await putBlob(blobKey, file, file.name);
-      iteration = {
-        id: nanoid(10),
-        label,
-        source: 'manual',
-        blobKey,
-        thumbnailDataUrl: thumbnail || thumbnailDataUrl,
-        mimeType: file.type || base.mimeType,
-        width: probed.width ?? base.width,
-        height: probed.height ?? base.height,
-        durationSec: probed.durationSec || base.durationSec,
-        transform,
-        createdAt: Date.now(),
-      };
-    } else {
-      iteration = {
-        id: nanoid(10),
-        label,
-        source: 'manual',
-        blobKey: activeBlobKey(base),
-        thumbnailDataUrl: thumbnailDataUrl || base.thumbnailDataUrl,
-        mimeType: base.mimeType,
-        width: base.width,
-        height: base.height,
-        durationSec: base.durationSec,
-        transform,
-        createdAt: Date.now(),
-      };
-    }
+    const iteration = await buildManualEditIteration(base, file, transform, thumbnailDataUrl, { label });
 
     revokeCachedUrl(assetId);
     const next = get().assets.map((item) => {
@@ -257,6 +275,45 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     });
     saveAssets(next);
     set({ assets: next });
+  },
+
+  saveEditTrailIteration: async (assetId, file, transform, thumbnailDataUrl) => {
+    const asset = get().assets.find((item) => item.id === assetId);
+    if (!asset || !asset.blobKey || (asset.kind !== 'image' && asset.kind !== 'video')) return;
+
+    const base = withEditTrail(asset);
+    const active = base.editTrail.iterations.find((iteration) => iteration.id === base.editTrail.activeIterationId);
+    if (!active || active.source === 'original') {
+      await get().addEditTrailIteration(assetId, file, transform, thumbnailDataUrl);
+      return;
+    }
+
+    const iteration = await buildManualEditIteration(base, file, transform, thumbnailDataUrl, {
+      id: active.id,
+      label: active.label,
+      createdAt: Date.now(),
+    });
+    const replacedBlobKey = active.blobKey;
+
+    revokeCachedUrl(assetId);
+    const next = get().assets.map((item) => {
+      if (item.id !== assetId) return item;
+      const trailed = withEditTrail(item);
+      const editTrail = {
+        activeIterationId: iteration.id,
+        iterations: trailed.editTrail.iterations.map((candidate) => (candidate.id === iteration.id ? iteration : candidate)),
+      };
+      return applyIterationToAsset({ ...trailed, editTrail }, iteration);
+    });
+    saveAssets(next);
+    set({ assets: next });
+
+    const stillUsed = next
+      .find((item) => item.id === assetId)
+      ?.editTrail?.iterations.some((candidate) => candidate.blobKey === replacedBlobKey);
+    if (replacedBlobKey !== iteration.blobKey && !stillUsed) {
+      await deleteBlob(replacedBlobKey).catch(() => undefined);
+    }
   },
 
   undoEditTrail: async (assetId) => {
