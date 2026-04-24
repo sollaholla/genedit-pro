@@ -3,7 +3,8 @@ import type { MediaAsset } from '@/types';
 import { classifyProviderErrorText, VideoGenerationProviderError } from './errors';
 import { assetsByRole, type VideoGenerationMutation } from './mutations';
 
-export const KLING_API_BASE_URL = 'https://api-singapore.klingai.com';
+export const KLING_API_REMOTE_BASE_URL = 'https://api-singapore.klingai.com';
+export const KLING_API_BASE_URL = import.meta.env.VITE_KLING_API_BASE_URL?.trim() || '/kling-api';
 export const KLING_ARTIFACT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type KlingCredentials = {
@@ -145,8 +146,9 @@ export function generatedKlingVideoFromTask(task: KlingTaskData): KlingGenerated
 }
 
 async function klingFetch(path: string, credentials: KlingCredentials, init: RequestInit): Promise<Response> {
-  const token = await createKlingJwt(credentials);
-  return fetch(`${KLING_API_BASE_URL}${path}`, {
+  const normalizedCredentials = normalizeKlingCredentials(credentials);
+  const token = await createKlingJwt(normalizedCredentials);
+  return fetch(klingApiUrl(path), {
     ...init,
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -395,6 +397,19 @@ async function createKlingJwt(credentials: KlingCredentials): Promise<string> {
   );
   const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput));
   return `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+}
+
+function normalizeKlingCredentials(credentials: KlingCredentials): KlingCredentials {
+  return {
+    accessKey: credentials.accessKey.trim(),
+    secretKey: credentials.secretKey.trim(),
+  };
+}
+
+function klingApiUrl(path: string): string {
+  const base = KLING_API_BASE_URL.replace(/\/+$/, '');
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
 }
 
 function base64UrlJson(value: unknown): string {
