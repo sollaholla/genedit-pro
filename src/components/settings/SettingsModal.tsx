@@ -114,9 +114,8 @@ export function SettingsModal({ open, onClose }: Props) {
                 <div className="rounded border border-surface-700 bg-surface-900/60 p-3">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-950">K</span>
                       <div>
-                        <div className="text-sm font-semibold text-slate-200">Kling</div>
+                        <KlingAiLogo />
                         <div className="text-[11px] text-slate-500">Access Key + Secret Key</div>
                       </div>
                     </div>
@@ -169,6 +168,36 @@ export function SettingsModal({ open, onClose }: Props) {
         </section>
       </div>
     </div>
+  );
+}
+
+function KlingAiLogo() {
+  return (
+    <svg
+      aria-label="KlingAI"
+      className="h-6 w-[104px] text-slate-50"
+      role="img"
+      viewBox="0 0 126 28"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5">
+        <ellipse cx="16" cy="14" rx="12" ry="7.2" transform="rotate(-32 16 14)" />
+        <ellipse cx="16" cy="14" rx="12" ry="7.2" transform="rotate(32 16 14)" />
+        <path d="M4.8 17.8C7.8 9.4 13.9 3.6 24.2 2.2" />
+        <path d="M27.5 10.2c-2.7 8.5-9 14.4-19.4 15.7" />
+      </g>
+      <text
+        fill="currentColor"
+        fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+        fontSize="23"
+        fontWeight="700"
+        letterSpacing="0"
+        x="36"
+        y="22"
+      >
+        KlingAI
+      </text>
+    </svg>
   );
 }
 
