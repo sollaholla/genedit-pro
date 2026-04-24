@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Clip } from '@/types';
-import { Plus, Scissors } from 'lucide-react';
+import { Plus, Scissors, Trash2 } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
   TRACK_HEADER_WIDTH_PX,
@@ -110,6 +110,30 @@ export function Timeline() {
     return getKeyframeProperties(selectedClip).filter((row) => !collapsedComponents.has(row.componentIndex));
   }, [selectedClip, collapsedComponents]);
   const keyframeLaneHeight = selectedClip ? laneHeightForClip(visibleKeyframeProperties.length, getTransformComponents(selectedClip).length) : 0;
+  const deleteSelectedKeyframe = useCallback(() => {
+    if (!selectedClip || !selectedKeyframe) return;
+    update((p) => ({
+      ...p,
+      clips: p.clips.map((c) => {
+        if (c.id !== selectedClip.id) return c;
+        const components = getTransformComponents(c).map((component, idx) => {
+          if (idx !== selectedKeyframe.componentIndex) return component;
+          return {
+            ...component,
+            data: {
+              ...component.data,
+              keyframes: {
+                ...component.data.keyframes,
+                [selectedKeyframe.property]: component.data.keyframes[selectedKeyframe.property].filter((k) => k.id !== selectedKeyframe.keyframeId),
+              },
+            },
+          };
+        });
+        return { ...c, components };
+      }),
+    }));
+    setSelectedKeyframe(null);
+  }, [selectedClip, selectedKeyframe, update]);
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -188,6 +212,11 @@ export function Timeline() {
         if (!selectedClipId) return;
         update((p) => splitClipAt(p, selectedClipId, currentTime));
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedKeyframe) {
+          e.preventDefault();
+          deleteSelectedKeyframe();
+          return;
+        }
         const ids = usePlaybackStore.getState().selectedClipIds;
         if (ids.length === 0) return;
         update((p) => ids.reduce((proj, id) => removeClip(proj, id), p));
@@ -198,7 +227,7 @@ export function Timeline() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard]);
+  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard, selectedKeyframe, deleteSelectedKeyframe]);
 
   // ---- Clip right-click context menu ----
   const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -489,7 +518,6 @@ export function Timeline() {
     const point = row?.points.find((p) => p.id === selectedKeyframe.keyframeId);
     return point ? { ...selectedKeyframe, ...point } : null;
   }, [selectedClip, selectedKeyframe]);
-
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-1.5">
@@ -544,6 +572,14 @@ export function Timeline() {
                 }));
               }}
             />
+            <button
+              type="button"
+              className="btn-ghost px-2 py-1 text-xs text-rose-300 hover:text-rose-200"
+              onClick={deleteSelectedKeyframe}
+              title="Delete keyframe (Delete)"
+            >
+              <Trash2 size={12} />
+            </button>
           </div>
         </div>
       )}
@@ -640,6 +676,30 @@ export function Timeline() {
                       selectedKeyframe={selectedKeyframe}
                       visibleProperties={visibleKeyframeProperties}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
+                      onMoveKeyframe={(meta) => {
+                        update((p) => ({
+                          ...p,
+                          clips: p.clips.map((c) => {
+                            if (c.id !== selectedClip.id) return c;
+                            const components = getTransformComponents(c).map((component, idx) => {
+                              if (idx !== meta.componentIndex) return component;
+                              const points = component.data.keyframes[meta.property].map((k) => (
+                                k.id === meta.keyframeId ? { ...k, timeSec: meta.timeSec } : k
+                              ));
+                              return {
+                                ...component,
+                                data: {
+                                  ...component.data,
+                                  keyframes: { ...component.data.keyframes, [meta.property]: points },
+                                },
+                              };
+                            });
+                            return { ...c, components };
+                          }),
+                        }));
+                        setSelectedKeyframe({ componentIndex: meta.componentIndex, property: meta.property, keyframeId: meta.keyframeId });
+                        setCurrentTime(selectedClip.startSec + meta.timeSec);
+                      }}
                       onSelectKeyframe={(meta) => {
                         setSelectedKeyframe(meta);
                         setCurrentTime(selectedClip.startSec + meta.timeSec);
@@ -709,6 +769,7 @@ function KeyframeTrackLane({
   selectedKeyframe,
   visibleProperties,
   onDeselectKeyframe,
+  onMoveKeyframe,
   onSelectKeyframe,
 }: {
   clip: Clip;
@@ -716,6 +777,7 @@ function KeyframeTrackLane({
   selectedKeyframe: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null;
   visibleProperties: Array<KeyframePropertyRow>;
   onDeselectKeyframe: () => void;
+  onMoveKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
   onSelectKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
 }) {
   const transforms = getTransformComponents(clip);
@@ -777,6 +839,25 @@ function KeyframeTrackLane({
                         onMouseDown={(e) => {
                           e.stopPropagation();
                           onSelectKeyframe({ componentIndex: row.componentIndex, property: row.property, keyframeId: k.id, timeSec: k.timeSec });
+                          const svg = (e.currentTarget as SVGCircleElement).ownerSVGElement;
+                          if (!svg) return;
+                          const duration = Math.max(1e-6, clipTimelineDurationSec(clip));
+                          const move = (ev: MouseEvent) => {
+                            const rect = svg.getBoundingClientRect();
+                            const normalized = Math.max(0, Math.min(1, (ev.clientX - rect.left) / Math.max(1, rect.width)));
+                            onMoveKeyframe({
+                              componentIndex: row.componentIndex,
+                              property: row.property,
+                              keyframeId: k.id,
+                              timeSec: normalized * duration,
+                            });
+                          };
+                          const up = () => {
+                            window.removeEventListener('mousemove', move);
+                            window.removeEventListener('mouseup', up);
+                          };
+                          window.addEventListener('mousemove', move);
+                          window.addEventListener('mouseup', up);
                         }}
                       />
                     );
