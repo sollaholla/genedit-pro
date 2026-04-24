@@ -13,6 +13,8 @@ const kindIcon = { video: Film, audio: Music, image: ImageIcon, recipe: BookOpen
 
 export function ClipInspector() {
   const [applyingSpeed, setApplyingSpeed] = useState(false);
+  const [componentPickerOpen, setComponentPickerOpen] = useState(false);
+  const [componentSearch, setComponentSearch] = useState('');
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
@@ -187,10 +189,49 @@ export function ClipInspector() {
             type="button"
             className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
             disabled={asset?.kind !== 'video'}
-            onClick={() => update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), createDefaultTransformComponent()]))}
+            onClick={() => setComponentPickerOpen(true)}
           >
             Add Component
           </button>
+          {componentPickerOpen && (
+            <div className="rounded border border-surface-700 bg-surface-900 p-2.5">
+              <input
+                value={componentSearch}
+                onChange={(e) => setComponentSearch(e.target.value)}
+                placeholder="Search components…"
+                className="mb-2 w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-slate-100 outline-none"
+              />
+              {['transform']
+                .filter((name) => name.includes(componentSearch.trim().toLowerCase()))
+                .map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="mb-1 block w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700"
+                    onClick={() => {
+                      if (name === 'transform') {
+                        update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), createDefaultTransformComponent()]));
+                      }
+                      setComponentPickerOpen(false);
+                      setComponentSearch('');
+                    }}
+                  >
+                    <div className="font-medium">Transform</div>
+                    <div className="text-[10px] text-slate-400">Position/scale offsets and keyframes.</div>
+                  </button>
+                ))}
+              <button
+                type="button"
+                className="mt-1 rounded px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200"
+                onClick={() => {
+                  setComponentPickerOpen(false);
+                  setComponentSearch('');
+                }}
+              >
+                Close
+              </button>
+            </div>
+          )}
           {getTransformComponents(clip).length === 0 && (
             <div className="rounded border border-dashed border-surface-600 bg-surface-900/30 p-2.5 text-[11px] text-slate-500">
               No components on this clip yet.

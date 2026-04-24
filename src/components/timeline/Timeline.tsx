@@ -82,6 +82,7 @@ export function Timeline() {
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
   const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
+  const [selectedKeyframe, setSelectedKeyframe] = useState<{ componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null>(null);
 
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
   // A Set version for O(1) membership checks in the render path.
@@ -476,6 +477,13 @@ export function Timeline() {
     ? project.clips.find((c) => c.id === dragOverlay.clipId)
     : null;
   const ghostAsset = ghostClip ? assetById.get(ghostClip.assetId) : undefined;
+  const selectedKeyframeData = useMemo(() => {
+    if (!selectedClip || !selectedKeyframe) return null;
+    const properties = getKeyframeProperties(selectedClip);
+    const row = properties.find((r) => r.componentIndex === selectedKeyframe.componentIndex && r.property === selectedKeyframe.property);
+    const point = row?.points.find((p) => p.id === selectedKeyframe.keyframeId);
+    return point ? { ...selectedKeyframe, ...point } : null;
+  }, [selectedClip, selectedKeyframe]);
 
   return (
     <div className="flex h-full flex-col">
@@ -498,6 +506,42 @@ export function Timeline() {
         </div>
         <ShortcutHints />
       </div>
+      {selectedClip && selectedKeyframeData && (
+        <div className="border-t border-surface-700 bg-surface-900 px-3 py-1.5 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">{`Transform ${selectedKeyframeData.componentIndex + 1}.${selectedKeyframeData.property}`}</span>
+            <input
+              type="number"
+              className="w-24 rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-100 outline-none"
+              value={Number(selectedKeyframeData.value.toFixed(3))}
+              onChange={(e) => {
+                const nextValue = Number(e.target.value);
+                if (!Number.isFinite(nextValue)) return;
+                update((p) => ({
+                  ...p,
+                  clips: p.clips.map((c) => {
+                    if (c.id !== selectedClip.id) return c;
+                    const components = getTransformComponents(c).map((component, idx) => {
+                      if (idx !== selectedKeyframeData.componentIndex) return component;
+                      const points = component.data.keyframes[selectedKeyframeData.property].map((k) => (
+                        k.id === selectedKeyframeData.keyframeId ? { ...k, value: nextValue } : k
+                      ));
+                      return {
+                        ...component,
+                        data: {
+                          ...component.data,
+                          keyframes: { ...component.data.keyframes, [selectedKeyframeData.property]: points },
+                        },
+                      };
+                    });
+                    return { ...c, components };
+                  }),
+                }));
+              }}
+            />
+          </div>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
         {/* Track headers: pinned ruler + vertically synced track list */}
         <div className="relative min-h-0 shrink-0 overflow-hidden border-r border-surface-700" style={{ width: TRACK_HEADER_WIDTH_PX }}>
@@ -574,7 +618,15 @@ export function Timeline() {
                     onEmptyMouseDown={handleEmptyMouseDown}
                   />
                   {selectedClip && selectedTrackId === track.id && (
-                    <KeyframeTrackLane clip={selectedClip} pxPerSec={pxPerSec} />
+                    <KeyframeTrackLane
+                      clip={selectedClip}
+                      pxPerSec={pxPerSec}
+                      selectedKeyframe={selectedKeyframe}
+                      onSelectKeyframe={(meta) => {
+                        setSelectedKeyframe(meta);
+                        setCurrentTime(selectedClip.startSec + meta.timeSec);
+                      }}
+                    />
                   )}
                 </div>
               ))}
@@ -633,7 +685,17 @@ export function Timeline() {
   );
 }
 
-function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }) {
+function KeyframeTrackLane({
+  clip,
+  pxPerSec,
+  selectedKeyframe,
+  onSelectKeyframe,
+}: {
+  clip: Clip;
+  pxPerSec: number;
+  selectedKeyframe: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null;
+  onSelectKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
+}) {
   const transforms = getTransformComponents(clip);
   if (transforms.length === 0) return null;
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
@@ -641,11 +703,11 @@ function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number })
   const properties = getKeyframeProperties(clip);
 
   return (
-    <div className="border-b border-surface-800 bg-[#0c1222] px-3 py-1.5">
+    <div className="border-b border-surface-800 bg-[#0c1222] py-1.5">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
       <div className="max-h-[220px] overflow-auto">
         {properties.map((row) => (
-          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
+          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-0 py-1">
             <div className="relative h-8 overflow-hidden rounded bg-[#0a0f1c]">
               <div
                 className="absolute inset-y-0 border border-brand-400/40 bg-brand-500/10"
@@ -670,7 +732,18 @@ function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number })
                   {row.points.map((k) => {
                     const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
                     const x = (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500;
-                    return <circle key={k.id} cx={x} cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))} r="2.3" fill="#a78bfa" />;
+                    const selected = selectedKeyframe?.keyframeId === k.id && selectedKeyframe.componentIndex === row.componentIndex && selectedKeyframe.property === row.property;
+                    return (
+                      <circle
+                        key={k.id}
+                        cx={x}
+                        cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))}
+                        r={selected ? 3.2 : 2.3}
+                        fill={selected ? '#fbbf24' : '#a78bfa'}
+                        className="cursor-pointer"
+                        onClick={() => onSelectKeyframe({ componentIndex: row.componentIndex, property: row.property, keyframeId: k.id, timeSec: k.timeSec })}
+                      />
+                    );
                   })}
                 </svg>
               </div>
@@ -688,13 +761,13 @@ function laneHeightForClip(clip: Clip): number {
   return Math.min(240, 20 + rows * 40);
 }
 
-function getKeyframeProperties(clip: Clip): Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> {
+function getKeyframeProperties(clip: Clip): Array<{ label: string; componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; points: Array<{ id: string; timeSec: number; value: number }> }> {
   const transforms = getTransformComponents(clip);
-  const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
+  const properties: Array<{ label: string; componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
   transforms.forEach((component, index) => {
-    properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
-    properties.push({ label: `Transform ${index + 1}.offsetY`, points: component.data.keyframes.offsetY });
-    properties.push({ label: `Transform ${index + 1}.scale`, points: component.data.keyframes.scale });
+    properties.push({ label: `Transform ${index + 1}.offsetX`, componentIndex: index, property: 'offsetX', points: component.data.keyframes.offsetX });
+    properties.push({ label: `Transform ${index + 1}.offsetY`, componentIndex: index, property: 'offsetY', points: component.data.keyframes.offsetY });
+    properties.push({ label: `Transform ${index + 1}.scale`, componentIndex: index, property: 'scale', points: component.data.keyframes.scale });
   });
   return properties;
 }
