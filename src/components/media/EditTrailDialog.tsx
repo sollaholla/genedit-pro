@@ -1,5 +1,5 @@
-import { Film, Image as ImageIcon, RotateCcw, Save, Sparkles, Undo2, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Film, Image as ImageIcon, Pause, Play, RotateCcw, Save, Sparkles, Undo2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { useMediaStore } from '@/state/mediaStore';
@@ -16,10 +16,14 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const saveEditTrailIteration = useMediaStore((s) => s.saveEditTrailIteration);
   const undoEditTrail = useMediaStore((s) => s.undoEditTrail);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditTrailTransform>(DEFAULT_EDIT_TRAIL_TRANSFORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoPlaying, setVideoPlaying] = useState(false);
 
   useEffect(() => {
     if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return;
@@ -43,6 +47,12 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
       mounted = false;
     };
   }, [asset?.blobKey, asset?.editTrail?.activeIterationId, asset?.id, objectUrlFor]);
+
+  useEffect(() => {
+    setVideoCurrentTime(0);
+    setVideoDuration(0);
+    setVideoPlaying(false);
+  }, [sourceUrl]);
 
   const iterations = useMemo(() => {
     return [...(asset?.editTrail?.iterations ?? [])].sort((a, b) => b.createdAt - a.createdAt);
@@ -83,6 +93,23 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleVideoPlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play();
+      return;
+    }
+    video.pause();
+  };
+
+  const scrubVideo = (value: number) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(value)) return;
+    video.currentTime = value;
+    setVideoCurrentTime(value);
   };
 
   return (
@@ -157,16 +184,53 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
               <div className="flex h-full items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:18px_18px]">
                 {sourceUrl ? (
                   asset.kind === 'video' ? (
-                    <video
-                      key={sourceUrl}
-                      src={sourceUrl}
-                      muted
-                      loop
-                      controls
-                      playsInline
-                      className="max-h-full max-w-full object-contain"
-                      style={transformStyle(draft)}
-                    />
+                    <div className="relative flex h-full w-full items-center justify-center">
+                      <video
+                        key={sourceUrl}
+                        ref={videoRef}
+                        src={sourceUrl}
+                        muted
+                        loop
+                        playsInline
+                        className="max-h-full max-w-full object-contain"
+                        style={transformStyle(draft)}
+                        onLoadedMetadata={(event) => {
+                          const duration = event.currentTarget.duration;
+                          setVideoDuration(Number.isFinite(duration) ? duration : 0);
+                          setVideoCurrentTime(event.currentTarget.currentTime || 0);
+                        }}
+                        onTimeUpdate={(event) => setVideoCurrentTime(event.currentTarget.currentTime || 0)}
+                        onPlay={() => setVideoPlaying(true)}
+                        onPause={() => setVideoPlaying(false)}
+                      />
+                      <div className="pointer-events-auto absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/90 via-black/50 to-transparent px-4 pb-3 pt-12">
+                        <div className="mb-2 flex items-center gap-3 text-white">
+                          <button
+                            type="button"
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+                            onClick={toggleVideoPlayback}
+                            title={videoPlaying ? 'Pause' : 'Play'}
+                            aria-label={videoPlaying ? 'Pause' : 'Play'}
+                          >
+                            {videoPlaying ? <Pause size={16} /> : <Play size={16} />}
+                          </button>
+                          <div className="font-mono text-sm tabular-nums">
+                            {formatPlaybackTime(videoCurrentTime)} / {formatPlaybackTime(videoDuration)}
+                          </div>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={videoDuration || 0}
+                          step={0.01}
+                          value={Math.min(videoCurrentTime, videoDuration || videoCurrentTime || 0)}
+                          disabled={!videoDuration}
+                          onChange={(event) => scrubVideo(Number(event.target.value))}
+                          className="block h-1 w-full accent-white disabled:opacity-40"
+                          aria-label="Video scrubber"
+                        />
+                      </div>
+                    </div>
                   ) : (
                     <img
                       src={sourceUrl}
@@ -289,6 +353,14 @@ function transformStyle(transform: EditTrailTransform): CSSProperties {
     transform: `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`,
     transformOrigin: 'center center',
   };
+}
+
+function formatPlaybackTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
+  const whole = Math.floor(seconds);
+  const minutes = Math.floor(whole / 60);
+  const remaining = whole % 60;
+  return `${minutes}:${remaining.toString().padStart(2, '0')}`;
 }
 
 async function renderEditedImageFile(asset: MediaAsset, sourceUrl: string, transform: EditTrailTransform): Promise<File> {
