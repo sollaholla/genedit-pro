@@ -328,8 +328,16 @@ async function readPiApiTaskResponse(response: Response, fallback: string): Prom
   }
 
   const envelopeOk = parsed?.code === undefined || parsed.code === 0 || parsed.code === 200;
+  const taskData = parsed?.data;
+  const dataStatus = normalizeStatus(taskData?.status);
+  const hasDataFailure = taskData && (
+    isFailedStatus(dataStatus) ||
+    hasPiApiTaskError(taskData)
+  );
+  if (hasDataFailure) throw piApiTaskFailure(taskData, fallback, response.status, parsed?.code);
+
   if (!response.ok || !envelopeOk) {
-    const message = parsed?.message || text || `${fallback} (${response.status}).`;
+    const message = piApiErrorMessage(taskData, parsed?.message || text || `${fallback} (${response.status}).`);
     throw new VideoGenerationProviderError(
       classifyPiApiError(response.status, parsed?.code, message),
       `${fallback} (${response.status}${parsed?.code !== undefined ? `/${parsed.code}` : ''}): ${message}`,
@@ -337,26 +345,48 @@ async function readPiApiTaskResponse(response: Response, fallback: string): Prom
   }
 
   if (!parsed?.data) throw new VideoGenerationProviderError('InternalError', `${fallback}: PiAPI returned no task data.`);
-  const dataErrorCode = parsed.data.error?.code;
-  const numericErrorCode = typeof dataErrorCode === 'string' ? Number(dataErrorCode) : dataErrorCode;
-  if (Number.isFinite(numericErrorCode) && numericErrorCode !== 0) throw piApiTaskFailure(parsed.data);
-  if (isFailedStatus(normalizeStatus(parsed.data.status))) throw piApiTaskFailure(parsed.data);
   return parsed.data;
 }
 
-function piApiTaskFailure(task: PiApiTaskData): VideoGenerationProviderError {
-  const message = [
-    task.error?.message,
-    task.error?.raw_message,
-    typeof task.error?.detail === 'string' ? task.error.detail : '',
-  ].filter(Boolean).join(' ') || 'PiAPI generation failed.';
-  return new VideoGenerationProviderError(classifyProviderErrorText(message), message);
+function piApiTaskFailure(
+  task: PiApiTaskData,
+  fallback = 'PiAPI generation failed',
+  status?: number,
+  envelopeCode?: number,
+): VideoGenerationProviderError {
+  const message = piApiErrorMessage(task, 'PiAPI generation failed.');
+  const prefix = status
+    ? `${fallback} (${status}${envelopeCode !== undefined ? `/${envelopeCode}` : ''})`
+    : fallback;
+  return new VideoGenerationProviderError(classifyProviderErrorText(message), `${prefix}: ${message}`);
 }
 
 function classifyPiApiError(status: number, code: number | undefined, message: string) {
   if (status === 401 || status === 403) return 'InternalError';
   if (status >= 500 || (code !== undefined && code >= 5000)) return 'InternalError';
   return classifyProviderErrorText(message);
+}
+
+function hasPiApiTaskError(task: PiApiTaskData): boolean {
+  const dataErrorCode = task.error?.code;
+  const numericErrorCode = typeof dataErrorCode === 'string' ? Number(dataErrorCode) : dataErrorCode;
+  return Boolean(
+    (Number.isFinite(numericErrorCode) && numericErrorCode !== 0) ||
+    task.error?.message ||
+    task.error?.raw_message ||
+    task.error?.detail,
+  );
+}
+
+function piApiErrorMessage(task: PiApiTaskData | undefined, fallback: string): string {
+  if (!task) return fallback;
+  const rawMessage = task.error?.raw_message?.trim();
+  const message = task.error?.message?.trim();
+  const detail = typeof task.error?.detail === 'string' ? task.error.detail.trim() : '';
+  const parts = [message, rawMessage, detail]
+    .filter((part): part is string => Boolean(part))
+    .filter((part, index, all) => all.findIndex((candidate) => candidate.toLowerCase() === part.toLowerCase()) === index);
+  return parts.join(': ') || fallback;
 }
 
 function rewriteKlingPromptReferences(
