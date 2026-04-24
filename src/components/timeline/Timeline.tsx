@@ -639,6 +639,7 @@ export function Timeline() {
                       pxPerSec={pxPerSec}
                       selectedKeyframe={selectedKeyframe}
                       visibleProperties={visibleKeyframeProperties}
+                      onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onSelectKeyframe={(meta) => {
                         setSelectedKeyframe(meta);
                         setCurrentTime(selectedClip.startSec + meta.timeSec);
@@ -707,12 +708,14 @@ function KeyframeTrackLane({
   pxPerSec,
   selectedKeyframe,
   visibleProperties,
+  onDeselectKeyframe,
   onSelectKeyframe,
 }: {
   clip: Clip;
   pxPerSec: number;
   selectedKeyframe: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null;
   visibleProperties: Array<KeyframePropertyRow>;
+  onDeselectKeyframe: () => void;
   onSelectKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
 }) {
   const transforms = getTransformComponents(clip);
@@ -722,11 +725,22 @@ function KeyframeTrackLane({
   const properties = visibleProperties;
 
   return (
-    <div className="border-b border-surface-800 bg-[#0c1222] py-1.5">
+    <div
+      className="border-b border-surface-800 bg-[#0c1222] py-1.5"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onDeselectKeyframe();
+      }}
+    >
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
       <div className="max-h-[220px] overflow-auto">
         {properties.map((row) => (
-          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-0 py-1">
+          <div
+            key={row.label}
+            className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-0 py-1"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) onDeselectKeyframe();
+            }}
+          >
             <div className="relative h-8 overflow-hidden rounded bg-[#0a0f1c]">
               <div
                 className="absolute inset-y-0 border border-brand-400/40 bg-brand-500/10"
@@ -750,17 +764,20 @@ function KeyframeTrackLane({
                   )}
                   {row.points.map((k) => {
                     const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
-                    const x = (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500;
+                    const x = Math.max(6, Math.min(494, (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500));
                     const selected = selectedKeyframe?.keyframeId === k.id && selectedKeyframe.componentIndex === row.componentIndex && selectedKeyframe.property === row.property;
                     return (
                       <circle
                         key={k.id}
                         cx={x}
                         cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))}
-                        r={selected ? 3.2 : 2.3}
+                        r={selected ? 5.2 : 4}
                         fill={selected ? '#fbbf24' : '#a78bfa'}
                         className="cursor-pointer"
-                        onClick={() => onSelectKeyframe({ componentIndex: row.componentIndex, property: row.property, keyframeId: k.id, timeSec: k.timeSec })}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          onSelectKeyframe({ componentIndex: row.componentIndex, property: row.property, keyframeId: k.id, timeSec: k.timeSec });
+                        }}
                       />
                     );
                   })}
