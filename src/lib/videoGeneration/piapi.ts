@@ -27,7 +27,7 @@ export type PiApiCreateTaskOptions = {
 export type PiApiTaskData = {
   task_id?: string;
   status?: string;
-  output?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
   error?: {
     code?: number | string;
     message?: string;
@@ -93,8 +93,9 @@ export async function pollPiApiVideoTask({
   let progress = 5;
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const status = normalizeStatus(task.status);
-    if (isCompletedStatus(status)) return task;
+    if (hasNullPiApiOutput(task)) throw piApiTaskFailure(task);
     if (isFailedStatus(status)) throw piApiTaskFailure(task);
+    if (isCompletedStatus(status) && generatedPiApiVideoFromTask(task).url) return task;
 
     await new Promise((resolve) => setTimeout(resolve, 5000));
     progress = Math.min(95, progress + 5);
@@ -332,6 +333,7 @@ async function readPiApiTaskResponse(response: Response, fallback: string): Prom
   const dataStatus = normalizeStatus(taskData?.status);
   const hasDataFailure = taskData && (
     isFailedStatus(dataStatus) ||
+    hasNullPiApiOutput(taskData) ||
     hasPiApiTaskError(taskData)
   );
   if (hasDataFailure) throw piApiTaskFailure(taskData, fallback, response.status, parsed?.code);
@@ -378,6 +380,10 @@ function hasPiApiTaskError(task: PiApiTaskData): boolean {
   );
 }
 
+function hasNullPiApiOutput(task: PiApiTaskData): boolean {
+  return task.output === null;
+}
+
 function piApiErrorMessage(task: PiApiTaskData | undefined, fallback: string): string {
   if (!task) return fallback;
   const rawMessage = task.error?.raw_message?.trim();
@@ -386,7 +392,9 @@ function piApiErrorMessage(task: PiApiTaskData | undefined, fallback: string): s
   const parts = [message, rawMessage, detail]
     .filter((part): part is string => Boolean(part))
     .filter((part, index, all) => all.findIndex((candidate) => candidate.toLowerCase() === part.toLowerCase()) === index);
-  return parts.join(': ') || fallback;
+  if (parts.length > 0) return parts.join(': ');
+  if (hasNullPiApiOutput(task)) return 'PiAPI reported that the generation failed, but did not provide a reason.';
+  return fallback;
 }
 
 function rewriteKlingPromptReferences(
