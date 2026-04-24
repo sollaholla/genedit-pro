@@ -155,6 +155,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const [mentionPos, setMentionPos] = useState({ x: 0, y: 0 });
   const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const initialRecipeLoadKeyRef = useRef<string | null>(null);
 
   const selectedModel = useMemo(
     () => models.find((m) => m.id === model) ?? DEFAULT_VIDEO_MODELS[0],
@@ -282,9 +283,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   }, [model, open, selectableModels]);
 
   useEffect(() => {
-    if (!open || !initialRecipeAsset?.recipe) return;
+    if (!open) {
+      initialRecipeLoadKeyRef.current = null;
+      return;
+    }
+    if (!initialRecipeAsset?.recipe) return;
+    if (initialRecipeLoadKeyRef.current === initialRecipeAsset.id) return;
+    initialRecipeLoadKeyRef.current = initialRecipeAsset.id;
     const recipe = initialRecipeAsset.recipe;
-    setLoadedRecipeId(initialRecipeAsset.id);
+    setLoadedRecipeId(initialRecipeAsset.kind === 'recipe' ? initialRecipeAsset.id : null);
     setModel(recipe.model);
     const nextStartFrame = recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null;
     const nextEndFrame = recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null;
@@ -536,10 +543,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     }
     setIsGenerating(true);
     const generationCostUsd = estimatedCostUsd || undefined;
+    const generationRecipe = buildCurrentRecipe();
     const id = addGeneratedAsset(
       `Generating_${Date.now()}.mp4`,
       folderId,
       generationCostUsd,
+      generationRecipe,
     );
     try {
       const modelId = selectedModel.id;

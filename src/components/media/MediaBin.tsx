@@ -181,6 +181,10 @@ function MediaTile({
   const pointerButtonRef = useRef(0);
   const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
   const canEdit = isEditableMedia(asset);
+  const canReusePrompt = Boolean(asset.recipe) &&
+    asset.kind !== 'recipe' &&
+    (asset.kind === 'video' || asset.kind === 'image') &&
+    asset.generation?.status !== 'generating';
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -399,6 +403,21 @@ function MediaTile({
           style={{ left: menuPos.x, top: menuPos.y }}
           onContextMenu={(e) => e.preventDefault()}
         >
+          {canReusePrompt && (
+            <>
+              <button
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenRecipe();
+                }}
+              >
+                <Sparkles size={12} />
+                Reuse Prompt
+              </button>
+              <div className="my-1 h-px bg-surface-700" />
+            </>
+          )}
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-45"
             disabled={!canInsert}

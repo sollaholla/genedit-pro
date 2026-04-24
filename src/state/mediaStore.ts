@@ -53,7 +53,7 @@ type MediaState = {
   setActiveEditTrailIteration: (assetId: string, iterationId: string) => void;
   undoEditTrail: (assetId: string) => Promise<void>;
   createFolder: (name: string) => void;
-  addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number) => string;
+  addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number, recipe?: GenerateRecipe) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
   finalizeGeneratedAsset: (id: string) => void;
   finalizeGeneratedAssetWithBlob: (
@@ -369,7 +369,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     set({ folders: next });
   },
 
-  addGeneratedAsset: (name, folderId = null, estimatedCostUsd) => {
+  addGeneratedAsset: (name, folderId = null, estimatedCostUsd, recipe) => {
     const id = nanoid(10);
     const asset: MediaAsset = {
       id,
@@ -380,6 +380,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       blobKey: '',
       folderId,
       generation: { status: 'generating' as const, progress: 0, estimatedCostUsd },
+      recipe,
       createdAt: Date.now(),
     };
     const next = [...get().assets, asset];
@@ -390,7 +391,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
   updateGenerationProgress: (id, progress) => {
     const next: MediaAsset[] = get().assets.map((a) => (a.id === id
-      ? { ...a, generation: { status: 'generating' as const, progress: Math.max(0, Math.min(100, progress)) } }
+      ? { ...a, generation: { ...(a.generation ?? {}), status: 'generating' as const, progress: Math.max(0, Math.min(100, progress)) } }
       : a));
     saveAssets(next);
     set({ assets: next });
@@ -398,7 +399,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
   finalizeGeneratedAsset: (id) => {
     const next: MediaAsset[] = get().assets.map((a) => (a.id === id
-      ? { ...a, generation: { status: 'done' as const, progress: 100 } }
+      ? { ...a, generation: { ...(a.generation ?? {}), status: 'done' as const, progress: 100 } }
       : a));
     saveAssets(next);
     set({ assets: next });
@@ -422,6 +423,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
           blobKey,
           thumbnailDataUrl: thumbnail || a.thumbnailDataUrl,
           generation: {
+            ...(a.generation ?? {}),
             status: 'done' as const,
             progress: 100,
             estimatedCostUsd: a.generation?.estimatedCostUsd,
@@ -441,6 +443,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       ? {
           ...a,
           generation: {
+            ...(a.generation ?? {}),
             status: 'error' as const,
             progress: 0,
             estimatedCostUsd: a.generation?.estimatedCostUsd,
