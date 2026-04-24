@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BookOpen, Film, Image as ImageIcon, Loader2, Music, RotateCcw, Volume2 } from 'lucide-react';
+import { BookOpen, Diamond, Film, Image as ImageIcon, Loader2, Music, RotateCcw, Volume2 } from 'lucide-react';
 import { nanoid } from 'nanoid';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
@@ -257,7 +257,14 @@ export function ClipInspector() {
                 <div className="flex items-center justify-between">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
                   <div className="flex items-center gap-1.5">
-                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600" onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((p) => addPropertyKeyframe(p as 'scale' | 'offsetX' | 'offsetY'))}>+ Keyframe</button>
+                    <button
+                      type="button"
+                      className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600"
+                      title="Add keyframe"
+                      onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((p) => addPropertyKeyframe(p as 'scale' | 'offsetX' | 'offsetY'))}
+                    >
+                      <Diamond size={10} />
+                    </button>
                     <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} onClick={() => {
                       const next = [...components];
                       [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
