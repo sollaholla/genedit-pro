@@ -28,7 +28,6 @@ export type GoogleVeoPredictRequest = {
     aspectRatio?: string;
     durationSeconds?: number;
     resolution?: string;
-    numberOfVideos?: number;
     personGeneration?: 'allow_all' | 'allow_adult';
   };
 };
@@ -76,7 +75,6 @@ export async function buildGoogleVeoPredictRequest(
   return {
     instances: [instance],
     parameters: {
-      numberOfVideos: 1,
       aspectRatio: mutation.config.aspectRatio,
       durationSeconds: mutation.config.durationSeconds,
       resolution: mutation.config.resolution,
