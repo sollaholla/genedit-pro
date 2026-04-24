@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -155,6 +155,11 @@ function MediaTile({
   const [playingPreview, setPlayingPreview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(asset.name);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const skipRenameCommitRef = useRef(false);
+  const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -166,6 +171,18 @@ function MediaTile({
       window.removeEventListener('contextmenu', close);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!renaming) setDraftName(asset.name);
+  }, [asset.name, renaming]);
+
+  useEffect(() => {
+    if (!renaming) return;
+    requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  }, [renaming]);
 
   useEffect(() => {
     let mounted = true;
@@ -180,10 +197,35 @@ function MediaTile({
     };
   }, [playingPreview, asset.id, asset.kind, asset.blobKey, asset.generation?.status, objectUrlFor]);
 
+  const beginRename = () => {
+    setDraftName(asset.name);
+    skipRenameCommitRef.current = false;
+    setRenaming(true);
+    setMenuOpen(false);
+  };
+
+  const commitRename = () => {
+    if (skipRenameCommitRef.current) {
+      skipRenameCommitRef.current = false;
+      return;
+    }
+    const nextName = draftName.trim();
+    setRenaming(false);
+    if (nextName && nextName !== asset.name) onRename(nextName);
+  };
+
+  const cancelRename = () => {
+    skipRenameCommitRef.current = true;
+    setDraftName(asset.name);
+    setRenaming(false);
+  };
+
   return (
     <li
-      className="group relative cursor-grab overflow-hidden rounded-md border border-surface-700 bg-surface-800 hover:border-surface-500 active:cursor-grabbing"
-      draggable
+      className={`group relative overflow-hidden rounded-md border border-surface-700 bg-surface-800 hover:border-surface-500 ${
+        renaming ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
+      }`}
+      draggable={!renaming}
       onDragStart={(e) => {
         e.dataTransfer.setData('application/x-genedit-asset', asset.id);
         e.dataTransfer.effectAllowed = 'copy';
@@ -256,13 +298,48 @@ function MediaTile({
         )}
       </div>
       <div className="flex items-center justify-between px-2 py-1.5">
-        <div className="flex min-w-0 items-center gap-1.5 text-xs">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs">
           <Icon size={12} className="shrink-0 text-slate-400" />
-          <span className="truncate">{asset.name}</span>
+          {renaming ? (
+            <input
+              ref={renameInputRef}
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={commitRename}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelRename();
+                }
+              }}
+              className="min-w-0 flex-1 rounded border border-brand-400/60 bg-surface-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate rounded px-0.5 py-0.5 text-left text-slate-100 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
+              title="Double-click to rename"
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                beginRename();
+              }}
+            >
+              {asset.name}
+            </button>
+          )}
         </div>
         <button
           className="shrink-0 rounded p-1 text-slate-500 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
-          onClick={onDelete}
+          onClick={(e) => {
+            e.stopPropagation();
+            void onDelete();
+          }}
           title="Remove"
         >
           <Trash2 size={12} />
@@ -270,18 +347,41 @@ function MediaTile({
       </div>
       {menuOpen && (
         <div
-          className="fixed z-[80] min-w-[130px] rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
+          className="fixed z-[80] min-w-[150px] rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
           style={{ left: menuPos.x, top: menuPos.y }}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <button
-            className="block w-full rounded px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={!canInsert}
             onClick={() => {
-              const nextName = window.prompt('Rename media item', asset.name);
-              if (nextName?.trim()) onRename(nextName);
+              if (!canInsert) return;
               setMenuOpen(false);
+              onAddToTimeline();
             }}
           >
+            <Plus size={12} />
+            Insert
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+            onClick={() => {
+              beginRename();
+            }}
+          >
+            <Pencil size={12} />
             Rename
+          </button>
+          <div className="my-1 h-px bg-surface-700" />
+          <button
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10"
+            onClick={() => {
+              setMenuOpen(false);
+              void onDelete();
+            }}
+          >
+            <Trash2 size={12} />
+            Delete
           </button>
         </div>
       )}
