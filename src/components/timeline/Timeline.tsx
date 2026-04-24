@@ -103,7 +103,7 @@ export function Timeline() {
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
   const selectedTrackId = selectedClip?.trackId ?? null;
-  const keyframeLaneHeight = selectedClip ? 96 : 0;
+  const keyframeLaneHeight = selectedClip ? laneHeightForClip(selectedClip) : 0;
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -635,6 +635,8 @@ export function Timeline() {
 function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }) {
   const transforms = getTransformComponents(clip);
   if (transforms.length === 0) return null;
+  const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
+  const clipWidthPx = Math.max(48, timeToPx(clipTimelineDurationSec(clip), pxPerSec));
   const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
   transforms.forEach((component, index) => {
     properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
@@ -645,37 +647,51 @@ function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number })
   return (
     <div className="border-b border-surface-800 bg-[#0c1222] px-3 py-1.5">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
-      <div className="max-h-[84px] overflow-auto">
+      <div className="max-h-[220px] overflow-auto">
         {properties.map((row) => (
-          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
-            <div className="mb-1 text-[10px] text-slate-400">{row.label}</div>
-            <svg className="h-8 w-full" viewBox="0 0 500 32" preserveAspectRatio="none">
-              {row.points.length > 1 && (
-                <polyline
-                  points={row.points
-                    .sort((a, b) => a.timeSec - b.timeSec)
-                    .map((k) => `${Math.min(500, (k.timeSec * pxPerSec) / 2)},${16 - Math.max(-12, Math.min(12, k.value * 0.1))}`)
-                    .join(' ')}
-                  fill="none"
-                  stroke="#7dd3fc"
-                  strokeWidth="1.5"
-                />
-              )}
-              {row.points.map((k) => (
-                <circle
-                  key={k.id}
-                  cx={Math.min(500, (k.timeSec * pxPerSec) / 2)}
-                  cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))}
-                  r="2.3"
-                  fill="#a78bfa"
-                />
-              ))}
-            </svg>
+          <div key={row.label} className="mb-1 grid grid-cols-[180px_1fr] items-center gap-2 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
+            <div className="text-[11px] text-slate-400">{row.label}</div>
+            <div className="relative h-8 overflow-hidden rounded bg-[#0a0f1c]">
+              <div
+                className="absolute inset-y-0 border border-brand-400/40 bg-brand-500/10"
+                style={{ left: clipLeftPx, width: clipWidthPx }}
+              >
+                <svg className="h-full w-full" viewBox="0 0 500 32" preserveAspectRatio="none">
+                  {row.points.length > 1 && (
+                    <polyline
+                      points={row.points
+                        .sort((a, b) => a.timeSec - b.timeSec)
+                        .map((k) => {
+                          const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
+                          const x = (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500;
+                          return `${x},${16 - Math.max(-12, Math.min(12, k.value * 0.1))}`;
+                        })
+                        .join(' ')}
+                      fill="none"
+                      stroke="#7dd3fc"
+                      strokeWidth="1.5"
+                    />
+                  )}
+                  {row.points.map((k) => {
+                    const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
+                    const x = (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500;
+                    return <circle key={k.id} cx={x} cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))} r="2.3" fill="#a78bfa" />;
+                  })}
+                </svg>
+              </div>
+            </div>
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+function laneHeightForClip(clip: Clip): number {
+  const transforms = getTransformComponents(clip);
+  if (transforms.length === 0) return 0;
+  const rows = transforms.length * 3;
+  return Math.min(240, 20 + rows * 40);
 }
 
 // Detect Mac once at module level so there are no per-render allocations.
