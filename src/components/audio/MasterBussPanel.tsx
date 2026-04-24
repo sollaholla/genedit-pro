@@ -55,18 +55,46 @@ function VuBar({ level, peak, clipping }: ChannelState) {
 
 const DB_MARKS = [0, -6, -12, -18, -30, -48];
 
-function DbScale() {
+function MeterScaleOverlay() {
   return (
-    <div className="relative h-full w-5">
+    <div className="pointer-events-none absolute inset-x-0 bottom-2 top-2">
       {DB_MARKS.map((db) => (
         <div
           key={db}
-          className="absolute left-0 right-0 flex items-center justify-start"
+          className="absolute left-0 flex items-center"
           style={{ bottom: `${dbToNorm(db) * 100}%`, transform: 'translateY(50%)' }}
         >
-          <span className="select-none font-mono text-[7px] leading-none text-slate-500">{db}</span>
+          <span className="w-3 select-none text-right font-mono text-[7px] leading-none text-slate-500">
+            {db}
+          </span>
+          <span className="ml-1 h-px w-1.5 bg-slate-500/35" />
         </div>
       ))}
+    </div>
+  );
+}
+
+function StereoMeters({
+  left,
+  right,
+  clipping,
+}: {
+  left: ChannelState;
+  right: ChannelState;
+  clipping: boolean;
+}) {
+  return (
+    <div className="relative h-full w-[52px] overflow-hidden rounded-sm bg-surface-950/30">
+      <MeterScaleOverlay />
+      <div className="absolute inset-y-0 right-1.5 flex items-stretch gap-1.5">
+        <VuBar {...left} />
+        <VuBar {...right} />
+      </div>
+      {clipping && (
+        <span className="absolute right-0.5 top-0.5 rounded bg-red-600 px-1 py-px text-[7px] font-bold leading-none text-white">
+          CLIP
+        </span>
+      )}
     </div>
   );
 }
@@ -232,41 +260,25 @@ export function MasterBussPanel() {
         Master
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[20px_14px_14px_22px] gap-1.5">
+      <div className="grid min-h-0 flex-1 grid-cols-[18px_52px] justify-center gap-2">
         <div className="flex min-h-0 flex-col items-center">
           <div className="relative min-h-0 flex-1">
             <MasterFader value={masterVolume} onChange={setMasterVolume} />
           </div>
           <div className="h-6 shrink-0 pt-1 text-center">
-            <div className="font-mono text-[8px] leading-none text-slate-300">{Math.round(masterVolume * 100)}%</div>
+            <div className="font-mono text-[7px] leading-none text-slate-300">{Math.round(masterVolume * 100)}%</div>
             <div className="pt-0.5 text-[6px] uppercase leading-none tracking-wide text-slate-600">Vol</div>
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-col items-center">
-          <div className="min-h-0 flex-1">
-            <VuBar {...channels[0]} />
-          </div>
-          <div className="h-6 shrink-0 pt-1 text-center text-[8px] leading-none text-slate-500">L</div>
-        </div>
-
-        <div className="flex min-h-0 flex-col items-center">
-          <div className="min-h-0 flex-1">
-            <VuBar {...channels[1]} />
-          </div>
-          <div className="h-6 shrink-0 pt-1 text-center text-[8px] leading-none text-slate-500">R</div>
-        </div>
-
         <div className="flex min-h-0 flex-col">
-          <div className="relative min-h-0 flex-1">
-            <DbScale />
+          <div className="min-h-0 flex-1">
+            <StereoMeters left={channels[0]} right={channels[1]} clipping={isClipping} />
           </div>
-          <div className="flex h-6 shrink-0 items-start justify-start pt-1">
-            {isClipping && (
-              <span className="rounded bg-red-600 px-1 py-px text-[7px] font-bold text-white">
-                CLIP
-              </span>
-            )}
+          <div className="grid h-6 shrink-0 grid-cols-[1fr_12px_12px] gap-1.5 pr-1.5 pt-1 text-center text-[8px] leading-none text-slate-500">
+            <div />
+            <div>L</div>
+            <div>R</div>
           </div>
         </div>
       </div>

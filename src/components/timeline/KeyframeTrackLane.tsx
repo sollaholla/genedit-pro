@@ -14,27 +14,41 @@ type DragKeyframeMeta = KeyframeSelection & {
   value: number;
 };
 
+type KeyframeFrameGroup = {
+  frame: number;
+  timeSec: number;
+  members: Array<KeyframeSelection & { timeSec: number; value: number }>;
+};
+
 export function KeyframeTrackLane({
   clip,
   pxPerSec,
+  fps,
   selectedKeyframe,
   rows,
   onDeselectKeyframe,
   onBeginKeyframeDrag,
   onMoveKeyframe,
+  onMoveKeyframeGroup,
   onSelectKeyframe,
+  onSelectKeyframeGroup,
 }: {
   clip: Clip;
   pxPerSec: number;
+  fps: number;
   selectedKeyframe: KeyframeSelection | null;
   rows: KeyframePropertyRow[];
   onDeselectKeyframe: () => void;
   onBeginKeyframeDrag: () => void;
   onMoveKeyframe: (meta: DragKeyframeMeta) => void;
+  onMoveKeyframeGroup: (meta: { members: KeyframeSelection[]; timeSec: number }) => void;
   onSelectKeyframe: (meta: KeyframeSelection & { timeSec: number }) => void;
+  onSelectKeyframeGroup: (meta: { members: KeyframeSelection[]; timeSec: number }) => void;
 }) {
   if (rows.length === 0) return null;
   const groupedRows = groupRows(rows);
+  const frameGroups = buildFrameGroups(rows, fps);
+  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, fps);
   const durationSec = Math.max(1e-6, clipTimelineDurationSec(clip));
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(durationSec, pxPerSec));
@@ -47,7 +61,61 @@ export function KeyframeTrackLane({
         if (e.target === e.currentTarget) onDeselectKeyframe();
       }}
     >
-      <div style={{ height: KEYFRAME_TITLE_HEIGHT_PX }} />
+      <div className="relative" style={{ height: KEYFRAME_TITLE_HEIGHT_PX }}>
+        <div
+          className="absolute bottom-0"
+          style={{ left: clipLeftPx, width: clipWidthPx, height: KEYFRAME_TITLE_HEIGHT_PX }}
+        >
+          {frameGroups.map((group) => {
+            const selected = selectedFrame === group.frame;
+            const left = Math.max(0, Math.min(clipWidthPx, timeToPx(group.timeSec, pxPerSec)));
+            return (
+              <button
+                key={`frame-${group.frame}`}
+                type="button"
+                className="absolute bottom-0 flex h-4 w-5 -translate-x-1/2 items-center justify-center rounded-t outline-none"
+                style={{ left }}
+                title={`${group.members.length} keyframe${group.members.length === 1 ? '' : 's'} at frame ${group.frame}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSelectKeyframeGroup({
+                    members: group.members,
+                    timeSec: group.timeSec,
+                  });
+                  const rail = e.currentTarget.parentElement;
+                  if (!rail) return;
+                  onBeginKeyframeDrag();
+                  const move = (ev: MouseEvent) => {
+                    const rect = rail.getBoundingClientRect();
+                    const localPx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+                    const nextFrame = Math.round((localPx / pxPerSec) * fps);
+                    const nextTimeSec = Math.max(0, Math.min(durationSec, nextFrame / fps));
+                    onMoveKeyframeGroup({
+                      members: group.members,
+                      timeSec: nextTimeSec,
+                    });
+                  };
+                  const up = () => {
+                    window.removeEventListener('mousemove', move);
+                    window.removeEventListener('mouseup', up);
+                  };
+                  window.addEventListener('mousemove', move);
+                  window.addEventListener('mouseup', up);
+                }}
+              >
+                <span
+                  className={`h-2 w-2 rotate-45 rounded-[2px] border ${
+                    selected
+                      ? 'border-amber-100 bg-amber-300 shadow-[0_0_0_3px_rgba(251,191,36,0.24)]'
+                      : 'border-violet-200 bg-violet-400/90'
+                  }`}
+                />
+              </button>
+            );
+          })}
+        </div>
+      </div>
       {groupedRows.map((group) => (
         <div key={`body-group-${group.componentId}`}>
           <div
@@ -74,9 +142,11 @@ export function KeyframeTrackLane({
               >
                 <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-600/45" />
                 {row.points.map((keyframe) => {
-                  const selected = selectedKeyframe?.keyframeId === keyframe.id &&
-                    selectedKeyframe.componentId === row.componentId &&
-                    selectedKeyframe.property === row.property;
+                  const frame = Math.round(keyframe.timeSec * fps);
+                  const selected = selectedFrame === frame ||
+                    (selectedKeyframe?.keyframeId === keyframe.id &&
+                      selectedKeyframe.componentId === row.componentId &&
+                      selectedKeyframe.property === row.property);
                   const left = Math.max(0, Math.min(clipWidthPx, timeToPx(keyframe.timeSec, pxPerSec)));
                   return (
                     <button
@@ -185,4 +255,43 @@ function groupRows(rows: KeyframePropertyRow[]) {
     }
   }
   return groups;
+}
+
+function buildFrameGroups(rows: KeyframePropertyRow[], fps: number): KeyframeFrameGroup[] {
+  const safeFps = Math.max(1, fps);
+  const groups = new Map<number, KeyframeFrameGroup>();
+  for (const row of rows) {
+    for (const point of row.points) {
+      const frame = Math.round(point.timeSec * safeFps);
+      const existing = groups.get(frame);
+      const member = {
+        componentIndex: row.componentIndex,
+        componentId: row.componentId,
+        property: row.property,
+        keyframeId: point.id,
+        timeSec: point.timeSec,
+        value: point.value,
+      };
+      if (existing) {
+        existing.members.push(member);
+      } else {
+        groups.set(frame, {
+          frame,
+          timeSec: frame / safeFps,
+          members: [member],
+        });
+      }
+    }
+  }
+  return [...groups.values()].sort((a, b) => a.frame - b.frame);
+}
+
+function findSelectedFrame(rows: KeyframePropertyRow[], selected: KeyframeSelection | null, fps: number): number | null {
+  if (!selected) return null;
+  const row = rows.find((candidate) => (
+    candidate.componentId === selected.componentId &&
+    candidate.property === selected.property
+  ));
+  const point = row?.points.find((candidate) => candidate.id === selected.keyframeId);
+  return point ? Math.round(point.timeSec * Math.max(1, fps)) : null;
 }

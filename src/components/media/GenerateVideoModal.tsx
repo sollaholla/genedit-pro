@@ -1,6 +1,7 @@
 import { Clapperboard, Image as ImageIcon, Plus, Upload, X, Save, FolderOpen } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decryptSecret } from '@/lib/settings/crypto';
+import { createMockGeneratedVideo } from '@/lib/media/mockVideoGenerator';
 import {
   DEFAULT_VIDEO_MODELS,
   GOOGLE_ALLOWED_VIDEO_MODEL_IDS,
@@ -34,6 +35,19 @@ type RefToken = {
   name: string;
   kind: 'image' | 'video' | 'audio';
   thumbnail?: string;
+};
+
+type VideoGenerationOperation = {
+  name?: string;
+  done?: boolean;
+  response?: {
+    generatedVideos?: Array<{
+      video?: {
+        uri?: string;
+        fileUri?: string;
+      };
+    }>;
+  };
 };
 
 const KEY_STORAGE = 'genedit-pro:connections:google-veo';
@@ -90,10 +104,49 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     return Number((rate * seconds).toFixed(2));
   }, [duration, resolution, selectedModel.id]);
 
+  const loadModels = useCallback(async () => {
+    setLoadingModels(true);
+    try {
+      const encryptedKey = localStorage.getItem(KEY_STORAGE);
+      if (!encryptedKey) {
+        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+        setModels(prioritized);
+        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
+        return;
+      }
+      const key = await decryptSecret(encryptedKey);
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+      if (!res.ok) throw new Error(`Unable to fetch models: ${res.status}`);
+      const data = await res.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> };
+      const available = sortModelsByPriority((data.models ?? [])
+        .filter((m) => (m.supportedGenerationMethods ?? []).some((method) => method.toLowerCase().includes('video')) || m.name.toLowerCase().includes('veo'))
+        .filter((m) => GOOGLE_ALLOWED_VIDEO_MODEL_IDS.has(m.name.replace('models/', '')))
+        .map((m) => {
+          const id = m.name.replace('models/', '');
+          const fallback = DEFAULT_VIDEO_MODELS.find((fm) => fm.id === id);
+          return buildRemoteVideoModelDefinition(m, fallback);
+        }));
+      if (available.length) {
+        setModels(available);
+        if (!initialRecipeAsset?.recipe) setModel(available[0]!.id);
+      } else {
+        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+        setModels(prioritized);
+        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
+      }
+    } catch {
+      const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+      setModels(prioritized);
+      if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
+    } finally {
+      setLoadingModels(false);
+    }
+  }, [initialRecipeAsset?.recipe]);
+
   useEffect(() => {
     if (!open) return;
     void loadModels();
-  }, [open]);
+  }, [loadModels, open]);
 
   useEffect(() => {
     if (!open || !initialRecipeAsset?.recipe) return;
@@ -132,19 +185,17 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setAspect(selectedModel.capabilities.aspects[0] ?? '16:9');
     }
     setAudioEnabled(isAudioFeatureSupported(selectedModel));
-  }, [selectedModel]);
+  }, [aspect, duration, resolution, selectedModel]);
 
-  const allMentionItems = useMemo(() => {
-    const mediaRefs = references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) }));
-    const start = startFrame ? [{ key: 'start-frame', label: '@start-frame', action: () => insertToken('@start-frame') }] : [];
-    const end = endFrame ? [{ key: 'end-frame', label: '@end-frame', action: () => insertToken('@end-frame') }] : [];
-    return [...start, ...end, ...mediaRefs];
-  }, [references, startFrame, endFrame]);
+  const allMentionItems = [
+    ...(startFrame ? [{ key: 'start-frame', label: '@start-frame', action: () => insertToken('@start-frame') }] : []),
+    ...(endFrame ? [{ key: 'end-frame', label: '@end-frame', action: () => insertToken('@end-frame') }] : []),
+    ...references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) })),
+  ];
 
-  const filteredMentionItems = useMemo(() => {
-    if (!mentionQuery.trim()) return allMentionItems;
-    return allMentionItems.filter((item) => item.label.toLowerCase().includes(mentionQuery.toLowerCase()));
-  }, [allMentionItems, mentionQuery]);
+  const filteredMentionItems = mentionQuery.trim()
+    ? allMentionItems.filter((item) => item.label.toLowerCase().includes(mentionQuery.toLowerCase()))
+    : allMentionItems;
 
   const referenceMap = useMemo(() => {
     const out = new Map<string, RefToken | 'start' | 'end'>();
@@ -159,47 +210,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     [prompt],
   );
   const recipeAssets = useMemo(() => assets.filter((a) => a.kind === 'recipe' && a.recipe), [assets]);
+  const usingLocalDemoGenerator = import.meta.env.DEV || !localStorage.getItem(KEY_STORAGE);
 
   if (!open) return null;
-
-  async function loadModels() {
-    setLoadingModels(true);
-    try {
-      const encryptedKey = localStorage.getItem(KEY_STORAGE);
-      if (!encryptedKey) {
-        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
-        setModels(prioritized);
-        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
-        return;
-      }
-      const key = await decryptSecret(encryptedKey);
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
-      if (!res.ok) throw new Error(`Unable to fetch models: ${res.status}`);
-      const data = await res.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> };
-      const available = sortModelsByPriority((data.models ?? [])
-        .filter((m) => (m.supportedGenerationMethods ?? []).some((method) => method.toLowerCase().includes('video')) || m.name.toLowerCase().includes('veo'))
-        .filter((m) => GOOGLE_ALLOWED_VIDEO_MODEL_IDS.has(m.name.replace('models/', '')))
-        .map((m) => {
-          const id = m.name.replace('models/', '');
-          const fallback = DEFAULT_VIDEO_MODELS.find((fm) => fm.id === id);
-          return buildRemoteVideoModelDefinition(m, fallback);
-        }));
-      if (available.length) {
-        setModels(available);
-        if (!initialRecipeAsset?.recipe) setModel(available[0]!.id);
-      } else {
-        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
-        setModels(prioritized);
-        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
-      }
-    } catch {
-      const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
-      setModels(prioritized);
-      if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
-    } finally {
-      setLoadingModels(false);
-    }
-  }
 
   function buildToken(kind: RefToken['kind'], index: number) {
     return `${kind}${index + 1}`;
@@ -285,10 +298,29 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   async function generate() {
     setGenerationError(null);
     setIsGenerating(true);
-    const id = addGeneratedAsset(`Generating_${Date.now()}.mp4`, folderId, estimatedCostUsd || undefined);
+    const encryptedKey = localStorage.getItem(KEY_STORAGE);
+    const useLocalGenerator = import.meta.env.DEV || !encryptedKey;
+    const generationCostUsd = useLocalGenerator ? undefined : estimatedCostUsd || undefined;
+    const id = addGeneratedAsset(
+      `${useLocalGenerator ? 'Demo_Generation' : 'Generating'}_${Date.now()}.${useLocalGenerator ? 'webm' : 'mp4'}`,
+      folderId,
+      generationCostUsd,
+    );
     try {
-      const encryptedKey = localStorage.getItem(KEY_STORAGE);
-      if (!encryptedKey) throw new Error('Missing Google API key in Settings → Connections.');
+      if (useLocalGenerator) {
+        const file = await createMockGeneratedVideo({
+          prompt,
+          aspect,
+          duration,
+          resolution,
+          audioEnabled,
+          onProgress: (progress) => updateGenerationProgress(id, progress),
+        });
+        await finalizeGeneratedAssetWithBlob(id, file, generationCostUsd);
+        onClose();
+        return;
+      }
+
       const apiKey = await decryptSecret(encryptedKey);
       const modelId = selectedModel.id;
       const payload = {
@@ -310,7 +342,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       });
       if (!opRes.ok) throw new Error(`Generation request failed (${opRes.status}).`);
 
-      let operation = await opRes.json() as { name?: string; done?: boolean; response?: any };
+      let operation = await opRes.json() as VideoGenerationOperation;
       if (!operation.name) throw new Error('Generation operation did not return an operation id.');
       let spinnerProgress = 5;
       while (!operation.done) {
@@ -319,7 +351,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         updateGenerationProgress(id, spinnerProgress);
         const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operation.name}?key=${encodeURIComponent(apiKey)}`);
         if (!pollRes.ok) throw new Error(`Generation poll failed (${pollRes.status}).`);
-        operation = await pollRes.json();
+        operation = await pollRes.json() as VideoGenerationOperation;
       }
 
       const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
@@ -330,10 +362,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       if (!videoRes.ok) throw new Error(`Failed downloading generated video (${videoRes.status}).`);
       const blob = await videoRes.blob();
       const file = new File([blob], `generated_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
-      await finalizeGeneratedAssetWithBlob(id, file, estimatedCostUsd || undefined);
+      await finalizeGeneratedAssetWithBlob(id, file, generationCostUsd);
       onClose();
     } catch (err) {
-      failGeneratedAsset(id, estimatedCostUsd || undefined);
+      failGeneratedAsset(id, generationCostUsd);
       setGenerationError(err instanceof Error ? err.message : 'Generation failed.');
     } finally {
       setIsGenerating(false);
@@ -521,9 +553,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             </button>
           </div>
 
-          <div className="flex items-center justify-end">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[11px] text-slate-500">
+              {usingLocalDemoGenerator ? 'Local demo generator' : selectedModel.label}
+            </div>
             {generationError && (
-              <div className="mr-3 flex items-center gap-2 text-xs text-rose-300">
+              <div className="flex items-center gap-2 text-xs text-rose-300">
                 <span>{generationError}</span>
                 {generationError.includes('Missing Google API key') && (
                   <button
@@ -541,9 +576,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               disabled={!prompt.trim() || isGenerating}
               className="inline-flex h-9 items-center rounded-full bg-white px-4 text-sm font-semibold text-black transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-500"
             >
-              {isGenerating ? 'Generating…' : (
+              {isGenerating ? 'Generating...' : (
                 <>
-                  Generate <span className="ml-1 text-[10px] font-medium text-slate-700">${estimatedCostUsd.toFixed(2)}</span>
+                  {usingLocalDemoGenerator ? 'Generate demo' : 'Generate'}
+                  {!usingLocalDemoGenerator && (
+                    <span className="ml-1 text-[10px] font-medium text-slate-700">${estimatedCostUsd.toFixed(2)}</span>
+                  )}
                 </>
               )}
             </button>

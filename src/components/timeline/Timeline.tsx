@@ -114,8 +114,10 @@ export function Timeline() {
     setSelectedKeyframeValue,
     beginKeyframeDrag,
     moveKeyframe,
+    moveKeyframeGroup,
     nudgeSelectedKeyframe,
     selectKeyframe,
+    selectKeyframeGroup,
     visibleKeyframeProperties,
   } = useKeyframeController({
     selectedClip,
@@ -518,12 +520,10 @@ export function Timeline() {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={() => update((p) => addTrack(p, 'video'))}>
-            <Plus size={12} /> Video track
-          </button>
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={() => update((p) => addTrack(p, 'audio'))}>
-            <Plus size={12} /> Audio track
-          </button>
+          <TrackCreateMenu
+            onVideo={() => update((p) => addTrack(p, 'video'))}
+            onAudio={() => update((p) => addTrack(p, 'audio'))}
+          />
           <button
             className="btn-ghost px-2 py-1 text-xs disabled:opacity-50"
             disabled={!selectedClipId}
@@ -538,7 +538,7 @@ export function Timeline() {
       {selectedClip && selectedKeyframeData && (
         <div className="border-t border-surface-700 bg-surface-900 px-3 py-1.5 text-xs">
           <div className="flex items-center gap-2">
-            <span className="text-slate-400">{`Transform ${selectedKeyframeData.componentIndex + 1}.${selectedKeyframeData.property}`}</span>
+            <span className="text-slate-400">{`Transform ${selectedKeyframeData.componentIndex + 1}.${formatKeyframeProperty(selectedKeyframeData.property)}`}</span>
             <input
               type="number"
               className="w-24 rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-100 outline-none"
@@ -641,12 +641,15 @@ export function Timeline() {
                     <KeyframeTrackLane
                       clip={selectedClip}
                       pxPerSec={pxPerSec}
+                      fps={project.fps}
                       selectedKeyframe={selectedKeyframe}
                       rows={visibleKeyframeProperties}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onBeginKeyframeDrag={beginKeyframeDrag}
                       onMoveKeyframe={moveKeyframe}
+                      onMoveKeyframeGroup={moveKeyframeGroup}
                       onSelectKeyframe={selectKeyframe}
+                      onSelectKeyframeGroup={selectKeyframeGroup}
                     />
                   )}
                 </div>
@@ -717,6 +720,80 @@ function Key({ children }: { children: React.ReactNode }) {
       {children}
     </kbd>
   );
+}
+
+function TrackCreateMenu({ onVideo, onAudio }: { onVideo: () => void; onAudio: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointer = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOnPointer);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnPointer);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className="btn-ghost px-2 py-1 text-xs"
+        title="Add track"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Plus size={12} /> Track
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute left-0 top-full z-40 mt-1 w-36 overflow-hidden rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="block w-full rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+            onClick={() => {
+              onVideo();
+              setOpen(false);
+            }}
+          >
+            Video track
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="block w-full rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+            onClick={() => {
+              onAudio();
+              setOpen(false);
+            }}
+          >
+            Audio track
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatKeyframeProperty(property: string): string {
+  if (property === 'offsetX') return 'Offset X';
+  if (property === 'offsetY') return 'Offset Y';
+  if (property === 'scale') return 'Scale';
+  return property;
 }
 
 function Hint({ keys, label }: { keys: React.ReactNode[]; label: string }) {

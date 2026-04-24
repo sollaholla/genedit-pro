@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Film, FolderPlus, Image as ImageIcon, Music, Sparkles, Trash2, Upload, BookOpen } from 'lucide-react';
+import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
+import { usePlaybackStore } from '@/state/playbackStore';
+import { useProjectStore } from '@/state/projectStore';
+import { addClip, sortedTracks } from '@/lib/timeline/operations';
 import type { MediaAsset } from '@/types';
 
 type Props = {
@@ -24,12 +27,22 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
   const importFiles = useMediaStore((s) => s.importFiles);
   const removeAsset = useMediaStore((s) => s.removeAsset);
   const renameAsset = useMediaStore((s) => s.renameAsset);
+  const project = useProjectStore((s) => s.project);
+  const updateProject = useProjectStore((s) => s.update);
+  const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const [dragOver, setDragOver] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const visibleAssets = useMemo(
     () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
     [assets, activeFolderId],
   );
+  const addAssetToTimeline = (asset: MediaAsset) => {
+    if (asset.kind === 'recipe' || asset.generation?.status === 'generating') return;
+    const targetKind = asset.kind === 'audio' ? 'audio' : 'video';
+    const track = sortedTracks(project).find((candidate) => candidate.kind === targetKind);
+    if (!track) return;
+    updateProject((nextProject) => addClip(nextProject, asset, track.id, currentTime));
+  };
 
   return (
     <div
@@ -99,6 +112,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
                 onDelete={() => removeAsset(asset.id)}
                 onRename={(name) => renameAsset(asset.id, name)}
                 onOpenRecipe={() => onOpenRecipe(asset)}
+                onAddToTimeline={() => addAssetToTimeline(asset)}
               />
             ))}
           </ul>
@@ -127,11 +141,13 @@ function MediaTile({
   onDelete,
   onRename,
   onOpenRecipe,
+  onAddToTimeline,
 }: {
   asset: MediaAsset;
   onDelete: () => void;
   onRename: (name: string) => void;
   onOpenRecipe: () => void;
+  onAddToTimeline: () => void;
 }) {
   const Icon = kindIcon[asset.kind];
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
@@ -224,6 +240,19 @@ function MediaTile({
           <div className="absolute inset-0 flex items-center justify-center bg-red-900/30 text-xs text-white">
             <div className="rounded bg-red-900/70 px-2 py-1">Generation failed</div>
           </div>
+        )}
+        {asset.kind !== 'recipe' && asset.generation?.status !== 'generating' && (
+          <button
+            type="button"
+            className="absolute left-1 top-1 flex h-6 w-6 items-center justify-center rounded bg-black/65 text-white opacity-0 transition-opacity hover:bg-brand-500 group-hover:opacity-100"
+            title="Add to timeline"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddToTimeline();
+            }}
+          >
+            <Plus size={13} />
+          </button>
         )}
       </div>
       <div className="flex items-center justify-between px-2 py-1.5">

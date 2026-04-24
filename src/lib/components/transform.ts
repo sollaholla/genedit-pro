@@ -114,6 +114,46 @@ export function updateTransformKeyframe(
   };
 }
 
+export function moveTransformKeyframeGroup(
+  clip: Clip,
+  targets: Array<TransformTarget & { property: TransformProperty; keyframeId: string }>,
+  timeSec: number,
+): Clip {
+  const components = getTransformComponents(clip);
+  if (targets.length === 0 || components.length === 0) return clip;
+  return {
+    ...clip,
+    components: components.map((component, idx) => {
+      const componentTargets = targets.filter((target) => {
+        if (target.componentId) return target.componentId === component.id;
+        return target.componentIndex === idx;
+      });
+      if (componentTargets.length === 0) return component;
+
+      const keyframes = { ...component.data.keyframes };
+      (['scale', 'offsetX', 'offsetY'] as const).forEach((property) => {
+        const ids = new Set(
+          componentTargets
+            .filter((target) => target.property === property)
+            .map((target) => target.keyframeId),
+        );
+        if (ids.size === 0) return;
+        keyframes[property] = keyframes[property].map((point) => (
+          ids.has(point.id) ? { ...point, timeSec } : point
+        ));
+      });
+
+      return {
+        ...component,
+        data: {
+          ...component.data,
+          keyframes,
+        },
+      };
+    }),
+  };
+}
+
 export function removeTransformKeyframe(
   clip: Clip,
   target: TransformTarget & { property: TransformProperty; keyframeId: string },

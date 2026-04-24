@@ -1,5 +1,5 @@
 import { Eye, EyeOff, GripVertical, Plus, Trash2, Volume2, VolumeX } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Track } from '@/types';
 import { TRACK_HEIGHT_PX } from '@/lib/timeline/geometry';
 import { useProjectStore } from '@/state/projectStore';
@@ -35,6 +35,24 @@ export function TrackHeader({
   const update = useProjectStore((s) => s.update);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState(track.name);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!addMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAddMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', closeOnOutsidePointer);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointer);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [addMenuOpen]);
 
   return (
     <div
@@ -134,21 +152,49 @@ export function TrackHeader({
 
       <div className="flex items-center justify-between">
         <div className="text-[10px] uppercase tracking-wider text-slate-500">{track.kind}</div>
-        <div className="flex items-center gap-1 text-[10px] text-slate-500">
+        <div ref={addMenuRef} className="relative flex items-center text-[10px] text-slate-500">
           <button
-            className="inline-flex items-center gap-0.5 rounded px-1 py-px hover:bg-surface-700 hover:text-slate-200"
-            title="Insert video track below"
-            onClick={onInsertVideoBelow}
+            type="button"
+            className="inline-flex h-5 w-5 items-center justify-center rounded hover:bg-surface-700 hover:text-slate-200"
+            title="Insert track below"
+            aria-haspopup="menu"
+            aria-expanded={addMenuOpen}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setAddMenuOpen((open) => !open)}
           >
-            <Plus size={10} />V
+            <Plus size={11} />
           </button>
-          <button
-            className="inline-flex items-center gap-0.5 rounded px-1 py-px hover:bg-surface-700 hover:text-slate-200"
-            title="Insert audio track below"
-            onClick={onInsertAudioBelow}
-          >
-            <Plus size={10} />A
-          </button>
+          {addMenuOpen && (
+            <div
+              role="menu"
+              className="absolute bottom-0 right-0 z-30 flex h-6 overflow-hidden rounded-md border border-surface-600 bg-surface-800 shadow-xl"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="px-2 text-[10px] font-medium text-slate-300 hover:bg-surface-700 hover:text-white"
+                onClick={() => {
+                  onInsertVideoBelow();
+                  setAddMenuOpen(false);
+                }}
+              >
+                Video
+              </button>
+              <div className="w-px bg-surface-600" />
+              <button
+                type="button"
+                role="menuitem"
+                className="px-2 text-[10px] font-medium text-slate-300 hover:bg-surface-700 hover:text-white"
+                onClick={() => {
+                  onInsertAudioBelow();
+                  setAddMenuOpen(false);
+                }}
+              >
+                Audio
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

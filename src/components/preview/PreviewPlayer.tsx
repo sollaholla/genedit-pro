@@ -31,6 +31,22 @@ type ElementPool = Map<string, HTMLMediaElement>;
 
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
+const PREVIEW_ASPECTS = {
+  '16:9': 16 / 9,
+  '2.39:1': 2.39,
+  '4:3': 4 / 3,
+  '1:1': 1,
+  '9:16': 9 / 16,
+} as const;
+
+type PreviewAspectPreset = keyof typeof PREVIEW_ASPECTS;
+const PREVIEW_ASPECT_OPTIONS: readonly { value: PreviewAspectPreset; label: string }[] = [
+  { value: '16:9', label: '16:9' },
+  { value: '2.39:1', label: '2.39:1' },
+  { value: '4:3', label: '4:3' },
+  { value: '1:1', label: '1:1' },
+  { value: '9:16', label: '9:16' },
+];
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -74,6 +90,7 @@ export function PreviewPlayer() {
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const previewFrameRef = useRef<HTMLDivElement | null>(null);
 
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
@@ -107,13 +124,35 @@ export function PreviewPlayer() {
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [aspectPreset, setAspectPreset] = useState<'16:9' | '9:16' | '1:1' | '4:3'>(() => {
+  const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [aspectPreset, setAspectPreset] = useState<PreviewAspectPreset>(() => {
     const ratio = project.width / Math.max(1, project.height);
     if (Math.abs(ratio - 16 / 9) < 0.02) return '16:9';
     if (Math.abs(ratio - 9 / 16) < 0.02) return '9:16';
     if (Math.abs(ratio - 1) < 0.02) return '1:1';
     return '4:3';
   });
+  const previewAspectRatio = PREVIEW_ASPECTS[aspectPreset];
+  const previewStageStyle = useMemo(() => {
+    if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
+      return { aspectRatio: previewAspectRatio, width: '100%' };
+    }
+
+    const widthFromHeight = previewFrameSize.height * previewAspectRatio;
+    if (widthFromHeight <= previewFrameSize.width) {
+      return {
+        aspectRatio: previewAspectRatio,
+        width: `${Math.round(widthFromHeight)}px`,
+        height: `${Math.round(previewFrameSize.height)}px`,
+      };
+    }
+
+    return {
+      aspectRatio: previewAspectRatio,
+      width: `${Math.round(previewFrameSize.width)}px`,
+      height: `${Math.round(previewFrameSize.width / previewAspectRatio)}px`,
+    };
+  }, [previewAspectRatio, previewFrameSize]);
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement) {
@@ -127,6 +166,36 @@ export function PreviewPlayer() {
     const onChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  useEffect(() => {
+    const node = previewFrameRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+
+    const updateFrameSize = (rect: DOMRectReadOnly | DOMRect) => {
+      const next = {
+        width: Math.max(0, rect.width),
+        height: Math.max(0, rect.height),
+      };
+      setPreviewFrameSize((prev) => {
+        if (
+          prev &&
+          Math.abs(prev.width - next.width) < 0.5 &&
+          Math.abs(prev.height - next.height) < 0.5
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    };
+
+    updateFrameSize(node.getBoundingClientRect());
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) updateFrameSize(entry.contentRect);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
   }, []);
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
@@ -579,30 +648,18 @@ export function PreviewPlayer() {
       className={`flex h-full flex-col bg-black ${isFullscreen ? 'preview-fullscreen' : ''}`}
     >
       <div
+        ref={previewFrameRef}
         className={`flex min-h-0 flex-1 items-center justify-center bg-black ${
           isFullscreen ? '' : 'p-4'
         }`}
       >
         <div
-          className={`relative w-full max-w-full overflow-hidden bg-black ${
+          className={`relative max-h-full max-w-full overflow-hidden bg-black ${
             isFullscreen ? '' : 'rounded-md ring-1 ring-surface-700'
           }`}
-          style={{ aspectRatio: aspectPreset.replace(':', ' / '), maxHeight: '100%' }}
+          style={previewStageStyle}
           onDoubleClick={toggleFullscreen}
         >
-          <div className="absolute right-2 top-2 z-20">
-            <select
-              className="rounded border border-surface-600 bg-surface-900/90 px-2 py-1 text-[11px] text-slate-200"
-              value={aspectPreset}
-              onChange={(e) => setAspectPreset(e.target.value as typeof aspectPreset)}
-              title="Preview aspect ratio"
-            >
-              <option value="16:9">16:9</option>
-              <option value="4:3">4:3</option>
-              <option value="1:1">1:1</option>
-              <option value="9:16">9:16</option>
-            </select>
-          </div>
           <div ref={videoHostRef} className="absolute inset-0" />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
@@ -616,7 +673,13 @@ export function PreviewPlayer() {
           <FullscreenScrubBar />
         </div>
       )}
-      <PlayerControls isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
+      <PlayerControls
+        isFullscreen={isFullscreen}
+        aspectPreset={aspectPreset}
+        aspectOptions={PREVIEW_ASPECT_OPTIONS}
+        onAspectPresetChange={(value) => setAspectPreset(value as PreviewAspectPreset)}
+        onToggleFullscreen={toggleFullscreen}
+      />
     </div>
   );
 }

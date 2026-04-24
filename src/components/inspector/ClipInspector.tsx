@@ -332,67 +332,28 @@ export function ClipInspector() {
                 }}
                 onDragEnd={() => setDraggingComponentId(null)}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <button
-                      type="button"
-                      draggable
-                      className="inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-300 active:cursor-grabbing"
-                      title="Drag to reorder"
-                      onDragStart={(e) => {
-                        setDraggingComponentId(component.id);
-                        e.dataTransfer.effectAllowed = 'move';
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <GripVertical size={13} />
-                    </button>
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
-                      <div className="truncate text-[10px] text-slate-500">{isActive ? 'Active for preview edits' : 'Click card to target preview edits'}</div>
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <button
+                        type="button"
+                        draggable
+                        className="inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-300 active:cursor-grabbing"
+                        title="Drag to reorder"
+                        onDragStart={(e) => {
+                          setDraggingComponentId(component.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <GripVertical size={13} />
+                      </button>
+                      <div className="flex min-w-0 items-center gap-1">
+                        <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wider text-slate-300">Transform</span>
+                        <span className="rounded bg-surface-800 px-1 font-mono text-[9px] leading-4 text-slate-400">#{idx + 1}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      className={`inline-flex h-6 w-6 items-center justify-center rounded ${
-                        keyframesVisible
-                          ? 'bg-brand-500 text-white hover:bg-brand-400'
-                          : 'bg-surface-700 text-slate-200 hover:bg-surface-600'
-                      } disabled:cursor-not-allowed disabled:opacity-40`}
-                      title={hasKeyframes ? (keyframesVisible ? 'Hide keyframes in timeline' : 'Show keyframes in timeline') : 'Add keyframes first'}
-                      disabled={!hasKeyframes}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleKeyframeComponent(visibilityKey);
-                      }}
-                    >
-                      {keyframesVisible ? <Eye size={11} /> : <EyeOff size={11} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
-                      title="Add transform keyframes and show them"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty));
-                      }}
-                    >
-                      <Diamond size={10} />
-                    </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={(e) => {
-                      e.stopPropagation();
-                      moveComponent(idx - 1);
-                    }}>
-                      <ArrowUp size={11} />
-                    </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={(e) => {
-                      e.stopPropagation();
-                      moveComponent(idx + 1);
-                    }}>
-                      <ArrowDown size={11} />
-                    </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={(e) => {
+                    <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={(e) => {
                       e.stopPropagation();
                       const next = transformComponents.filter((candidate) => candidate.id !== component.id);
                       setComponents(next);
@@ -401,6 +362,50 @@ export function ClipInspector() {
                     }}>
                       <Trash2 size={11} />
                     </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="truncate text-[10px] text-slate-500">{isActive ? 'Active target' : 'Click to target'}</div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        className={`inline-flex h-6 w-6 items-center justify-center rounded ${
+                          keyframesVisible
+                            ? 'bg-brand-500 text-white hover:bg-brand-400'
+                            : 'bg-surface-700 text-slate-200 hover:bg-surface-600'
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                        title={hasKeyframes ? (keyframesVisible ? 'Hide keyframes in timeline' : 'Show keyframes in timeline') : 'Add keyframes first'}
+                        disabled={!hasKeyframes}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleKeyframeComponent(visibilityKey);
+                        }}
+                      >
+                        {keyframesVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
+                        title="Add transform keyframes and show them"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty));
+                        }}
+                      >
+                        <Diamond size={10} />
+                      </button>
+                      <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={(e) => {
+                        e.stopPropagation();
+                        moveComponent(idx - 1);
+                      }}>
+                        <ArrowUp size={11} />
+                      </button>
+                      <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={(e) => {
+                        e.stopPropagation();
+                        moveComponent(idx + 1);
+                      }}>
+                        <ArrowDown size={11} />
+                      </button>
+                    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { Clip, Project } from '@/types';
 import {
+  moveTransformKeyframeGroup,
   removeTransformKeyframeGroup,
   updateTransformKeyframe,
 } from '@/lib/components/transform';
@@ -107,6 +108,19 @@ export function useKeyframeController({
     if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
   }, [patchSelectedClip, selectedClip, setCurrentTime]);
 
+  const moveKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
+    const first = meta.members[0];
+    if (!first) return;
+    const durationSec = selectedClip ? clipTimelineDurationSec(selectedClip) : 0;
+    const nextTimeSec = Math.max(0, Math.min(durationSec, meta.timeSec));
+    patchSelectedClip(
+      (clip) => moveTransformKeyframeGroup(clip, meta.members, nextTimeSec),
+      true,
+    );
+    setSelectedKeyframe(first);
+    if (selectedClip) setCurrentTime(selectedClip.startSec + nextTimeSec);
+  }, [patchSelectedClip, selectedClip, setCurrentTime]);
+
   const selectKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number }) => {
     setSelectedKeyframe({
       componentIndex: meta.componentIndex,
@@ -114,6 +128,13 @@ export function useKeyframeController({
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
+    if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
+  }, [selectedClip, setCurrentTime]);
+
+  const selectKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
+    const first = meta.members[0];
+    if (!first) return;
+    setSelectedKeyframe(first);
     if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
   }, [selectedClip, setCurrentTime]);
 
@@ -127,8 +148,10 @@ export function useKeyframeController({
     setSelectedKeyframeValue,
     beginKeyframeDrag,
     moveKeyframe,
+    moveKeyframeGroup,
     nudgeSelectedKeyframe,
     selectKeyframe,
+    selectKeyframeGroup,
     visibleKeyframeProperties,
   };
 }

@@ -15,10 +15,19 @@ import { formatTimecode } from '@/lib/timeline/geometry';
 
 type Props = {
   isFullscreen: boolean;
+  aspectPreset: string;
+  aspectOptions: readonly { value: string; label: string }[];
+  onAspectPresetChange: (value: string) => void;
   onToggleFullscreen: () => void;
 };
 
-export function PlayerControls({ isFullscreen, onToggleFullscreen }: Props) {
+export function PlayerControls({
+  isFullscreen,
+  aspectPreset,
+  aspectOptions,
+  onAspectPresetChange,
+  onToggleFullscreen,
+}: Props) {
   const playing = usePlaybackStore((s) => s.playing);
   const toggle = usePlaybackStore((s) => s.toggle);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
@@ -69,6 +78,16 @@ export function PlayerControls({ isFullscreen, onToggleFullscreen }: Props) {
         </button>
       </div>
       <div className="flex items-center gap-3">
+        <select
+          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          value={aspectPreset}
+          onChange={(e) => onAspectPresetChange(e.target.value)}
+          title="Preview aspect ratio"
+        >
+          {aspectOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
         <div className="font-mono text-xs tabular-nums text-slate-300">
           {formatTimecode(currentTime, fps)} <span className="text-slate-500">/</span>{' '}
           {formatTimecode(duration, fps)}
