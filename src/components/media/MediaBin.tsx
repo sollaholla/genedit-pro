@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from 'lucide-react';
+import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
@@ -35,9 +35,14 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
   const [dragOver, setDragOver] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const visibleAssets = useMemo(
     () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
     [assets, activeFolderId],
+  );
+  const previewAsset = useMemo(
+    () => (previewAssetId ? assets.find((asset) => asset.id === previewAssetId) ?? null : null),
+    [assets, previewAssetId],
   );
   const addAssetToTimeline = (asset: MediaAsset) => {
     if (asset.kind === 'recipe' || asset.generation?.status === 'generating') return;
@@ -117,6 +122,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
                 onOpenEdit={() => setEditingAssetId(asset.id)}
                 onOpenRecipe={() => onOpenRecipe(asset)}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
+                onOpenPreview={() => setPreviewAssetId(asset.id)}
               />
             ))}
           </ul>
@@ -126,6 +132,12 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
         <EditTrailDialog
           assetId={editingAssetId}
           onClose={() => setEditingAssetId(null)}
+        />
+      )}
+      {previewAsset && (
+        <MediaLightbox
+          asset={previewAsset}
+          onClose={() => setPreviewAssetId(null)}
         />
       )}
     </div>
@@ -146,6 +158,112 @@ function EmptyState({ onImportClick }: { onImportClick: () => void }) {
   );
 }
 
+function MediaLightbox({ asset, onClose }: { asset: MediaAsset; onClose: () => void }) {
+  const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
+  const [url, setUrl] = useState<string | null>(null);
+  const Icon = kindIcon[asset.kind];
+
+  useEffect(() => {
+    let mounted = true;
+    setUrl(null);
+    void objectUrlFor(asset.id).then((nextUrl) => {
+      if (mounted) setUrl(nextUrl);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [asset.id, asset.blobKey, asset.editTrail?.activeIterationId, objectUrlFor]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-[min(980px,94vw)] flex-col overflow-hidden rounded-xl border border-white/15 bg-surface-950 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex min-h-0 items-center justify-between border-b border-white/10 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Icon size={16} className="shrink-0 text-slate-400" />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-slate-100">{asset.name}</div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">{asset.kind}</div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+            onClick={onClose}
+            title="Close preview"
+            aria-label="Close preview"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex min-h-[280px] flex-1 items-center justify-center bg-black p-4">
+          {url ? (
+            <LightboxMedia asset={asset} url={url} />
+          ) : (
+            <div className="flex flex-col items-center gap-3 text-slate-500">
+              <Icon size={32} />
+              <div className="text-sm">Preview unavailable</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LightboxMedia({ asset, url }: { asset: MediaAsset; url: string }) {
+  if (asset.kind === 'video') {
+    return (
+      <video
+        src={url}
+        controls
+        autoPlay
+        playsInline
+        className="max-h-[72vh] max-w-full bg-black object-contain"
+      />
+    );
+  }
+  if (asset.kind === 'audio') {
+    return (
+      <div className="flex w-full max-w-xl flex-col items-center gap-5 rounded-xl border border-white/10 bg-white/[0.03] p-8">
+        <div className="flex h-24 w-24 items-center justify-center rounded-full bg-surface-800 text-slate-400">
+          <Music size={42} />
+        </div>
+        <audio src={url} controls autoPlay className="w-full" />
+      </div>
+    );
+  }
+  if (asset.kind === 'image') {
+    return (
+      <img
+        src={url}
+        alt={asset.name}
+        className="max-h-[72vh] max-w-full object-contain"
+        draggable={false}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col items-center gap-3 text-slate-500">
+      <BookOpen size={32} />
+      <div className="text-sm">Recipes open in the generator.</div>
+    </div>
+  );
+}
+
 function MediaTile({
   asset,
   onDelete,
@@ -153,6 +271,7 @@ function MediaTile({
   onOpenEdit,
   onOpenRecipe,
   onAddToTimeline,
+  onOpenPreview,
 }: {
   asset: MediaAsset;
   onDelete: () => void;
@@ -160,9 +279,9 @@ function MediaTile({
   onOpenEdit: () => void;
   onOpenRecipe: () => void;
   onAddToTimeline: () => void;
+  onOpenPreview: () => void;
 }) {
   const Icon = kindIcon[asset.kind];
-  const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const nameParts = splitFilename(asset.name);
   const badgeLabel = assetBadgeLabel(asset);
   const statusLabel = asset.generation?.status === 'generating'
@@ -170,8 +289,6 @@ function MediaTile({
       : asset.kind === 'video' || asset.kind === 'audio'
         ? `${asset.durationSec.toFixed(1)}s`
         : '';
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [playingPreview, setPlayingPreview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [renaming, setRenaming] = useState(false);
@@ -208,19 +325,6 @@ function MediaTile({
       renameInputRef.current?.select();
     });
   }, [renaming]);
-
-  useEffect(() => {
-    let mounted = true;
-    if (!playingPreview || asset.kind !== 'video' || !asset.blobKey || asset.generation?.status === 'generating') {
-      return;
-    }
-    void objectUrlFor(asset.id).then((url) => {
-      if (mounted) setVideoUrl(url);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [playingPreview, asset.id, asset.kind, asset.blobKey, asset.generation?.status, objectUrlFor]);
 
   const beginRename = () => {
     setDraftName(splitFilename(asset.name).base);
@@ -272,8 +376,8 @@ function MediaTile({
           onOpenRecipe();
           return;
         }
-        if (asset.kind !== 'video' || asset.generation?.status === 'generating' || !asset.blobKey) return;
-        setPlayingPreview((v) => !v);
+        if (asset.generation?.status === 'generating' || !asset.blobKey) return;
+        onOpenPreview();
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -285,16 +389,7 @@ function MediaTile({
       title={asset.name}
     >
       <div className="relative aspect-video bg-surface-900">
-        {playingPreview && videoUrl ? (
-          <video
-            src={videoUrl}
-            autoPlay
-            muted
-            loop
-            playsInline
-            className="h-full w-full object-cover"
-          />
-        ) : asset.thumbnailDataUrl ? (
+        {asset.thumbnailDataUrl ? (
           <img
             src={asset.thumbnailDataUrl}
             alt=""

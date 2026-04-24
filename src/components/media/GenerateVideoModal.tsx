@@ -691,12 +691,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             />
           </div>
 
-          <div className="relative rounded-xl border border-white/10 bg-[#121833]">
+          <div className="flex justify-end">
             <PromptModeSwatch
               mode={promptMode}
               structuredSupported={structuredPromptSupported}
               onChange={setPromptMode}
             />
+          </div>
+
+          <div className="relative rounded-xl border border-white/10 bg-[#121833]">
             {promptMode === 'structured' && structuredPromptSupported ? (
               <StructuredPromptEditor
                 sections={structuredSections}
@@ -710,7 +713,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
                 value={prompt}
                 onChange={(e) => onPromptChange(e.target.value)}
                 placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
-                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 pb-11 pt-3 pr-32 text-sm text-slate-100 outline-none placeholder:text-slate-400"
+                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 pb-11 pt-3 text-sm text-slate-100 outline-none placeholder:text-slate-400"
               />
             )}
             {promptMode === 'freeform' && promptTokens.length > 0 && (
@@ -929,7 +932,7 @@ function PromptModeSwatch({
 }) {
   const buttonBase = 'inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition';
   return (
-    <div className="absolute right-2 top-2 z-10 inline-flex items-center rounded-full border border-white/15 bg-black/40 p-0.5 shadow-lg backdrop-blur">
+    <div className="inline-flex items-center rounded-full border border-white/15 bg-black/30 p-0.5 shadow-lg backdrop-blur">
       <button
         type="button"
         className={`${buttonBase} ${mode === 'freeform' ? 'bg-white text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
@@ -964,7 +967,7 @@ function StructuredPromptEditor({
 }) {
   const missing = new Set(missingRequired);
   return (
-    <div className="max-h-[330px] overflow-y-auto px-3 pb-3 pt-11">
+    <div className="max-h-[330px] overflow-y-auto p-3">
       <div className="grid gap-2 sm:grid-cols-2">
         {sections.map((section) => {
           const Icon = STRUCTURED_PROMPT_ICON[section.icon];
