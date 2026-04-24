@@ -50,6 +50,7 @@ export const DEFAULT_ASPECTS: Aspect[] = ['16:9', '9:16', '1:1'];
 export const DEFAULT_RESOLUTIONS = ['720p', '1080p'] as const;
 export const DEFAULT_DURATIONS = ['4s', '6s', '8s'] as const;
 export const KLING_DURATIONS = ['3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s', '11s', '12s', '13s', '14s', '15s'] as const;
+export const KLING_OMNI_IMAGE_REFERENCE_LIMIT = 7;
 
 export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[] = [
   {
@@ -156,14 +157,14 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
   },
   {
     id: 'kling-v3',
-    label: 'Kling 3.0',
+    label: 'Kling 3.0 Omni',
     provider: 'kling',
     priority: 70,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
     },
     capabilities: {
-      references: false,
+      references: true,
       audio: true,
       adult: false,
       durations: [...KLING_DURATIONS],
@@ -172,8 +173,8 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       assetInputs: {
         startFrame: true,
         endFrame: true,
-        imageReferencesMax: 0,
-        videoExtension: false,
+        imageReferencesMax: KLING_OMNI_IMAGE_REFERENCE_LIMIT,
+        videoExtension: true,
       },
     },
   },

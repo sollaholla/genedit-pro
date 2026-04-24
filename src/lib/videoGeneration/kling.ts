@@ -11,7 +11,7 @@ export type KlingCredentials = {
   secretKey: string;
 };
 
-export type KlingTaskRoute = 'text2video' | 'image2video';
+export type KlingTaskRoute = 'text2video' | 'image2video' | 'omni-video';
 
 export type KlingCreateTaskRequest = {
   route: KlingTaskRoute;
@@ -46,6 +46,12 @@ type KlingApiEnvelope<T> = {
   data?: T;
 };
 
+type KlingOmniImageEntry = {
+  token: string;
+  asset: MediaAsset;
+  type?: 'first_frame' | 'end_frame';
+};
+
 export async function buildKlingCreateTaskRequest(
   mutation: VideoGenerationMutation,
 ): Promise<KlingCreateTaskRequest> {
@@ -53,8 +59,13 @@ export async function buildKlingCreateTaskRequest(
   const endFrames = assetsByRole(mutation, 'end-frame');
   const referenceImages = assetsByRole(mutation, 'reference-image');
   const sourceVideos = assetsByRole(mutation, 'source-video');
+  const useOmniVideo = isKlingOmniModel(mutation.modelId) || referenceImages.length > 0 || sourceVideos.length > 0;
 
-  validateKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos });
+  validateKlingMutation({ modelId: mutation.modelId, startFrames, endFrames, referenceImages, sourceVideos, useOmniVideo });
+
+  if (useOmniVideo) {
+    return buildKlingOmniVideoTaskRequest(mutation, { startFrames, endFrames, referenceImages, sourceVideos });
+  }
 
   const baseBody: Record<string, unknown> = {
     model_name: mutation.modelId,
@@ -82,6 +93,10 @@ export async function buildKlingCreateTaskRequest(
     queryPath: (taskId) => `/v1/videos/text2video/${encodeURIComponent(taskId)}`,
     body: baseBody,
   };
+}
+
+export function isKlingVideoReferenceAsset(asset: MediaAsset, now = Date.now()): boolean {
+  return Boolean(klingVideoReferenceUrl(asset, now));
 }
 
 export async function createKlingVideoTask(
@@ -176,24 +191,141 @@ function classifyKlingError(status: number, code: number | undefined, message: s
   return classifyProviderErrorText(message);
 }
 
+async function buildKlingOmniVideoTaskRequest(
+  mutation: VideoGenerationMutation,
+  {
+    startFrames,
+    endFrames,
+    referenceImages,
+    sourceVideos,
+  }: {
+    startFrames: MediaAsset[];
+    endFrames: MediaAsset[];
+    referenceImages: MediaAsset[];
+    sourceVideos: MediaAsset[];
+  },
+): Promise<KlingCreateTaskRequest> {
+  const imageEntries: KlingOmniImageEntry[] = [
+    ...referenceImages.map((asset, index) => ({ token: `image${index + 1}`, asset })),
+    ...(startFrames[0] ? [{ token: 'start-frame', asset: startFrames[0], type: 'first_frame' as const }] : []),
+    ...(endFrames[0] ? [{ token: 'end-frame', asset: endFrames[0], type: 'end_frame' as const }] : []),
+  ];
+  const videoEntries = sourceVideos.map((asset, index) => ({ token: `video${index + 1}`, asset }));
+  const hasFrameInput = startFrames.length > 0 || endFrames.length > 0;
+
+  const body: Record<string, unknown> = {
+    model_name: klingOmniModelName(mutation.modelId),
+    prompt: rewriteKlingPromptReferences(mutation.prompt, imageEntries, videoEntries),
+    duration: String(mutation.config.durationSeconds),
+    mode: klingModeFromResolution(mutation.config.resolution),
+    sound: sourceVideos.length > 0 ? 'off' : (mutation.config.audioEnabled ? 'on' : 'off'),
+  };
+
+  if (!hasFrameInput) body.aspect_ratio = mutation.config.aspectRatio;
+  if (imageEntries.length > 0) {
+    body.image_list = await Promise.all(imageEntries.map(async (entry) => ({
+      image_url: await assetToKlingImageBase64(entry.asset),
+      ...(entry.type ? { type: entry.type } : {}),
+    })));
+  }
+  if (videoEntries.length > 0) {
+    body.video_list = videoEntries.map((entry) => {
+      const videoUrl = klingVideoReferenceUrl(entry.asset);
+      if (!videoUrl) throw new Error(`${entry.asset.name} needs an active remote URL for Kling video reference.`);
+      return {
+        video_url: videoUrl,
+        refer_type: 'feature',
+        keep_original_sound: mutation.config.audioEnabled ? 'yes' : 'no',
+      };
+    });
+  }
+
+  return {
+    route: 'omni-video',
+    createPath: '/v1/videos/omni-video',
+    queryPath: (taskId) => `/v1/videos/omni-video/${encodeURIComponent(taskId)}`,
+    body,
+  };
+}
+
 function validateKlingMutation({
+  modelId,
   startFrames,
   endFrames,
   referenceImages,
   sourceVideos,
+  useOmniVideo,
 }: {
+  modelId: string;
   startFrames: MediaAsset[];
   endFrames: MediaAsset[];
   referenceImages: MediaAsset[];
   sourceVideos: MediaAsset[];
+  useOmniVideo: boolean;
 }) {
   if (startFrames.length > 1) throw new Error('Kling accepts one start frame.');
   if (endFrames.length > 1) throw new Error('Kling accepts one end frame.');
-  if (sourceVideos.length > 0) throw new Error('Kling video references are not enabled in this generator yet.');
-  if (referenceImages.length > 0) throw new Error('Kling uses the start/end frame slots for image inputs.');
-  for (const asset of [...startFrames, ...endFrames]) {
+  if (endFrames.length > 0 && startFrames.length === 0) throw new Error('Kling end frame generation requires a start frame.');
+  if ((referenceImages.length > 0 || sourceVideos.length > 0) && !useOmniVideo) {
+    throw new Error(`${modelId} does not support Kling Omni references.`);
+  }
+  if (sourceVideos.length > 1) throw new Error('Kling Omni accepts one video reference.');
+  if (sourceVideos.length > 0 && (startFrames.length > 0 || endFrames.length > 0)) {
+    throw new Error('Kling video references cannot be combined with start/end frames.');
+  }
+  const imageLimit = sourceVideos.length > 0 ? 4 : 7;
+  if (referenceImages.length > imageLimit) throw new Error(`Kling Omni accepts up to ${imageLimit} image references in this mode.`);
+  for (const asset of [...startFrames, ...endFrames, ...referenceImages]) {
     if (asset.kind !== 'image') throw new Error(`${asset.name} must be an image input.`);
   }
+  for (const asset of sourceVideos) {
+    if (asset.kind !== 'video') throw new Error(`${asset.name} must be a video input.`);
+    if (!klingVideoReferenceUrl(asset)) {
+      throw new Error(`${asset.name} needs an active remote URL for Kling video reference. Local video upload is not available yet.`);
+    }
+  }
+}
+
+function isKlingOmniModel(modelId: string): boolean {
+  return ['kling-v3', 'kling-v3-omni', 'kling-video-o1'].includes(modelId);
+}
+
+function klingOmniModelName(modelId: string): string {
+  if (modelId === 'kling-v3' || modelId === 'kling-v3-omni') return 'kling-v3-omni';
+  if (modelId === 'kling-video-o1') return 'kling-video-o1';
+  return modelId;
+}
+
+function rewriteKlingPromptReferences(
+  prompt: string,
+  imageEntries: Array<{ token: string }>,
+  videoEntries: Array<{ token: string }>,
+): string {
+  let next = prompt;
+  imageEntries.forEach((entry, index) => {
+    next = replacePromptToken(next, entry.token, `<<<image_${index + 1}>>>`);
+  });
+  videoEntries.forEach((entry, index) => {
+    next = replacePromptToken(next, entry.token, `<<<video_${index + 1}>>>`);
+  });
+  return next;
+}
+
+function replacePromptToken(prompt: string, token: string, replacement: string): string {
+  return prompt.replace(new RegExp(`@${escapeRegExp(token)}(?=\\b|[^a-zA-Z0-9_-]|$)`, 'gi'), replacement);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function klingVideoReferenceUrl(asset: MediaAsset, now = Date.now()): string | null {
+  if (asset.kind !== 'video') return null;
+  const uri = asset.generation?.providerArtifactUri?.trim();
+  if (!uri) return null;
+  const expiresAt = asset.generation?.providerArtifactExpiresAt;
+  if (expiresAt && expiresAt <= now) return null;
+  return uri;
 }
 
 function klingModeFromResolution(resolution: string): 'std' | 'pro' | '4k' {

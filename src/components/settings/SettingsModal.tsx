@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink, X } from 'lucide-react';
 import {
+  CONNECTION_SETTINGS_CHANGED_EVENT,
   GOOGLE_VEO_API_KEY_STORAGE,
   KLING_ACCESS_KEY_STORAGE,
   KLING_SECRET_KEY_STORAGE,
@@ -185,7 +186,9 @@ async function storeSecret(storageKey: string, value: string): Promise<void> {
   const trimmed = value.trim();
   if (!trimmed) {
     localStorage.removeItem(storageKey);
+    window.dispatchEvent(new Event(CONNECTION_SETTINGS_CHANGED_EVENT));
     return;
   }
   localStorage.setItem(storageKey, await encryptSecret(trimmed));
+  window.dispatchEvent(new Event(CONNECTION_SETTINGS_CHANGED_EVENT));
 }

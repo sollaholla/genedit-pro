@@ -22,12 +22,12 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  CONNECTION_SETTINGS_CHANGED_EVENT,
   GOOGLE_VEO_API_KEY_STORAGE,
   KLING_ACCESS_KEY_STORAGE,
   KLING_SECRET_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
-import { createMockGeneratedVideo } from '@/lib/media/mockVideoGenerator';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
   buildGoogleVeoPredictRequest,
@@ -41,6 +41,7 @@ import {
   buildKlingCreateTaskRequest,
   createKlingVideoTask,
   generatedKlingVideoFromTask,
+  isKlingVideoReferenceAsset,
   KLING_ARTIFACT_TTL_MS,
   pollKlingVideoTask,
   type KlingCredentials,
@@ -88,6 +89,11 @@ type RefToken = {
 
 type PromptMode = 'freeform' | 'structured';
 
+type VideoProviderCredentialAvailability = {
+  googleVeo: boolean;
+  kling: boolean;
+};
+
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
   subject: UserRound,
   action: Zap,
@@ -120,6 +126,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
   const [models, setModels] = useState<VideoModelDefinition[]>(DEFAULT_VIDEO_MODELS);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [connectionRevision, setConnectionRevision] = useState(0);
   const [model, setModel] = useState(DEFAULT_VIDEO_MODELS[0].id);
   const [aspect, setAspect] = useState<Aspect>('16:9');
   const [resolution, setResolution] = useState('720p');
@@ -153,6 +160,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     () => models.find((m) => m.id === model) ?? DEFAULT_VIDEO_MODELS[0],
     [model, models],
   );
+  const credentialAvailability = useMemo(readVideoProviderCredentialAvailability, [connectionRevision]);
+  const selectableModels = useMemo(
+    () => sortModelsByPriority(models.filter((candidate) => hasVideoProviderCredentials(candidate, credentialAvailability))),
+    [credentialAvailability, models],
+  );
+  const hasConfiguredProviderModels = selectableModels.length > 0;
+  const providerCredentialsAvailable = hasVideoProviderCredentials(selectedModel, credentialAvailability);
   const structuredSections = useMemo(() => structuredPromptSectionsFor(selectedModel), [selectedModel]);
   const structuredPromptText = useMemo(
     () => buildStructuredPromptText(selectedModel, structuredPrompt),
@@ -164,9 +178,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   );
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
-  const referencesIgnoredByFrameMode = Boolean((startFrame || endFrame) && references.length > 0);
+  const referencesIgnoredByFrameMode = Boolean(isVeoModel(selectedModel) && (startFrame || endFrame) && references.length > 0);
+  const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && references.length > 0);
+  const sourceVideoReferenceIsInvalid = Boolean(sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo));
   const generateDisabled = isGenerating ||
-    Boolean(sourceVideo && !isVeoArtifactValid(sourceVideo)) ||
+    !providerCredentialsAvailable ||
+    sourceVideoReferenceIsInvalid ||
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
     const seconds = Number(duration.replace('s', ''));
@@ -177,7 +194,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     if (!rate) return 0;
     return Number((rate * seconds).toFixed(2));
   }, [duration, resolution, selectedModel.id]);
-  const imageReferenceLimit = selectedModel.capabilities.assetInputs.imageReferencesMax;
+  const imageReferenceLimit = sourceVideo && isKlingModel(selectedModel)
+    ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
+    : selectedModel.capabilities.assetInputs.imageReferencesMax;
   const sourceVideoSupported = selectedModel.capabilities.assetInputs.videoExtension;
   const frameInputsSupported = selectedModel.capabilities.assetInputs.startFrame;
   const constrainedByEightSecondGeneration = Boolean(
@@ -191,10 +210,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     [constrainedByEightSecondGeneration, selectedModel.capabilities.durations],
   );
   const resolutionOptions = useMemo(
-    () => (sourceVideo
+    () => (sourceVideo && isVeoModel(selectedModel)
       ? selectedModel.capabilities.resolutions.filter((candidate) => candidate === '720p')
       : selectedModel.capabilities.resolutions),
-    [selectedModel.capabilities.resolutions, sourceVideo],
+    [selectedModel, sourceVideo],
   );
 
   const loadModels = useCallback(async () => {
@@ -242,8 +261,25 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
   useEffect(() => {
     if (!open) return;
+    setConnectionRevision((value) => value + 1);
     void loadModels();
   }, [loadModels, open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const refreshConnections = () => setConnectionRevision((value) => value + 1);
+    window.addEventListener(CONNECTION_SETTINGS_CHANGED_EVENT, refreshConnections);
+    window.addEventListener('storage', refreshConnections);
+    return () => {
+      window.removeEventListener(CONNECTION_SETTINGS_CHANGED_EVENT, refreshConnections);
+      window.removeEventListener('storage', refreshConnections);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || selectableModels.length === 0) return;
+    if (!selectableModels.some((candidate) => candidate.id === model)) setModel(selectableModels[0]!.id);
+  }, [model, open, selectableModels]);
 
   useEffect(() => {
     if (!open || !initialRecipeAsset?.recipe) return;
@@ -260,12 +296,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
     const nextSourceVideo = recipe.sourceVideoAssetId
-      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && isVeoArtifactValid(a)) ?? null
+      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && a.kind === 'video') ?? null
       : null;
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = nextSourceVideo ? [] : recipe.referenceAssetIds
+    const selectedRefs = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
       .filter((a) => a.kind === 'image')
@@ -294,7 +330,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setStartFrame(null);
       setEndFrame(null);
     }
-    if (!sourceVideoSupported || (sourceVideo && !isVeoArtifactValid(sourceVideo))) setSourceVideo(null);
+    if (!sourceVideoSupported || (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo))) setSourceVideo(null);
     if (imageReferenceLimit > 0 && references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
     setAudioEnabled(isAudioFeatureSupported(selectedModel));
     if (!selectedModel.promptGuidelines?.structuredSections.length && promptMode === 'structured') {
@@ -315,9 +351,19 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     promptMode,
   ]);
 
+  const sourceVideoToken = useMemo<RefToken | null>(() => sourceVideo ? {
+    id: `${sourceVideo.id}-video-reference`,
+    token: 'video1',
+    assetId: sourceVideo.id,
+    name: sourceVideo.name,
+    kind: 'video',
+    thumbnail: sourceVideo.thumbnailDataUrl,
+  } : null, [sourceVideo]);
+
   const allMentionItems = [
     ...(startFrame ? [{ key: 'start-frame', label: '@start-frame', action: () => insertToken('@start-frame') }] : []),
     ...(endFrame ? [{ key: 'end-frame', label: '@end-frame', action: () => insertToken('@end-frame') }] : []),
+    ...(sourceVideoToken ? [{ key: sourceVideoToken.id, label: '@video1', action: () => insertToken('@video1') }] : []),
     ...references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) })),
   ];
 
@@ -328,10 +374,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const referenceMap = useMemo(() => {
     const out = new Map<string, RefToken | 'start' | 'end'>();
     for (const ref of references) out.set(ref.token.toLowerCase(), ref);
+    if (sourceVideoToken) out.set(sourceVideoToken.token.toLowerCase(), sourceVideoToken);
     if (startFrame) out.set('start-frame', 'start');
     if (endFrame) out.set('end-frame', 'end');
     return out;
-  }, [references, startFrame, endFrame]);
+  }, [references, sourceVideoToken, startFrame, endFrame]);
 
   const promptTokens = useMemo(
     () => Array.from(prompt.matchAll(/@([a-z0-9-]+)/gi)),
@@ -361,9 +408,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     () => (loadedRecipeId ? recipeAssets.find((asset) => asset.id === loadedRecipeId) ?? null : null),
     [loadedRecipeId, recipeAssets],
   );
-  const providerCredentialsAvailable = hasVideoProviderCredentials(selectedModel);
-  const usingLocalDemoGenerator = !providerCredentialsAvailable;
-
   if (!open) return null;
 
   function buildToken(kind: RefToken['kind'], index: number) {
@@ -385,7 +429,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       kind,
       thumbnail: asset.thumbnailDataUrl,
     };
-    setSourceVideo(null);
+    if (!isKlingModel(selectedModel)) setSourceVideo(null);
     setReferences((prev) => [...prev, entry]);
   }
 
@@ -454,12 +498,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         setEndFrame(first.kind === 'image' ? first : null);
         if (first.kind === 'image') setSourceVideo(null);
       } else if (pickerMode === 'source-video') {
-        const validSource = first.kind === 'video' && isVeoArtifactValid(first);
+        const validSource = first.kind === 'video' && isSourceVideoReferenceValid(selectedModel, first);
         setSourceVideo(validSource ? first : null);
         if (validSource) {
           setStartFrame(null);
           setEndFrame(null);
-          setReferences([]);
         }
       }
       else addReferenceAsset(first);
@@ -481,39 +524,31 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setGenerationError('Add a generation description first.');
       return;
     }
-    if (sourceVideo && !isVeoArtifactValid(sourceVideo)) {
-      setGenerationError('This Veo video reference is older than 48 hours and can no longer be extended.');
+    if (!providerCredentialsAvailable) {
+      setGenerationError(`Connect ${providerNameForModel(selectedModel)} in Settings before generating.`);
+      return;
+    }
+    if (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo)) {
+      setGenerationError(isVeoModel(selectedModel)
+        ? 'This Veo video reference is older than 48 hours and can no longer be extended.'
+        : 'This Kling video reference needs an active remote URL. Local video upload is not available yet.');
       return;
     }
     setIsGenerating(true);
-    const useLocalGenerator = !hasVideoProviderCredentials(selectedModel);
-    const generationCostUsd = useLocalGenerator ? undefined : estimatedCostUsd || undefined;
+    const generationCostUsd = estimatedCostUsd || undefined;
     const id = addGeneratedAsset(
-      `${useLocalGenerator ? 'Demo_Generation' : 'Generating'}_${Date.now()}.${useLocalGenerator ? 'webm' : 'mp4'}`,
+      `Generating_${Date.now()}.mp4`,
       folderId,
       generationCostUsd,
     );
     try {
-      if (useLocalGenerator) {
-        const file = await createMockGeneratedVideo({
-          prompt: promptForGeneration,
-          aspect,
-          duration,
-          resolution,
-          audioEnabled,
-          onProgress: (progress) => updateGenerationProgress(id, progress),
-        });
-        await finalizeGeneratedAssetWithBlob(id, file, { actualCostUsd: generationCostUsd });
-        onClose();
-        return;
-      }
-
       const modelId = selectedModel.id;
       const referenceImageAssets = references
         .map((ref) => assets.find((asset) => asset.id === ref.assetId))
         .filter((asset): asset is MediaAsset => asset !== undefined)
         .filter((asset) => asset.kind === 'image');
-      const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) && !startFrame && !endFrame;
+      const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
+        !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
       const mutation = buildVideoGenerationMutation({
         prompt: promptForGeneration,
         modelId,
@@ -652,12 +687,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
     const nextSourceVideo = recipe.sourceVideoAssetId
-      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && isVeoArtifactValid(a)) ?? null
+      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && a.kind === 'video') ?? null
       : null;
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = nextSourceVideo ? [] : recipe.referenceAssetIds
+    const selectedRefs = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
       .filter((a) => a.kind === 'image')
@@ -740,7 +775,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             <FrameRefButton
               label="Video reference"
               value={sourceVideo}
-              disabled={!sourceVideoSupported || Boolean(startFrame || endFrame || references.length)}
+              disabled={!sourceVideoSupported || Boolean(startFrame || endFrame) || Boolean(isVeoModel(selectedModel) && references.length)}
               onClick={() => {
                 setPickerMode('source-video');
                 setShowMediaPicker(true);
@@ -805,7 +840,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs text-slate-400">Image references</span>
               <button
-                disabled={!isReferencesFeatureSupported(selectedModel) || references.length >= imageReferenceLimit || Boolean(sourceVideo)}
+                disabled={!isReferencesFeatureSupported(selectedModel) || references.length >= imageReferenceLimit || Boolean(sourceVideo && isVeoModel(selectedModel))}
                 className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-xs hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => {
                   setPickerMode('reference');
@@ -822,12 +857,19 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             )}
             {isReferencesFeatureSupported(selectedModel) && (
               <div className="mb-2 text-[11px] text-slate-500">
-                Up to {imageReferenceLimit} image references. Start/end frames take precedence over image references.
+                Up to {imageReferenceLimit} image references. {isVeoModel(selectedModel)
+                  ? 'Start/end frames take precedence over image references.'
+                  : 'References are sent through Kling Omni image_list.'}
               </div>
             )}
             {referencesIgnoredByFrameMode && (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
                 References will not be used since start / end frame is specified.
+              </div>
+            )}
+            {referencesIgnoredByVideoMode && (
+              <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+                References will not be used since a Veo video reference is specified.
               </div>
             )}
             <div className="flex flex-wrap gap-2">
@@ -844,7 +886,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
           <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.04] p-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <PillSelect label="Model" value={model} onChange={setModel} options={models.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} />
+              <PillSelect label="Model" value={model} onChange={setModel} options={selectableModels.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
               <PillOptionGroup label="Aspect" value={aspect} options={selectedModel.capabilities.aspects.map((v) => ({ value: v, label: v }))} onChange={(v) => setAspect(v as Aspect)} />
               <PillOptionGroup label="Resolution" value={resolution} options={resolutionOptions.map((v) => ({ value: v, label: v }))} onChange={setResolution} />
               <PillOptionGroup label="Duration" value={duration} options={durationOptions.map((v) => ({ value: v, label: v }))} onChange={setDuration} />
@@ -860,8 +902,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
           <div className="flex items-center justify-between gap-3">
             <div className="text-[11px] text-slate-500">
-              {usingLocalDemoGenerator ? 'Local demo generator' : selectedModel.label}
+              {providerCredentialsAvailable ? selectedModel.label : `Connect ${providerNameForModel(selectedModel)} in Settings`}
             </div>
+            {!hasConfiguredProviderModels && (
+              <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
+                Add a Google or Kling key to enable generation models.
+              </div>
+            )}
             {generationError && (
               <div className="flex items-center gap-2 text-xs text-rose-300">
                 <span>{generationError}</span>
@@ -883,8 +930,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             >
               {isGenerating ? 'Generating...' : (
                 <>
-                  {usingLocalDemoGenerator ? 'Generate demo' : 'Generate'}
-                  {!usingLocalDemoGenerator && estimatedCostUsd > 0 && (
+                  Generate
+                  {estimatedCostUsd > 0 && (
                     <span className="ml-1 text-[10px] font-medium text-slate-700">${estimatedCostUsd.toFixed(2)}</span>
                   )}
                 </>
@@ -939,12 +986,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               setEndFrame(asset.kind === 'image' ? asset : null);
               if (asset.kind === 'image') setSourceVideo(null);
             } else if (pickerMode === 'source-video') {
-              const validSource = asset.kind === 'video' && isVeoArtifactValid(asset);
+              const validSource = asset.kind === 'video' && isSourceVideoReferenceValid(selectedModel, asset);
               setSourceVideo(validSource ? asset : null);
               if (validSource) {
                 setStartFrame(null);
                 setEndFrame(null);
-                setReferences([]);
               }
             }
             else addReferenceAsset(asset);
@@ -952,6 +998,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
           }}
           onImportFromComputer={() => void onImportFromComputer()}
           pickerMode={pickerMode}
+          selectedModel={selectedModel}
         />
       )}
     </div>
@@ -1135,23 +1182,30 @@ function PillSelect({
   options,
   onChange,
   loading = false,
+  disabled = false,
+  emptyLabel = 'No options',
 }: {
   label: string;
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
   loading?: boolean;
+  disabled?: boolean;
+  emptyLabel?: string;
 }) {
+  const displayValue = options.some((option) => option.value === value) ? value : '';
   return (
     <label className="inline-flex h-8 max-w-full items-center gap-2 rounded-full border border-white/15 bg-black/20 pl-3 pr-2 text-xs text-slate-300">
       <span className="text-slate-500">{label}</span>
       <select
-        value={value}
+        value={displayValue}
         onChange={(e) => onChange(e.target.value)}
         className="max-w-[220px] bg-transparent text-xs text-slate-100 outline-none"
-        disabled={loading}
+        disabled={loading || disabled || options.length === 0}
       >
-        {loading ? <option>Loading…</option> : options.map((option) => <option key={option.value} value={option.value} className="bg-slate-900">{option.label}</option>)}
+        {loading && <option>Loading...</option>}
+        {!loading && options.length === 0 && <option value="">{emptyLabel}</option>}
+        {!loading && options.map((option) => <option key={option.value} value={option.value} className="bg-slate-900">{option.label}</option>)}
       </select>
     </label>
   );
@@ -1221,22 +1275,24 @@ function MediaPicker({
   onPick,
   onImportFromComputer,
   pickerMode,
+  selectedModel,
 }: {
   assets: MediaAsset[];
   onClose: () => void;
   onPick: (asset: MediaAsset) => void;
   onImportFromComputer: () => void;
   pickerMode: 'reference' | 'start' | 'end' | 'source-video';
+  selectedModel: VideoModelDefinition;
 }) {
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<'recent' | 'name' | 'duration'>('recent');
   const visibleAssets = pickerMode === 'reference'
     ? assets.filter((a) => a.kind === 'image')
     : pickerMode === 'source-video'
-      ? assets.filter((a) => a.kind === 'video' && isVeoArtifactValid(a))
+      ? assets.filter((a) => a.kind === 'video' && isSourceVideoReferenceValid(selectedModel, a))
       : assets.filter((a) => a.kind === 'image');
   const expiredSourceCount = pickerMode === 'source-video'
-    ? assets.filter((a) => a.kind === 'video' && a.generation?.provider === 'google-veo' && !isVeoArtifactValid(a)).length
+    ? assets.filter((a) => a.kind === 'video' && !isSourceVideoReferenceValid(selectedModel, a)).length
     : 0;
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1257,9 +1313,11 @@ function MediaPicker({
       });
   }, [query, sortKey, visibleAssets]);
   const helperText = pickerMode === 'reference'
-    ? 'Choose up to three image references.'
+    ? 'Choose image references supported by the selected model.'
     : pickerMode === 'source-video'
-      ? 'Choose one active Veo-generated video reference for extension.'
+      ? (isKlingModel(selectedModel)
+        ? 'Choose one active remote video reference. Local videos need hosted URL support.'
+        : 'Choose one active Veo-generated video reference for extension.')
       : 'Only image assets are valid for frame slots.';
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
@@ -1293,7 +1351,7 @@ function MediaPicker({
         <div className="max-h-[430px] overflow-auto p-2">
           <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
             <span>{filteredAssets.length} of {visibleAssets.length} matching assets</span>
-            <span>{pickerMode === 'source-video' ? 'Video extension' : 'Image input'}</span>
+            <span>{pickerMode === 'source-video' ? 'Video reference' : 'Image input'}</span>
           </div>
           <div className="grid gap-1.5 sm:grid-cols-2">
           {filteredAssets.map((asset) => (
@@ -1316,7 +1374,7 @@ function MediaPicker({
           </div>
           {expiredSourceCount > 0 && (
             <div className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-100/80">
-              {expiredSourceCount} Veo video {expiredSourceCount === 1 ? 'reference is' : 'references are'} older than 48 hours and hidden from extension references.
+              {expiredSourceCount} video {expiredSourceCount === 1 ? 'asset is' : 'assets are'} hidden because the selected model cannot use them as active video references.
             </div>
           )}
         </div>
@@ -1367,11 +1425,32 @@ function formatShortDate(timestamp: number) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function hasVideoProviderCredentials(model: VideoModelDefinition): boolean {
-  if (isKlingModel(model)) {
-    return Boolean(localStorage.getItem(KLING_ACCESS_KEY_STORAGE) && localStorage.getItem(KLING_SECRET_KEY_STORAGE));
-  }
-  if (isVeoModel(model)) return Boolean(localStorage.getItem(GOOGLE_VEO_API_KEY_STORAGE));
+function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {
+  if (asset.kind !== 'video') return false;
+  if (isVeoModel(model)) return isVeoArtifactValid(asset);
+  if (isKlingModel(model)) return isKlingVideoReferenceAsset(asset);
+  return false;
+}
+
+function providerNameForModel(model: VideoModelDefinition): string {
+  if (isKlingModel(model)) return 'Kling';
+  if (isVeoModel(model)) return 'Google Veo';
+  return 'this provider';
+}
+
+function readVideoProviderCredentialAvailability(): VideoProviderCredentialAvailability {
+  return {
+    googleVeo: Boolean(localStorage.getItem(GOOGLE_VEO_API_KEY_STORAGE)),
+    kling: Boolean(localStorage.getItem(KLING_ACCESS_KEY_STORAGE) && localStorage.getItem(KLING_SECRET_KEY_STORAGE)),
+  };
+}
+
+function hasVideoProviderCredentials(
+  model: VideoModelDefinition,
+  availability: VideoProviderCredentialAvailability = readVideoProviderCredentialAvailability(),
+): boolean {
+  if (isKlingModel(model)) return availability.kling;
+  if (isVeoModel(model)) return availability.googleVeo;
   return false;
 }
 
