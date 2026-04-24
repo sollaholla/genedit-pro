@@ -12,8 +12,49 @@ function loadProject(): Project {
     if (!raw) return createInitialProject();
     const parsed = JSON.parse(raw) as Project;
     if (!parsed.tracks || !parsed.clips) return createInitialProject();
-    // Backfill volume for clips saved before it was added.
-    parsed.clips = parsed.clips.map((c) => ({ ...c, volume: (c as { volume?: number }).volume ?? 1 }));
+    // Backfill clip props added after initial release.
+    parsed.clips = parsed.clips.map((c) => ({
+      ...c,
+      volume: (c as { volume?: number }).volume ?? 1,
+      speed: (c as { speed?: number }).speed ?? 1,
+      scale: (c as { scale?: number }).scale ?? 1,
+      transform: (c as {
+        transform?: {
+          scale?: number;
+          offsetX?: number;
+          offsetY?: number;
+          keyframes?: Array<{
+            id: string;
+            timeSec: number;
+            scale: number;
+            offsetX: number;
+            offsetY: number;
+          }>;
+        };
+      }).transform
+        ? {
+          scale: (c as { transform: { scale?: number } }).transform.scale ?? 1,
+          offsetX: (c as { transform: { offsetX?: number } }).transform.offsetX ?? 0,
+          offsetY: (c as { transform: { offsetY?: number } }).transform.offsetY ?? 0,
+          keyframes: (c as {
+            transform: {
+              keyframes?: Array<{
+                id: string;
+                timeSec: number;
+                scale: number;
+                offsetX: number;
+                offsetY: number;
+              }>;
+            };
+          }).transform.keyframes ?? [],
+        }
+        : undefined,
+      components: (c as {
+        components?: Array<{ id: string; type: 'transform' }>;
+        transform?: unknown;
+      }).components
+        ?? ((c as { transform?: unknown }).transform ? [{ id: 'transform', type: 'transform' }] : []),
+    }));
     return parsed;
   } catch {
     return createInitialProject();

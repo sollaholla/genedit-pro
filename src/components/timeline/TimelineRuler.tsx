@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { RULER_HEIGHT_PX, timeToPx } from '@/lib/timeline/geometry';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
+import { clipTimelineDurationSec } from '@/lib/timeline/operations';
 
 type Props = {
   pxPerSec: number;
@@ -39,7 +40,7 @@ export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft
 
   return (
     <div
-      className="relative shrink-0 border-b border-surface-700 bg-surface-900 no-select"
+      className="sticky top-0 z-20 shrink-0 border-b border-surface-700 bg-surface-900 no-select"
       style={{ height: RULER_HEIGHT_PX, width: displayDuration * pxPerSec }}
       onMouseDown={(e) => {
         pause();
@@ -99,7 +100,7 @@ function BufferBar({ pxPerSec }: { pxPerSec: number }) {
       .map((c) => ({
         id: c.id,
         left: timeToPx(c.startSec, pxPerSec),
-        width: Math.max(1, timeToPx(c.outSec - c.inSec, pxPerSec)),
+        width: Math.max(1, timeToPx(clipTimelineDurationSec(c), pxPerSec)),
       }));
   }, [clips, readiness, pxPerSec]);
 

@@ -2,11 +2,22 @@ import { nanoid } from 'nanoid';
 import type { Clip, MediaAsset, Project, Track } from '@/types';
 
 export const MIN_CLIP_DURATION = 0.05; // 50ms floor to avoid zero-length clips
+export const MIN_CLIP_SPEED = 0.25;
+export const MAX_CLIP_SPEED = 4;
+
+export function clipSpeed(clip: Clip): number {
+  return Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, clip.speed ?? 1));
+}
+
+/** Duration the clip occupies on the timeline, after speed is applied. */
+export function clipTimelineDurationSec(clip: Clip): number {
+  return Math.max(MIN_CLIP_DURATION, (clip.outSec - clip.inSec) / clipSpeed(clip));
+}
 
 export function projectDurationSec(project: Project): number {
   let max = 0;
   for (const clip of project.clips) {
-    const end = clip.startSec + (clip.outSec - clip.inSec);
+    const end = clip.startSec + clipTimelineDurationSec(clip);
     if (end > max) max = end;
   }
   return max;
@@ -39,6 +50,9 @@ export function addClip(
     startSec: Math.max(0, startSec),
     inSec: 0,
     outSec: duration,
+    speed: 1,
+    scale: 1,
+    components: [],
     volume: 1,
   };
   return { ...project, clips: [...project.clips, clip] };
@@ -113,9 +127,9 @@ export function trimClipLeft(
   if (!clip) return project;
   const rawDelta = newStartSec - clip.startSec;
   const minDelta = Math.max(-clip.inSec, -clip.startSec);
-  const maxDelta = clip.outSec - clip.inSec - MIN_CLIP_DURATION;
+  const maxDelta = clipTimelineDurationSec(clip) - MIN_CLIP_DURATION;
   const delta = Math.max(minDelta, Math.min(maxDelta, rawDelta));
-  const nextInSec = clip.inSec + delta;
+  const nextInSec = clip.inSec + delta * clipSpeed(clip);
   const nextStart = clip.startSec + delta;
   return {
     ...project,
@@ -140,10 +154,10 @@ export function trimClipRight(
   if (!clip) return project;
   const requestedDur = newEndSec - clip.startSec;
   const maxDurFromSource = maxSourceSec !== undefined
-    ? Math.max(MIN_CLIP_DURATION, maxSourceSec - clip.inSec)
+    ? Math.max(MIN_CLIP_DURATION, (maxSourceSec - clip.inSec) / clipSpeed(clip))
     : Infinity;
   const dur = Math.max(MIN_CLIP_DURATION, Math.min(maxDurFromSource, requestedDur));
-  const nextOutSec = clip.inSec + dur;
+  const nextOutSec = clip.inSec + dur * clipSpeed(clip);
   return {
     ...project,
     clips: project.clips.map((c) =>
@@ -159,10 +173,10 @@ export function splitClipAt(
 ): Project {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) return project;
-  const clipEnd = clip.startSec + (clip.outSec - clip.inSec);
+  const clipEnd = clip.startSec + clipTimelineDurationSec(clip);
   if (timeSec <= clip.startSec + MIN_CLIP_DURATION) return project;
   if (timeSec >= clipEnd - MIN_CLIP_DURATION) return project;
-  const offset = timeSec - clip.startSec;
+  const offset = (timeSec - clip.startSec) * clipSpeed(clip);
   const splitInSec = clip.inSec + offset;
   const left: Clip = { ...clip, outSec: splitInSec };
   const right: Clip = {
@@ -178,6 +192,14 @@ export function splitClipAt(
 }
 
 export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
+  return insertTrack(project, kind, project.tracks.length);
+}
+
+export function insertTrack(
+  project: Project,
+  kind: 'video' | 'audio',
+  insertIndex: number,
+): Project {
   const track: Track = {
     id: nanoid(8),
     kind,
@@ -185,8 +207,30 @@ export function addTrack(project: Project, kind: 'video' | 'audio'): Project {
     muted: false,
     hidden: false,
   };
-  const reindexed = [...project.tracks, track].map((t, i) => ({ ...t, index: i }));
-  return { ...project, tracks: reindexed };
+  const next = [...project.tracks];
+  const at = Math.max(0, Math.min(insertIndex, next.length));
+  next.splice(at, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrack(project: Project, trackId: string, targetIndex: number): Project {
+  const tracks = sortedTracks(project);
+  const from = tracks.findIndex((t) => t.id === trackId);
+  if (from < 0) return project;
+  const to = Math.max(0, Math.min(targetIndex, tracks.length - 1));
+  if (from === to) return project;
+  const next = [...tracks];
+  const [track] = next.splice(from, 1);
+  if (!track) return project;
+  next.splice(to, 0, track);
+  return { ...project, tracks: next.map((t, i) => ({ ...t, index: i })) };
+}
+
+export function moveTrackBy(project: Project, trackId: string, delta: number): Project {
+  const tracks = sortedTracks(project);
+  const idx = tracks.findIndex((t) => t.id === trackId);
+  if (idx < 0) return project;
+  return moveTrack(project, trackId, idx + delta);
 }
 
 export function removeTrack(project: Project, trackId: string): Project {
@@ -227,7 +271,7 @@ export function setClipProp<K extends keyof Clip>(
 export function duplicateClip(project: Project, clipId: string): Project {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) return project;
-  const duration = clip.outSec - clip.inSec;
+  const duration = clipTimelineDurationSec(clip);
   const newClip: Clip = {
     ...clip,
     id: nanoid(8),
@@ -261,6 +305,36 @@ export function pasteClipFrom(
       : undefined,
   };
   return { ...project, clips: [...project.clips, newClip] };
+}
+
+/**
+ * Paste a group of copied clips at `startSec`, preserving their relative
+ * time offsets and original track assignments.
+ */
+export function pasteClipsFrom(
+  project: Project,
+  sources: Clip[],
+  startSec: number,
+): Project {
+  if (sources.length === 0) return project;
+  const minStart = Math.min(...sources.map((c) => c.startSec));
+  const tracks = new Set(project.tracks.map((t) => t.id));
+  const newClips: Clip[] = [];
+  for (const source of sources) {
+    if (!tracks.has(source.trackId)) continue;
+    const offset = source.startSec - minStart;
+    const pasted: Clip = {
+      ...source,
+      id: nanoid(8),
+      startSec: Math.max(0, startSec + offset),
+      volumeEnvelope: source.volumeEnvelope
+        ? { ...source.volumeEnvelope, points: source.volumeEnvelope.points.map((p) => ({ ...p })) }
+        : undefined,
+    };
+    newClips.push(pasted);
+  }
+  if (newClips.length === 0) return project;
+  return { ...project, clips: [...project.clips, ...newClips] };
 }
 
 /** Replace a clip's underlying asset and source-trim points; timeline position unchanged. */

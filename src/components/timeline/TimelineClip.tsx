@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import type { Clip, MediaAsset } from '@/types';
 import { timeToPx } from '@/lib/timeline/geometry';
 import { ClipEnvelopeOverlay } from './ClipEnvelopeOverlay';
+import { clipTimelineDurationSec } from '@/lib/timeline/operations';
 
 const HANDLE_WIDTH = 6;
 
@@ -37,7 +38,7 @@ export function TimelineClip({
   onContextMenu,
 }: Props) {
   const startSec = overrideStartSec ?? clip.startSec;
-  const duration = clip.outSec - clip.inSec;
+  const duration = clipTimelineDurationSec(clip);
   const left = timeToPx(startSec, pxPerSec);
   const width = Math.max(4, timeToPx(duration, pxPerSec));
 
@@ -82,6 +83,14 @@ export function TimelineClip({
             onMouseDown={(e) => { e.stopPropagation(); onTrimMouseDown(clip.id, 'r', e); }}
           />
         </>
+      )}
+      {asset?.thumbnailDataUrl && trackKind === 'audio' && width > 24 && (
+        <img
+          src={asset.thumbnailDataUrl}
+          alt=""
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-45"
+          draggable={false}
+        />
       )}
       {asset?.thumbnailDataUrl && trackKind !== 'audio' && width > 40 && (
         <img

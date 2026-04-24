@@ -3,7 +3,7 @@ import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
-import { projectDurationSec } from '@/lib/timeline/operations';
+import { clipSpeed, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import {
   getAudioContext,
@@ -33,13 +33,36 @@ function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   }
 }
 
+function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
+  if (Math.abs(el.playbackRate - speed) > 1e-3) {
+    el.playbackRate = speed;
+    el.defaultPlaybackRate = speed;
+  }
+  const maybe = el as HTMLMediaElement & {
+    preservesPitch?: boolean;
+    mozPreservesPitch?: boolean;
+    webkitPreservesPitch?: boolean;
+  };
+  maybe.preservesPitch = true;
+  maybe.mozPreservesPitch = true;
+  maybe.webkitPreservesPitch = true;
+}
+
+function resolvedTransform(clip: ActiveLayer['clip']) {
+  const hasTransform = (clip.components ?? []).some((c) => c.type === 'transform');
+  if (hasTransform && clip.transform) return clip.transform;
+  return { scale: clip.scale ?? 1, offsetX: 0, offsetY: 0, keyframes: [] };
+}
+
 export function PreviewPlayer() {
   const project = useProjectStore((s) => s.project);
   const assets = useMediaStore((s) => s.assets);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
+  const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const pause = usePlaybackStore((s) => s.pause);
+  const updateSilent = useProjectStore((s) => s.updateSilent);
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -76,6 +99,13 @@ export function PreviewPlayer() {
   const [hasActiveVideo, setHasActiveVideo] = useState(false);
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [aspectPreset, setAspectPreset] = useState<'16:9' | '9:16' | '1:1' | '4:3'>(() => {
+    const ratio = project.width / Math.max(1, project.height);
+    if (Math.abs(ratio - 16 / 9) < 0.02) return '16:9';
+    if (Math.abs(ratio - 9 / 16) < 0.02) return '9:16';
+    if (Math.abs(ratio - 1) < 0.02) return '1:1';
+    return '4:3';
+  });
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement) {
@@ -92,6 +122,46 @@ export function PreviewPlayer() {
   }, []);
 
   const duration = useMemo(() => projectDurationSec(project), [project]);
+
+  // Drag-manipulate transform component directly in the preview window.
+  useEffect(() => {
+    if (selectedClipIds.length !== 1) return;
+    const selectedId = selectedClipIds[0]!;
+    const frame = resolveFrame(project, currentTime);
+    if (frame.video?.clip.id !== selectedId || !frame.video.clip.transform) return;
+    const el = videoPool.current.get(selectedId) as HTMLVideoElement | undefined;
+    if (!el) return;
+
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const clip = useProjectStore.getState().project.clips.find((c) => c.id === selectedId);
+      if (!clip?.transform) return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const baseX = clip.transform.offsetX;
+      const baseY = clip.transform.offsetY;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        updateSilent((p) => ({
+          ...p,
+          clips: p.clips.map((c) => (c.id === selectedId && c.transform
+            ? { ...c, transform: { ...c.transform, offsetX: baseX + dx, offsetY: baseY + dy } }
+            : c)),
+        }));
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
+    el.addEventListener('mousedown', onDown);
+    return () => el.removeEventListener('mousedown', onDown);
+  }, [project, currentTime, selectedClipIds, updateSilent]);
 
   // Reconcile: one HTMLMediaElement + one GainNode per clip.
   useEffect(() => {
@@ -180,7 +250,7 @@ export function PreviewPlayer() {
             v.playsInline = true;
             v.muted = true; // starts muted; unmuted by RAF when active for audio
             v.src = url;
-            v.className = 'absolute inset-0 h-full w-full object-contain';
+            v.className = 'absolute inset-0 h-full w-full object-cover';
             v.style.display = 'none';
             videoHostRef.current?.appendChild(v);
             pool.set(clip.id, v);
@@ -243,7 +313,20 @@ export function PreviewPlayer() {
       // ---- VIDEO DISPLAY ----
       const nextVideoClipId = frame.video?.clip.id ?? null;
       for (const [clipId, el] of videoPool.current) {
-        (el as HTMLVideoElement).style.display = clipId === nextVideoClipId ? '' : 'none';
+        const videoEl = el as HTMLVideoElement;
+        videoEl.style.display = clipId === nextVideoClipId ? '' : 'none';
+        if (clipId === nextVideoClipId) {
+          const tf = frame.video ? resolvedTransform(frame.video.clip) : null;
+          const s = Math.max(0.1, Math.min(3, tf?.scale ?? frame.video?.clip.scale ?? 1));
+          const ox = tf?.offsetX ?? 0;
+          const oy = tf?.offsetY ?? 0;
+          videoEl.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
+          videoEl.style.transformOrigin = 'center center';
+          videoEl.style.cursor = tf ? 'move' : 'default';
+        } else {
+          videoEl.style.transform = '';
+          videoEl.style.cursor = 'default';
+        }
       }
       const hasVideo = nextVideoClipId !== null;
       if (hasVideo !== prevHasVideoRef.current) {
@@ -284,6 +367,7 @@ export function PreviewPlayer() {
         // silence audio — the "eeee---eeee" gap the user hears on snapped clips.
         if (state.playing && timeUntilActive <= HOT_PRIMING_SEC && timeUntilActive >= 0) {
           hotPrimedIds.add(clip.id);
+          setPitchPreservingRate(el, clipSpeed(clip));
           const gn = gainNodes.current.get(clip.id);
           if (gn) gn.gain.value = 0;
           if (videoPool.current.has(clip.id)) {
@@ -404,6 +488,7 @@ export function PreviewPlayer() {
         }
 
         if (isVideoEl) (el as HTMLVideoElement).muted = false;
+        setPitchPreservingRate(el, clipSpeed(layer.clip));
 
         if (!state.playing && !el.paused) el.pause();
         seekIfNeeded(el, layer.sourceTimeSec, state.playing);
@@ -479,11 +564,24 @@ export function PreviewPlayer() {
       >
         <div
           className={`relative w-full max-w-full overflow-hidden bg-black ${
-            isFullscreen ? 'h-full' : 'aspect-video rounded-md ring-1 ring-surface-700'
+            isFullscreen ? '' : 'rounded-md ring-1 ring-surface-700'
           }`}
-          style={isFullscreen ? undefined : { maxHeight: '100%' }}
+          style={{ aspectRatio: aspectPreset.replace(':', ' / '), maxHeight: '100%' }}
           onDoubleClick={toggleFullscreen}
         >
+          <div className="absolute right-2 top-2 z-20">
+            <select
+              className="rounded border border-surface-600 bg-surface-900/90 px-2 py-1 text-[11px] text-slate-200"
+              value={aspectPreset}
+              onChange={(e) => setAspectPreset(e.target.value as typeof aspectPreset)}
+              title="Preview aspect ratio"
+            >
+              <option value="16:9">16:9</option>
+              <option value="4:3">4:3</option>
+              <option value="1:1">1:1</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </div>
           <div ref={videoHostRef} className="absolute inset-0" />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">

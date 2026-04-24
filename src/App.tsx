@@ -8,11 +8,17 @@ import { Timeline } from '@/components/timeline/Timeline';
 import { PreviewPlayer } from '@/components/preview/PreviewPlayer';
 import { ExportDialog } from '@/components/export/ExportDialog';
 import { MasterBussPanel } from '@/components/audio/MasterBussPanel';
+import { SettingsModal } from '@/components/settings/SettingsModal';
+import { GenerateVideoModal } from '@/components/media/GenerateVideoModal';
 import { useProjectStore } from '@/state/projectStore';
+import type { MediaAsset } from '@/types';
 
 export default function App() {
   const importerRef = useRef<MediaImporterHandle | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const reset = useProjectStore((s) => s.reset);
 
   const openImport = () => importerRef.current?.openPicker();
@@ -31,9 +37,22 @@ export default function App() {
             onImportClick={openImport}
             onExportClick={() => setExportOpen(true)}
             onNewProject={handleNewProject}
+            onSettingsClick={() => setSettingsOpen(true)}
           />
         }
-        mediaPanel={<LeftPanel onImportClick={openImport} />}
+        mediaPanel={
+          <LeftPanel
+            onImportClick={openImport}
+            onGenerateClick={() => {
+              setRecipeToOpen(null);
+              setGenerateOpen(true);
+            }}
+            onOpenRecipe={(asset) => {
+              setRecipeToOpen(asset);
+              setGenerateOpen(true);
+            }}
+          />
+        }
         preview={<PreviewPlayer />}
         rightPanel={<MasterBussPanel />}
         timeline={<Timeline />}
@@ -41,6 +60,13 @@ export default function App() {
       />
       <MediaImporter ref={importerRef} />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <GenerateVideoModal
+        open={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        initialRecipeAsset={recipeToOpen}
+      />
     </>
   );
 }

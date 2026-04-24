@@ -1,4 +1,5 @@
 import type { Clip, Project, Track } from '@/types';
+import { clipSpeed, clipTimelineDurationSec } from '@/lib/timeline/operations';
 
 export type ActiveLayer = {
   track: Track;
@@ -20,7 +21,11 @@ export function resolveFrame(project: Project, t: number): ResolvedFrame {
   for (const track of sorted) {
     const clip = activeClipOnTrack(project.clips, track.id, t);
     if (!clip) continue;
-    const layer: ActiveLayer = { track, clip, sourceTimeSec: clip.inSec + (t - clip.startSec) };
+    const layer: ActiveLayer = {
+      track,
+      clip,
+      sourceTimeSec: clip.inSec + (t - clip.startSec) * clipSpeed(clip),
+    };
 
     if (track.kind === 'video' && !track.hidden) {
       if (!video) video = layer;
@@ -37,7 +42,7 @@ export function resolveFrame(project: Project, t: number): ResolvedFrame {
 function activeClipOnTrack(clips: Clip[], trackId: string, t: number): Clip | null {
   for (const c of clips) {
     if (c.trackId !== trackId) continue;
-    const end = c.startSec + (c.outSec - c.inSec);
+    const end = c.startSec + clipTimelineDurationSec(c);
     if (t >= c.startSec && t < end) return c;
   }
   return null;

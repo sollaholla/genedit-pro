@@ -1,4 +1,16 @@
-export type MediaKind = 'video' | 'audio' | 'image';
+export type MediaKind = 'video' | 'audio' | 'image' | 'recipe';
+
+export type GenerateRecipe = {
+  model: string;
+  prompt: string;
+  aspect: string;
+  resolution: string;
+  duration: string;
+  audioEnabled: boolean;
+  startFrameAssetId?: string | null;
+  endFrameAssetId?: string | null;
+  referenceAssetIds: string[];
+};
 
 export type MediaAsset = {
   id: string;
@@ -10,6 +22,14 @@ export type MediaAsset = {
   mimeType: string;
   blobKey: string;
   thumbnailDataUrl?: string;
+  folderId?: string | null;
+  generation?: {
+    status: 'generating' | 'done' | 'error';
+    progress?: number;
+    estimatedCostUsd?: number;
+    actualCostUsd?: number;
+  };
+  recipe?: GenerateRecipe;
   createdAt: number;
 };
 
@@ -46,6 +66,28 @@ export type Clip = {
   startSec: number;
   inSec: number;
   outSec: number;
+  /** Playback rate applied to this clip (0.25..4). 1 = normal speed. */
+  speed?: number;
+  /** Visual scale for rendered video in preview/export. 1 = 100%. */
+  scale?: number;
+  /** Optional transform component state for this clip. */
+  transform?: {
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+    keyframes: Array<{
+      id: string;
+      timeSec: number;
+      scale: number;
+      offsetX: number;
+      offsetY: number;
+    }>;
+  };
+  /** Ordered component stack (Unity-style). */
+  components?: Array<{
+    id: string;
+    type: 'transform';
+  }>;
   /** 0–2, default 1. Applied as a scalar multiplier over the envelope. */
   volume: number;
   /** Optional editable volume envelope; absent means flat at 100%. */

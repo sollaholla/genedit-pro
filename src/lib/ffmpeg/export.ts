@@ -1,7 +1,7 @@
 import { fetchFile } from '@ffmpeg/util';
 import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { getBlob } from '@/lib/media/storage';
-import { projectDurationSec } from '@/lib/timeline/operations';
+import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { resolveFrame } from '@/lib/playback/engine';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { getFFmpeg } from './client';
@@ -32,7 +32,7 @@ export function planSegments(project: Project): Segment[] {
   const breakpoints = new Set<number>([0, totalDuration]);
   for (const clip of project.clips) {
     breakpoints.add(clip.startSec);
-    breakpoints.add(clip.startSec + (clip.outSec - clip.inSec));
+    breakpoints.add(clip.startSec + clipTimelineDurationSec(clip));
   }
 
   const ordered = [...breakpoints]
@@ -103,7 +103,7 @@ function segmentAudioFilter(clip: Clip, segStartSec: number, segEndSec: number):
   const samples: { t: number; v: number }[] = [];
   for (let i = 0; i <= N; i++) {
     const tau = (i / N) * segDur;
-    const sourceTime = clip.inSec + (segStartSec - clip.startSec) + tau;
+    const sourceTime = clip.inSec + (segStartSec - clip.startSec + tau) * clipSpeed(clip);
     const localT = Math.max(0, Math.min(1, (sourceTime - clip.inSec) / clipDur));
     const envV = evalEnvelopeAt(env, localT);
     samples.push({ t: tau, v: Math.max(0, master * envV) });
@@ -181,7 +181,8 @@ export async function exportProject(
       if (seg.videoLayer) {
         const asset = assetById.get(seg.videoLayer.clip.assetId);
         if (asset) {
-          const startInSource = seg.videoLayer.clip.inSec + (seg.startSec - seg.videoLayer.clip.startSec);
+          const startInSource = seg.videoLayer.clip.inSec
+            + (seg.startSec - seg.videoLayer.clip.startSec) * clipSpeed(seg.videoLayer.clip);
           args.push('-ss', startInSource.toFixed(3));
           args.push('-t', segDuration.toFixed(3));
           args.push('-i', vfsNameForAsset(asset));
@@ -191,7 +192,8 @@ export async function exportProject(
       if (seg.audioLayer && (!seg.videoLayer || seg.audioLayer.clip.assetId !== seg.videoLayer.clip.assetId)) {
         const asset = assetById.get(seg.audioLayer.clip.assetId);
         if (asset) {
-          const startInSource = seg.audioLayer.clip.inSec + (seg.startSec - seg.audioLayer.clip.startSec);
+          const startInSource = seg.audioLayer.clip.inSec
+            + (seg.startSec - seg.audioLayer.clip.startSec) * clipSpeed(seg.audioLayer.clip);
           args.push('-ss', startInSource.toFixed(3));
           args.push('-t', segDuration.toFixed(3));
           args.push('-i', vfsNameForAsset(asset));

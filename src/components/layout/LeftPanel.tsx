@@ -2,14 +2,17 @@ import { useEffect, useState } from 'react';
 import { MediaBin } from '@/components/media/MediaBin';
 import { ClipInspector } from '@/components/inspector/ClipInspector';
 import { usePlaybackStore } from '@/state/playbackStore';
+import type { MediaAsset } from '@/types';
 
 type Props = {
   onImportClick: () => void;
+  onGenerateClick: () => void;
+  onOpenRecipe: (asset: MediaAsset) => void;
 };
 
 type Tab = 'media' | 'inspector';
 
-export function LeftPanel({ onImportClick }: Props) {
+export function LeftPanel({ onImportClick, onGenerateClick, onOpenRecipe }: Props) {
   const [tab, setTab] = useState<Tab>('media');
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const hasSelection = selectedClipIds.length > 0;
@@ -29,7 +32,7 @@ export function LeftPanel({ onImportClick }: Props) {
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === 'media' ? (
-          <MediaBin onImportClick={onImportClick} />
+          <MediaBin onImportClick={onImportClick} onGenerateClick={onGenerateClick} onOpenRecipe={onOpenRecipe} />
         ) : (
           <ClipInspector />
         )}
