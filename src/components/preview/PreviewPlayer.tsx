@@ -49,6 +49,36 @@ const PREVIEW_ASPECT_OPTIONS: readonly { value: PreviewAspectPreset; label: stri
   { value: '1:1', label: '1:1' },
   { value: '9:16', label: '9:16' },
 ];
+const PREVIEW_ASPECT_STORAGE_KEY = 'genedit-pro:preview-aspect';
+
+function isPreviewAspectPreset(value: string | null): value is PreviewAspectPreset {
+  return Boolean(value && value in PREVIEW_ASPECTS);
+}
+
+function initialPreviewAspectPreset(projectWidth: number, projectHeight: number): PreviewAspectPreset {
+  try {
+    const stored = localStorage.getItem(PREVIEW_ASPECT_STORAGE_KEY);
+    if (isPreviewAspectPreset(stored)) return stored;
+  } catch {
+    // Fall back to the project format when storage is unavailable.
+  }
+
+  const ratio = projectWidth / Math.max(1, projectHeight);
+  if (Math.abs(ratio - 16 / 9) < 0.02) return '16:9';
+  if (Math.abs(ratio - 2.39) < 0.03) return '2.39:1';
+  if (Math.abs(ratio - 4 / 3) < 0.02) return '4:3';
+  if (Math.abs(ratio - 9 / 16) < 0.02) return '9:16';
+  if (Math.abs(ratio - 1) < 0.02) return '1:1';
+  return '16:9';
+}
+
+function persistPreviewAspectPreset(value: PreviewAspectPreset) {
+  try {
+    localStorage.setItem(PREVIEW_ASPECT_STORAGE_KEY, value);
+  } catch {
+    // ignore storage failures
+  }
+}
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -141,14 +171,16 @@ export function PreviewPlayer() {
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
-  const [aspectPreset, setAspectPreset] = useState<PreviewAspectPreset>(() => {
-    const ratio = project.width / Math.max(1, project.height);
-    if (Math.abs(ratio - 16 / 9) < 0.02) return '16:9';
-    if (Math.abs(ratio - 9 / 16) < 0.02) return '9:16';
-    if (Math.abs(ratio - 1) < 0.02) return '1:1';
-    return '4:3';
-  });
+  const [aspectPreset, setAspectPreset] = useState<PreviewAspectPreset>(() =>
+    initialPreviewAspectPreset(project.width, project.height),
+  );
   const previewAspectRatio = PREVIEW_ASPECTS[aspectPreset];
+
+  const updateAspectPreset = (value: string) => {
+    if (!isPreviewAspectPreset(value)) return;
+    setAspectPreset(value);
+    persistPreviewAspectPreset(value);
+  };
 
   useEffect(() => {
     assetsRef.current = assets;
@@ -706,7 +738,7 @@ export function PreviewPlayer() {
         isFullscreen={isFullscreen}
         aspectPreset={aspectPreset}
         aspectOptions={PREVIEW_ASPECT_OPTIONS}
-        onAspectPresetChange={(value) => setAspectPreset(value as PreviewAspectPreset)}
+        onAspectPresetChange={updateAspectPreset}
         onToggleFullscreen={toggleFullscreen}
       />
     </div>

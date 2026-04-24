@@ -88,6 +88,9 @@ type VideoProviderCredentialAvailability = {
   piapi: boolean;
 };
 
+const GENERATION_ASPECT_STORAGE_KEY = 'genedit-pro:generation-aspect';
+const GENERATION_ASPECTS: readonly Aspect[] = ['16:9', '9:16', '1:1'];
+
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
   subject: UserRound,
   action: Zap,
@@ -97,6 +100,28 @@ const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = 
   lens: Aperture,
   ambience: SunMedium,
 };
+
+function isGenerationAspect(value: string | null): value is Aspect {
+  return Boolean(value && GENERATION_ASPECTS.includes(value as Aspect));
+}
+
+function readStoredGenerationAspect(): Aspect {
+  try {
+    const stored = localStorage.getItem(GENERATION_ASPECT_STORAGE_KEY);
+    if (isGenerationAspect(stored)) return stored;
+  } catch {
+    // ignore storage failures
+  }
+  return '16:9';
+}
+
+function persistGenerationAspect(value: Aspect) {
+  try {
+    localStorage.setItem(GENERATION_ASPECT_STORAGE_KEY, value);
+  } catch {
+    // ignore storage failures
+  }
+}
 
 export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecipeAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
@@ -111,7 +136,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const [loadingModels, setLoadingModels] = useState(false);
   const [connectionRevision, setConnectionRevision] = useState(0);
   const [model, setModel] = useState(DEFAULT_VIDEO_MODELS[0].id);
-  const [aspect, setAspect] = useState<Aspect>('16:9');
+  const [aspect, setAspect] = useState<Aspect>(readStoredGenerationAspect);
   const [resolution, setResolution] = useState('720p');
   const [duration, setDuration] = useState('4s');
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -221,6 +246,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setConnectionRevision((value) => value + 1);
     void loadModels();
   }, [loadModels, open]);
+
+  useEffect(() => {
+    persistGenerationAspect(aspect);
+  }, [aspect]);
 
   useEffect(() => {
     if (!open) return undefined;
