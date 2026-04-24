@@ -13,6 +13,7 @@ import {
   getTransformComponents,
   keyframeComponentVisibilityKey,
   reorderTransformComponents,
+  resolveTransformComponentAtTime,
   setTransformPropertyAtTime,
   type TransformProperty,
 } from '@/lib/components/transform';
@@ -307,6 +308,7 @@ export function ClipInspector() {
             const hasKeyframes = hasTransformKeyframes(component);
             const visibilityKey = keyframeComponentVisibilityKey(selectedId, component.id);
             const keyframesVisible = visibleKeyframeComponentKeys.includes(visibilityKey);
+            const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
             return (
               <div
                 key={component.id}
@@ -409,11 +411,11 @@ export function ClipInspector() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(component.data.offsetX)} onChange={(e) => setPropertyAtPlayhead('offsetX', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
-                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(component.data.offsetY)} onChange={(e) => setPropertyAtPlayhead('offsetY', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(resolvedTransform.offsetX)} onChange={(e) => setPropertyAtPlayhead('offsetX', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(resolvedTransform.offsetY)} onChange={(e) => setPropertyAtPlayhead('offsetY', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
                 </div>
-                <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(component.data.scale * 100)}%</span></div>
-                <input type="range" min={25} max={200} step={1} value={Math.round(component.data.scale * 100)} onChange={(e) => {
+                <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(resolvedTransform.scale * 100)}%</span></div>
+                <input type="range" min={25} max={200} step={1} value={Math.round(resolvedTransform.scale * 100)} onChange={(e) => {
                   const next = Number(e.target.value) / 100;
                   setPropertyAtPlayhead('scale', next);
                 }} className="volume-slider w-full" />

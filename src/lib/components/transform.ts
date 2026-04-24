@@ -253,7 +253,7 @@ export function addTransformKeyframeAtTime(
   const componentIndex = findTransformComponentIndex(clip, target);
   if (componentIndex < 0) return clip;
   const component = components[componentIndex]!;
-  const value = component.data[target.property];
+  const value = resolveTransformComponentAtTime(clip, component, timeSec)[target.property];
   return setTransformPropertyAtTime(clip, target, timeSec, value, { forceKeyframe: true });
 }
 
