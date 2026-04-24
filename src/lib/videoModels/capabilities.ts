@@ -7,6 +7,12 @@ export type VideoModelCapabilities = {
   durations: string[];
   resolutions: string[];
   aspects: Aspect[];
+  assetInputs: {
+    startFrame: boolean;
+    endFrame: boolean;
+    imageReferencesMax: number;
+    videoExtension: boolean;
+  };
 };
 
 export type VideoModelDefinition = {
@@ -28,12 +34,18 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     provider: 'veo',
     priority: 100,
     capabilities: {
-      references: false,
+      references: true,
       audio: true,
       adult: true,
-      durations: ['4s', '8s'],
-      resolutions: ['720p', '1080p'],
-      aspects: ['16:9', '9:16', '1:1'],
+      durations: ['4s', '6s', '8s'],
+      resolutions: ['720p', '1080p', '4k'],
+      aspects: ['16:9', '9:16'],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 3,
+        videoExtension: true,
+      },
     },
   },
   {
@@ -42,12 +54,18 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     provider: 'veo',
     priority: 80,
     capabilities: {
-      references: false,
+      references: true,
       audio: true,
       adult: true,
-      durations: ['4s', '6s'],
-      resolutions: ['720p'],
+      durations: ['4s', '6s', '8s'],
+      resolutions: ['720p', '1080p', '4k'],
       aspects: ['16:9', '9:16'],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 3,
+        videoExtension: true,
+      },
     },
   },
 ];
@@ -59,7 +77,7 @@ export function isVeoModel(model: VideoModelDefinition): boolean {
 }
 
 export function isReferencesFeatureSupported(model: VideoModelDefinition): boolean {
-  return model.capabilities.references;
+  return model.capabilities.references && model.capabilities.assetInputs.imageReferencesMax > 0;
 }
 
 export function isAudioFeatureSupported(model: VideoModelDefinition): boolean {
@@ -97,6 +115,12 @@ export function buildRemoteVideoModelDefinition(input: { name: string; displayNa
       durations: [...DEFAULT_DURATIONS],
       resolutions: [...DEFAULT_RESOLUTIONS],
       aspects: [...DEFAULT_ASPECTS],
+      assetInputs: {
+        startFrame: veo,
+        endFrame: veo,
+        imageReferencesMax: veo ? 3 : 0,
+        videoExtension: veo,
+      },
     },
   };
 }

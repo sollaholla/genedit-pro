@@ -9,6 +9,7 @@ export type GenerateRecipe = {
   audioEnabled: boolean;
   startFrameAssetId?: string | null;
   endFrameAssetId?: string | null;
+  sourceVideoAssetId?: string | null;
   referenceAssetIds: string[];
 };
 
