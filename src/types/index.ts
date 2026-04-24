@@ -84,14 +84,34 @@ export type Clip = {
     }>;
   };
   /** Ordered component stack (Unity-style). */
-  components?: Array<{
-    id: string;
-    type: 'transform';
-  }>;
+  components?: ComponentInstance[];
   /** 0–2, default 1. Applied as a scalar multiplier over the envelope. */
   volume: number;
   /** Optional editable volume envelope; absent means flat at 100%. */
   volumeEnvelope?: VolumeEnvelope;
+};
+
+export type KeyframePoint = {
+  id: string;
+  timeSec: number;
+  value: number;
+};
+
+export type TransformComponentData = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  keyframes: {
+    scale: KeyframePoint[];
+    offsetX: KeyframePoint[];
+    offsetY: KeyframePoint[];
+  };
+};
+
+export type ComponentInstance = {
+  id: string;
+  type: 'transform';
+  data: TransformComponentData;
 };
 
 export type Project = {

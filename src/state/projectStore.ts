@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project } from '@/types';
+import type { ComponentInstance, Project } from '@/types';
 import * as ops from '@/lib/timeline/operations';
 import { createInitialProject } from '@/lib/timeline/operations';
 
@@ -49,11 +49,47 @@ function loadProject(): Project {
           }).transform.keyframes ?? [],
         }
         : undefined,
-      components: (c as {
-        components?: Array<{ id: string; type: 'transform' }>;
-        transform?: unknown;
-      }).components
-        ?? ((c as { transform?: unknown }).transform ? [{ id: 'transform', type: 'transform' }] : []),
+      components: (() => {
+        const existing = (c as { components?: ComponentInstance[] }).components;
+        if (existing?.length) {
+          return existing.map((component) => ({
+            ...component,
+            data: {
+              scale: component.data?.scale ?? 1,
+              offsetX: component.data?.offsetX ?? 0,
+              offsetY: component.data?.offsetY ?? 0,
+              keyframes: {
+                scale: component.data?.keyframes?.scale ?? [],
+                offsetX: component.data?.keyframes?.offsetX ?? [],
+                offsetY: component.data?.keyframes?.offsetY ?? [],
+              },
+            },
+          }));
+        }
+        const legacy = (c as {
+          transform?: {
+            scale?: number;
+            offsetX?: number;
+            offsetY?: number;
+            keyframes?: Array<{ id: string; timeSec: number; scale: number; offsetX: number; offsetY: number }>;
+          };
+        }).transform;
+        if (!legacy) return [];
+        return [{
+          id: 'legacy-transform',
+          type: 'transform',
+          data: {
+            scale: legacy.scale ?? 1,
+            offsetX: legacy.offsetX ?? 0,
+            offsetY: legacy.offsetY ?? 0,
+            keyframes: {
+              scale: (legacy.keyframes ?? []).map((k) => ({ id: k.id, timeSec: k.timeSec, value: k.scale })),
+              offsetX: (legacy.keyframes ?? []).map((k) => ({ id: k.id, timeSec: k.timeSec, value: k.offsetX })),
+              offsetY: (legacy.keyframes ?? []).map((k) => ({ id: k.id, timeSec: k.timeSec, value: k.offsetY })),
+            },
+          },
+        }] as ComponentInstance[];
+      })(),
     }));
     return parsed;
   } catch {

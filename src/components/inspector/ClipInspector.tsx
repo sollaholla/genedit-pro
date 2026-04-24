@@ -7,6 +7,7 @@ import { useMediaStore } from '@/state/mediaStore';
 import { clipSpeed, clipTimelineDurationSec, setClipProp } from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
+import { createDefaultTransformComponent, getTransformComponents } from '@/lib/components/transform';
 
 const kindIcon = { video: Film, audio: Music, image: ImageIcon, recipe: BookOpen };
 
@@ -48,8 +49,6 @@ export function ClipInspector() {
 
   const setVolume = (v: number) => update((p) => setClipProp(p, selectedId, 'volume', v));
   const setScale = (v: number) => update((p) => setClipProp(p, selectedId, 'scale', v));
-  const setTransform = (next: NonNullable<typeof clip.transform>) =>
-    update((p) => setClipProp(p, selectedId, 'transform', next));
   const setSpeedAsync = async (nextSpeed: number) => {
     setApplyingSpeed(true);
     // Keep speed updates async so any future time-stretch preprocessing
@@ -183,139 +182,72 @@ export function ClipInspector() {
       <Divider />
 
       <Section label="Components">
-        {!clip.transform ? (
-          <div className="space-y-2 rounded border border-dashed border-surface-600 bg-surface-900/30 p-2.5">
-            <p className="text-[11px] text-slate-500">
+        <div className="space-y-2">
+          <button
+            type="button"
+            className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
+            disabled={asset?.kind !== 'video'}
+            onClick={() => update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), createDefaultTransformComponent()]))}
+          >
+            Add Component
+          </button>
+          {getTransformComponents(clip).length === 0 && (
+            <div className="rounded border border-dashed border-surface-600 bg-surface-900/30 p-2.5 text-[11px] text-slate-500">
               No components on this clip yet.
-            </p>
-            <button
-              type="button"
-              className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
-              disabled={asset?.kind !== 'video'}
-              onClick={() => update((p) => setClipProp(
-                setClipProp(
-                  p,
-                  selectedId,
-                  'transform',
-                  { scale: clip.scale ?? 1, offsetX: 0, offsetY: 0, keyframes: [] },
-                ),
-                selectedId,
-                'components',
-                [...(clip.components ?? []), { id: nanoid(8), type: 'transform' }],
-              ))}
-            >
-              Add Component
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3 rounded border border-surface-700 bg-surface-900/50 p-2.5">
-            <div className="flex items-center justify-between">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform</div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600"
-                  title="Add keyframe"
-                  onClick={() => {
-                    const kf = {
-                      id: nanoid(8),
-                      timeSec: currentTime,
-                      scale: clip.transform!.scale,
-                      offsetX: clip.transform!.offsetX,
-                      offsetY: clip.transform!.offsetY,
-                    };
-                    setTransform({ ...clip.transform!, keyframes: [...clip.transform!.keyframes, kf] });
-                  }}
-                >
-                  + Keyframe
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-surface-600"
-                  onClick={() => update((p) =>
-                    setClipProp(
-                      setClipProp(p, selectedId, 'transform', undefined),
-                      selectedId,
-                      'components',
-                      (clip.components ?? []).filter((c) => c.type !== 'transform'),
-                    ))}
-                >
-                  Remove
-                </button>
-              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <label className="space-y-1">
-                <span className="text-slate-400">Offset X</span>
-                <input
-                  type="number"
-                  value={Math.round(clip.transform.offsetX)}
-                  onChange={(e) => setTransform({ ...clip.transform!, offsetX: Number(e.target.value) || 0 })}
-                  className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200"
-                />
-              </label>
-              <label className="space-y-1">
-                <span className="text-slate-400">Offset Y</span>
-                <input
-                  type="number"
-                  value={Math.round(clip.transform.offsetY)}
-                  onChange={(e) => setTransform({ ...clip.transform!, offsetY: Number(e.target.value) || 0 })}
-                  className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200"
-                />
-              </label>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">Scale</span>
-              <span className="font-mono text-slate-200">{Math.round(clip.transform.scale * 100)}%</span>
-            </div>
-            <input
-              type="range"
-              min={25}
-              max={200}
-              step={1}
-              value={Math.round(clip.transform.scale * 100)}
-              onChange={(e) => {
-                const next = Number(e.target.value) / 100;
-                setScale(next);
-                setTransform({ ...clip.transform!, scale: next });
-              }}
-              className="volume-slider w-full"
-            />
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600"
-                onClick={() => {
-                  setScale(1);
-                  setTransform({ ...clip.transform!, scale: 1 });
-                }}
-              >
-                Reset Scale
-              </button>
-              <button
-                type="button"
-                className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600"
-                onClick={() => setTransform({ ...clip.transform!, offsetX: 0, offsetY: 0 })}
-              >
-                Reset Position
-              </button>
-            </div>
-            <div className="rounded border border-surface-700 bg-surface-900/70 p-2">
-              <div className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Keyframe Track</div>
-              {clip.transform.keyframes.length === 0 ? (
-                <div className="text-[10px] text-slate-500">No keyframes yet.</div>
-              ) : (
-                <div className="flex flex-wrap gap-1">
-                  {clip.transform.keyframes.map((kf) => (
-                    <span key={kf.id} className="rounded bg-brand-500/20 px-1.5 py-0.5 text-[10px] text-brand-200">
-                      {formatTimecode(kf.timeSec, fps)}
-                    </span>
-                  ))}
+          )}
+          {getTransformComponents(clip).map((component, idx) => {
+            const components = getTransformComponents(clip);
+            const setComponents = (next: typeof components) => update((p) => setClipProp(p, selectedId, 'components', next));
+            const updateData = (patch: Partial<typeof component.data>) =>
+              setComponents(components.map((c) => (c.id === component.id ? { ...c, data: { ...c.data, ...patch } } : c)));
+            const addPropertyKeyframe = (property: 'scale' | 'offsetX' | 'offsetY') => {
+              const value = component.data[property];
+              const entry = { id: nanoid(8), timeSec: Math.max(0, currentTime - clip.startSec), value };
+              updateData({
+                keyframes: {
+                  ...component.data.keyframes,
+                  [property]: [...component.data.keyframes[property], entry],
+                },
+              });
+            };
+            return (
+              <div key={component.id} className="space-y-3 rounded border border-surface-700 bg-surface-900/50 p-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600" onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((p) => addPropertyKeyframe(p as 'scale' | 'offsetX' | 'offsetY'))}>+ Keyframe</button>
+                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} onClick={() => {
+                      const next = [...components];
+                      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                      setComponents(next);
+                    }}>↑</button>
+                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === components.length - 1} onClick={() => {
+                      const next = [...components];
+                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                      setComponents(next);
+                    }}>↓</button>
+                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-surface-600" onClick={() => setComponents(components.filter((c) => c.id !== component.id))}>Remove</button>
+                  </div>
                 </div>
-              )}
-            </div>
-          </div>
-        )}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(component.data.offsetX)} onChange={(e) => updateData({ offsetX: Number(e.target.value) || 0 })} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(component.data.offsetY)} onChange={(e) => updateData({ offsetY: Number(e.target.value) || 0 })} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                </div>
+                <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(component.data.scale * 100)}%</span></div>
+                <input type="range" min={25} max={200} step={1} value={Math.round(component.data.scale * 100)} onChange={(e) => {
+                  const next = Number(e.target.value) / 100;
+                  if (idx === 0) setScale(next);
+                  updateData({ scale: next });
+                }} className="volume-slider w-full" />
+                <div className="flex items-center gap-2">
+                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => updateData({ scale: 1 })}>Reset Scale</button>
+                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => updateData({ offsetX: 0, offsetY: 0 })}>Reset Position</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </Section>
     </div>
   );

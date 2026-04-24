@@ -12,6 +12,7 @@ import {
 } from '@/lib/audio/context';
 import { PlayerControls } from './PlayerControls';
 import { FullscreenScrubBar } from './FullscreenScrubBar';
+import { getTransformComponents, resolveTransformAtTime } from '@/lib/components/transform';
 
 function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -49,9 +50,8 @@ function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
 }
 
 function resolvedTransform(clip: ActiveLayer['clip']) {
-  const hasTransform = (clip.components ?? []).some((c) => c.type === 'transform');
-  if (hasTransform && clip.transform) return clip.transform;
-  return { scale: clip.scale ?? 1, offsetX: 0, offsetY: 0, keyframes: [] };
+  const resolved = resolveTransformAtTime(clip, usePlaybackStore.getState().currentTimeSec);
+  return { ...resolved, keyframes: [] };
 }
 
 export function PreviewPlayer() {
@@ -128,26 +128,36 @@ export function PreviewPlayer() {
     if (selectedClipIds.length !== 1) return;
     const selectedId = selectedClipIds[0]!;
     const frame = resolveFrame(project, currentTime);
-    if (frame.video?.clip.id !== selectedId || !frame.video.clip.transform) return;
+    if (frame.video?.clip.id !== selectedId || getTransformComponents(frame.video.clip).length === 0) return;
     const el = videoPool.current.get(selectedId) as HTMLVideoElement | undefined;
     if (!el) return;
 
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === selectedId);
-      if (!clip?.transform) return;
+      if (!clip) return;
+      const components = getTransformComponents(clip);
+      if (components.length === 0) return;
+      const top = components[components.length - 1]!;
       const startX = e.clientX;
       const startY = e.clientY;
-      const baseX = clip.transform.offsetX;
-      const baseY = clip.transform.offsetY;
+      const baseX = top.data.offsetX;
+      const baseY = top.data.offsetY;
 
       const onMove = (ev: MouseEvent) => {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
         updateSilent((p) => ({
           ...p,
-          clips: p.clips.map((c) => (c.id === selectedId && c.transform
-            ? { ...c, transform: { ...c.transform, offsetX: baseX + dx, offsetY: baseY + dy } }
+          clips: p.clips.map((c) => (c.id === selectedId
+            ? {
+                ...c,
+                components: getTransformComponents(c).map((component, idx, arr) => (
+                  idx === arr.length - 1
+                    ? { ...component, data: { ...component.data, offsetX: baseX + dx, offsetY: baseY + dy } }
+                    : component
+                )),
+              }
             : c)),
         }));
       };

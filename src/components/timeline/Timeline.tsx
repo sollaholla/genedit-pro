@@ -19,6 +19,7 @@ import { Playhead } from './Playhead';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
+import { getTransformComponents } from '@/lib/components/transform';
 import {
   addClip,
   addTrack,
@@ -70,6 +71,7 @@ export function Timeline() {
   const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
 
   const assets = useMediaStore((s) => s.assets);
+  const [showKeyframePanel, setShowKeyframePanel] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewportWidth, setViewportWidth] = useState(1200);
@@ -100,6 +102,7 @@ export function Timeline() {
   const contentWidth = Math.max(viewportWidth, visibleDuration * pxPerSec);
   const tracks = sortedTracks(project);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
+  const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -493,6 +496,16 @@ export function Timeline() {
         </div>
         <ShortcutHints />
       </div>
+      <div className="border-t border-surface-700 bg-surface-900/50">
+        <button
+          type="button"
+          className="w-full px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:bg-surface-800"
+          onClick={() => setShowKeyframePanel((v) => !v)}
+        >
+          {showKeyframePanel ? 'Hide' : 'Show'} Keyframe Timeline
+        </button>
+        {showKeyframePanel && <KeyframePanel clip={selectedClip} pxPerSec={pxPerSec} />}
+      </div>
 
       <div className="flex min-h-0 flex-1">
         {/* Track headers: pinned ruler + vertically synced track list */}
@@ -617,6 +630,54 @@ export function Timeline() {
           onClose={() => setReplaceClipId(null)}
         />
       )}
+    </div>
+  );
+}
+
+function KeyframePanel({ clip, pxPerSec }: { clip: Clip | null; pxPerSec: number }) {
+  if (!clip) {
+    return <div className="px-3 py-2 text-xs text-slate-500">Select a clip to view keyframe curves.</div>;
+  }
+  const transforms = getTransformComponents(clip);
+  if (transforms.length === 0) {
+    return <div className="px-3 py-2 text-xs text-slate-500">Selected clip has no keyframe-enabled components.</div>;
+  }
+  const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
+  transforms.forEach((component, index) => {
+    properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
+    properties.push({ label: `Transform ${index + 1}.offsetY`, points: component.data.keyframes.offsetY });
+    properties.push({ label: `Transform ${index + 1}.scale`, points: component.data.keyframes.scale });
+  });
+
+  return (
+    <div className="max-h-52 overflow-auto px-3 pb-2">
+      {properties.map((row) => (
+        <div key={row.label} className="mb-1 rounded border border-surface-700 bg-surface-900/80 p-1.5">
+          <div className="mb-1 text-[10px] text-slate-400">{row.label}</div>
+          <svg className="h-10 w-full" viewBox="0 0 500 40" preserveAspectRatio="none">
+            {row.points.length > 1 && (
+              <polyline
+                points={row.points
+                  .sort((a, b) => a.timeSec - b.timeSec)
+                  .map((k) => `${Math.min(500, (k.timeSec * pxPerSec) / 2)},${20 - Math.max(-18, Math.min(18, k.value * 0.1))}`)
+                  .join(' ')}
+                fill="none"
+                stroke="#7dd3fc"
+                strokeWidth="1.5"
+              />
+            )}
+            {row.points.map((k) => (
+              <circle
+                key={k.id}
+                cx={Math.min(500, (k.timeSec * pxPerSec) / 2)}
+                cy={20 - Math.max(-18, Math.min(18, k.value * 0.1))}
+                r="2.5"
+                fill="#a78bfa"
+              />
+            ))}
+          </svg>
+        </div>
+      ))}
     </div>
   );
 }
