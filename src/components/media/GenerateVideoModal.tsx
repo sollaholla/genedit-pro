@@ -152,6 +152,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionPos, setMentionPos] = useState({ x: 0, y: 0 });
+  const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
 
   const selectedModel = useMemo(
@@ -394,8 +395,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setPrompt((prev) => `${prev} ${token}`.trim());
       return;
     }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
+    const start = mentionRange?.start ?? textarea.selectionStart;
+    const end = mentionRange?.end ?? textarea.selectionEnd;
     const next = `${prompt.slice(0, start)}${token} ${prompt.slice(end)}`;
     setPrompt(next);
     requestAnimationFrame(() => {
@@ -405,6 +406,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     });
     setMentionOpen(false);
     setMentionQuery('');
+    setMentionRange(null);
   }
 
   function onPromptChange(value: string) {
@@ -417,9 +419,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     if (!match) {
       setMentionOpen(false);
       setMentionQuery('');
+      setMentionRange(null);
       return;
     }
     setMentionQuery(match[1]);
+    setMentionRange({ start: match.index ?? 0, end: cursor });
     const rect = textarea.getBoundingClientRect();
     setMentionPos({ x: rect.left + 18, y: rect.bottom - 12 });
     setMentionOpen(true);
@@ -730,38 +734,38 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
                 value={prompt}
                 onChange={(e) => onPromptChange(e.target.value)}
                 placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
-                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 py-3 pr-32 text-sm text-slate-100 outline-none placeholder:text-slate-400"
+                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 pb-11 pt-3 pr-32 text-sm text-slate-100 outline-none placeholder:text-slate-400"
               />
             )}
+            {promptMode === 'freeform' && promptTokens.length > 0 && (
+              <div className="absolute inset-x-2 bottom-2 flex max-h-8 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-[#121833]/80 pr-1 backdrop-blur">
+                {promptTokens.map((m, i) => {
+                  const key = m[1].toLowerCase();
+                  const meta = referenceMap.get(key);
+                  const valid = Boolean(meta);
+                  return (
+                    <span
+                      key={`${m.index}-${i}`}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
+                      onMouseEnter={(e) => {
+                        if (meta && typeof meta !== 'string') {
+                          setHoveredToken(meta);
+                          setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
+                        }
+                      }}
+                      onMouseMove={(e) => {
+                        if (hoveredToken) setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
+                      }}
+                      onMouseLeave={() => setHoveredToken(null)}
+                    >
+                      {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
+                      @{m[1]}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          {promptMode === 'freeform' && (
-            <div className="flex flex-wrap gap-1.5">
-            {promptTokens.map((m, i) => {
-              const key = m[1].toLowerCase();
-              const meta = referenceMap.get(key);
-              const valid = Boolean(meta);
-              return (
-                <span
-                  key={`${m.index}-${i}`}
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
-                  onMouseEnter={(e) => {
-                    if (meta && typeof meta !== 'string') {
-                      setHoveredToken(meta);
-                      setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                    }
-                  }}
-                  onMouseMove={(e) => {
-                    if (hoveredToken) setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                  }}
-                  onMouseLeave={() => setHoveredToken(null)}
-                >
-                  {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
-                  @{m[1]}
-                </span>
-              );
-            })}
-            </div>
-          )}
 
           <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
             <div className="mb-2 flex items-center justify-between">
