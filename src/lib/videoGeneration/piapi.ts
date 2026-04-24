@@ -18,6 +18,12 @@ export type PiApiCreateTaskRequest = {
   body: Record<string, unknown>;
 };
 
+export type PiApiReferenceUrlResolver = (asset: MediaAsset, label: string) => Promise<string>;
+
+export type PiApiCreateTaskOptions = {
+  resolveReferenceUrl?: PiApiReferenceUrlResolver;
+};
+
 export type PiApiTaskData = {
   task_id?: string;
   status?: string;
@@ -53,9 +59,10 @@ export function isPiApiReferenceAsset(asset: MediaAsset, now = Date.now()): bool
 
 export async function buildPiApiCreateTaskRequest(
   mutation: VideoGenerationMutation,
+  options: PiApiCreateTaskOptions = {},
 ): Promise<PiApiCreateTaskRequest> {
-  if (isPiApiKlingModelId(mutation.modelId)) return buildPiApiKlingOmniRequest(mutation);
-  if (isPiApiVeoModelId(mutation.modelId)) return buildPiApiVeoRequest(mutation);
+  if (isPiApiKlingModelId(mutation.modelId)) return buildPiApiKlingOmniRequest(mutation, options);
+  if (isPiApiVeoModelId(mutation.modelId)) return buildPiApiVeoRequest(mutation, options);
   throw new VideoGenerationProviderError('InternalError', `${mutation.modelId} is not configured for PiAPI.`);
 }
 
@@ -130,7 +137,10 @@ export function generatedPiApiVideoFromTask(task: PiApiTaskData): { url?: string
   return {};
 }
 
-async function buildPiApiVeoRequest(mutation: VideoGenerationMutation): Promise<PiApiCreateTaskRequest> {
+async function buildPiApiVeoRequest(
+  mutation: VideoGenerationMutation,
+  options: PiApiCreateTaskOptions,
+): Promise<PiApiCreateTaskRequest> {
   const startFrames = assetsByRole(mutation, 'start-frame');
   const endFrames = assetsByRole(mutation, 'end-frame');
   const referenceImages = assetsByRole(mutation, 'reference-image');
@@ -138,11 +148,15 @@ async function buildPiApiVeoRequest(mutation: VideoGenerationMutation): Promise<
 
   validatePiApiVeoMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
-  const referenceUrls = referenceImages.map((asset) => requirePiApiReferenceUrl(asset, 'Veo image reference'));
+  const referenceUrls = await Promise.all(
+    referenceImages.map((asset) => resolvePiApiReferenceUrl(asset, 'Veo image reference', options)),
+  );
   const imageUrl = startFrames[0]
-    ? requirePiApiReferenceUrl(startFrames[0], 'Veo start frame')
+    ? await resolvePiApiReferenceUrl(startFrames[0], 'Veo start frame', options)
     : referenceUrls[0];
-  const tailImageUrl = endFrames[0] ? requirePiApiReferenceUrl(endFrames[0], 'Veo end frame') : undefined;
+  const tailImageUrl = endFrames[0]
+    ? await resolvePiApiReferenceUrl(endFrames[0], 'Veo end frame', options)
+    : undefined;
   const extraReferenceUrls = startFrames[0] ? referenceUrls : referenceUrls.slice(1);
 
   const input: Record<string, unknown> = {
@@ -168,7 +182,10 @@ async function buildPiApiVeoRequest(mutation: VideoGenerationMutation): Promise<
   };
 }
 
-async function buildPiApiKlingOmniRequest(mutation: VideoGenerationMutation): Promise<PiApiCreateTaskRequest> {
+async function buildPiApiKlingOmniRequest(
+  mutation: VideoGenerationMutation,
+  options: PiApiCreateTaskOptions,
+): Promise<PiApiCreateTaskRequest> {
   const startFrames = assetsByRole(mutation, 'start-frame');
   const endFrames = assetsByRole(mutation, 'end-frame');
   const referenceImages = assetsByRole(mutation, 'reference-image');
@@ -176,27 +193,32 @@ async function buildPiApiKlingOmniRequest(mutation: VideoGenerationMutation): Pr
 
   validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos });
 
-  const imageEntries: PiApiImageEntry[] = [
-    ...referenceImages.map((asset, index) => ({
+  const referenceImageEntries = await Promise.all(referenceImages.map(async (asset, index) => ({
       token: `image${index + 1}`,
-      url: requirePiApiReferenceUrl(asset, 'Kling image reference'),
+      url: await resolvePiApiReferenceUrl(asset, 'Kling image reference', options),
       purpose: `reference image ${index + 1}`,
-    })),
+    })));
+  const frameImageEntries = await Promise.all([
     ...(startFrames[0] ? [{
       token: 'start-frame',
-      url: requirePiApiReferenceUrl(startFrames[0], 'Kling start frame'),
+      asset: startFrames[0],
       purpose: 'start frame',
     }] : []),
     ...(endFrames[0] ? [{
       token: 'end-frame',
-      url: requirePiApiReferenceUrl(endFrames[0], 'Kling end frame'),
+      asset: endFrames[0],
       purpose: 'end frame',
     }] : []),
-  ];
-  const videoEntries: PiApiVideoEntry[] = sourceVideos.map((asset, index) => ({
+  ].map(async (entry) => ({
+    token: entry.token,
+    url: await resolvePiApiReferenceUrl(entry.asset, `Kling ${entry.purpose}`, options),
+    purpose: entry.purpose,
+  })));
+  const imageEntries: PiApiImageEntry[] = [...referenceImageEntries, ...frameImageEntries];
+  const videoEntries: PiApiVideoEntry[] = await Promise.all(sourceVideos.map(async (asset, index) => ({
     token: `video${index + 1}`,
-    url: requirePiApiReferenceUrl(asset, 'Kling video reference'),
-  }));
+    url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options),
+  })));
 
   const input: Record<string, unknown> = {
     prompt: rewriteKlingPromptReferences(mutation.prompt, imageEntries, videoEntries),
@@ -370,12 +392,15 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function requirePiApiReferenceUrl(asset: MediaAsset, label: string): string {
+async function resolvePiApiReferenceUrl(
+  asset: MediaAsset,
+  label: string,
+  options: PiApiCreateTaskOptions,
+): Promise<string> {
   const url = piApiReferenceUrl(asset);
-  if (!url) {
-    throw new Error(`${label} "${asset.name}" needs an active hosted URL. PiAPI's browser task endpoint works client-side, but its file-upload endpoint is not browser-callable yet.`);
-  }
-  return url;
+  if (url) return url;
+  if (options.resolveReferenceUrl) return options.resolveReferenceUrl(asset, label);
+  throw new Error(`${label} "${asset.name}" needs an active hosted URL or temporary reference host.`);
 }
 
 function piApiReferenceUrl(asset: MediaAsset, now = Date.now()): string | null {

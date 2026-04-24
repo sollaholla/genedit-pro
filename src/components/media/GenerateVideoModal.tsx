@@ -30,6 +30,10 @@ import {
 import { decryptSecret } from '@/lib/settings/crypto';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
+  hostLitterboxReference,
+  LITTERBOX_REFERENCE_TTL_MS,
+} from '@/lib/videoGeneration/litterbox';
+import {
   buildPiApiCreateTaskRequest,
   createPiApiVideoTask,
   generatedPiApiVideoFromTask,
@@ -160,10 +164,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const structuredPromptSupported = structuredSections.length > 0;
   const referencesIgnoredByFrameMode = Boolean(isVeoModel(selectedModel) && (startFrame || endFrame) && references.length > 0);
   const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && references.length > 0);
-  const sourceVideoReferenceIsInvalid = Boolean(sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo));
   const generateDisabled = isGenerating ||
     !providerCredentialsAvailable ||
-    sourceVideoReferenceIsInvalid ||
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
     const seconds = Number(duration.replace('s', ''));
@@ -187,6 +189,21 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     () => selectedModel.capabilities.resolutions,
     [selectedModel.capabilities.resolutions],
   );
+  const referenceImageAssets = useMemo(() => references
+    .map((ref) => assets.find((asset) => asset.id === ref.assetId))
+    .filter((asset): asset is MediaAsset => asset !== undefined)
+    .filter((asset) => asset.kind === 'image'), [assets, references]);
+  const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
+    !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
+  const temporarilyHostedAssets = useMemo(() => {
+    const candidates = [
+      ...(startFrame ? [startFrame] : []),
+      ...(endFrame ? [endFrame] : []),
+      ...(sourceVideo ? [sourceVideo] : []),
+      ...(shouldSendImageReferences ? referenceImageAssets : []),
+    ];
+    return candidates.filter((asset) => !isPiApiReferenceAsset(asset));
+  }, [endFrame, referenceImageAssets, shouldSendImageReferences, sourceVideo, startFrame]);
 
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
@@ -429,7 +446,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   async function onImportFromComputer() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*,video/*,audio/*';
+    input.accept = pickerMode === 'source-video' ? 'video/*' : 'image/*';
     input.multiple = true;
     input.onchange = async () => {
       const files = Array.from(input.files ?? []);
@@ -474,10 +491,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setGenerationError(`Connect ${providerNameForModel(selectedModel)} in Settings before generating.`);
       return;
     }
-    if (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo)) {
-      setGenerationError('This video reference needs an active hosted URL. Local video upload is not browser-callable through PiAPI yet.');
-      return;
-    }
     setIsGenerating(true);
     const generationCostUsd = estimatedCostUsd || undefined;
     const generationRecipe = buildCurrentRecipe();
@@ -488,12 +501,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       generationRecipe,
     );
     try {
-      const referenceImageAssets = references
-        .map((ref) => assets.find((asset) => asset.id === ref.assetId))
-        .filter((asset): asset is MediaAsset => asset !== undefined)
-        .filter((asset) => asset.kind === 'image');
-      const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
-        !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
       const mutation = buildVideoGenerationMutation({
         prompt: promptForGeneration,
         modelId: selectedModel.id,
@@ -509,7 +516,16 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
       const apiKey = await readPiApiKey();
       if (!apiKey) throw new Error(`Missing ${providerNameForModel(selectedModel)} API key.`);
-      const request = await buildPiApiCreateTaskRequest(mutation);
+      let uploadProgress = 2;
+      const request = await buildPiApiCreateTaskRequest(mutation, {
+        resolveReferenceUrl: async (asset, label) => {
+          updateGenerationProgress(id, uploadProgress);
+          const url = await hostLitterboxReference(asset, label);
+          uploadProgress = Math.min(15, uploadProgress + 4);
+          updateGenerationProgress(id, uploadProgress);
+          return url;
+        },
+      });
       const initialTask = await createPiApiVideoTask(request, { apiKey });
       const finalTask = await pollPiApiVideoTask({
         credentials: { apiKey },
@@ -777,6 +793,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               ))}
             </div>
           </div>
+
+          {temporarilyHostedAssets.length > 0 && (
+            <div className="rounded-xl border border-sky-400/25 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100">
+              {temporarilyHostedAssets.length === 1 ? 'This local reference' : `${temporarilyHostedAssets.length} local references`} will be uploaded to Litterbox for temporary hosting when you generate. Links expire after {Math.round(LITTERBOX_REFERENCE_TTL_MS / 60 / 60 / 1000)} hours.
+            </div>
+          )}
 
           <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.04] p-2.5">
             <div className="flex flex-wrap items-center gap-2">
@@ -1185,8 +1207,8 @@ function MediaPicker({
     : pickerMode === 'source-video'
       ? assets.filter((a) => a.kind === 'video' && isSourceVideoReferenceValid(selectedModel, a))
       : assets.filter((a) => a.kind === 'image');
-  const expiredSourceCount = pickerMode === 'source-video'
-    ? assets.filter((a) => a.kind === 'video' && !isSourceVideoReferenceValid(selectedModel, a)).length
+  const temporaryHostedSourceCount = pickerMode === 'source-video'
+    ? visibleAssets.filter((a) => !isPiApiReferenceAsset(a)).length
     : 0;
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -1210,8 +1232,8 @@ function MediaPicker({
     ? 'Choose image references supported by the selected model.'
     : pickerMode === 'source-video'
       ? (isKlingModel(selectedModel)
-        ? 'Choose one active hosted video reference. Local videos need PiAPI upload support.'
-        : 'Choose one active hosted video reference.')
+        ? 'Choose one video reference. Local videos are temporarily hosted through Litterbox when you generate.'
+        : 'Choose one video reference.')
       : 'Only image assets are valid for frame slots.';
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
@@ -1237,9 +1259,7 @@ function MediaPicker({
             />
           </label>
           <SortPills value={sortKey} onChange={setSortKey} />
-          {pickerMode !== 'source-video' && (
-            <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
-          )}
+          <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
         </div>
         </div>
         <div className="max-h-[430px] overflow-auto p-2">
@@ -1266,9 +1286,9 @@ function MediaPicker({
           ))}
           {filteredAssets.length === 0 && <div className="col-span-full rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
           </div>
-          {expiredSourceCount > 0 && (
-            <div className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-100/80">
-              {expiredSourceCount} video {expiredSourceCount === 1 ? 'asset is' : 'assets are'} hidden because the selected model cannot use them as active video references.
+          {temporaryHostedSourceCount > 0 && (
+            <div className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-[11px] text-sky-100/80">
+              {temporaryHostedSourceCount} local video {temporaryHostedSourceCount === 1 ? 'reference will' : 'references will'} be uploaded to Litterbox only when you generate.
             </div>
           )}
         </div>
@@ -1321,7 +1341,7 @@ function formatShortDate(timestamp: number) {
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {
   if (asset.kind !== 'video') return false;
-  return isPiApiKlingModel(model) && isPiApiReferenceAsset(asset);
+  return isPiApiKlingModel(model);
 }
 
 function providerNameForModel(model: VideoModelDefinition): string {
