@@ -1238,7 +1238,7 @@ function MediaPicker({
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
-      <div className="w-[min(820px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
+      <div className="w-[min(960px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
         <div className="border-b border-white/10 p-3">
         <div className="mb-2 flex items-center justify-between">
           <div>
@@ -1262,27 +1262,14 @@ function MediaPicker({
           <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
         </div>
         </div>
-        <div className="max-h-[430px] overflow-auto p-2">
+        <div className="max-h-[min(640px,70vh)] overflow-auto p-2">
           <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
             <span>{filteredAssets.length} of {visibleAssets.length} matching assets</span>
             <span>{pickerMode === 'source-video' ? 'Video reference' : 'Image input'}</span>
           </div>
-          <div className="grid gap-1.5 sm:grid-cols-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
           {filteredAssets.map((asset) => (
-            <button key={asset.id} className="group flex min-w-0 items-center gap-3 rounded-lg border border-transparent bg-white/[0.03] p-2 text-left hover:border-white/10 hover:bg-white/[0.07]" onClick={() => onPick(asset)}>
-              <div className="h-14 w-24 shrink-0 overflow-hidden rounded bg-black/25">
-                {asset.thumbnailDataUrl ? <img src={asset.thumbnailDataUrl} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[11px] text-slate-500">{asset.kind.toUpperCase()}</div>}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium text-slate-100">{asset.name}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
-                  <span className="rounded-full bg-white/10 px-1.5 py-0.5">{asset.kind}</span>
-                  {asset.width && asset.height && <span>{asset.width}x{asset.height}</span>}
-                  {(asset.kind === 'video' || asset.kind === 'audio') && asset.durationSec > 0 && <span>{asset.durationSec.toFixed(1)}s</span>}
-                  <span>{formatShortDate(asset.createdAt)}</span>
-                </div>
-              </div>
-            </button>
+            <MediaPickerAssetTile key={asset.id} asset={asset} onPick={onPick} />
           ))}
           {filteredAssets.length === 0 && <div className="col-span-full rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
           </div>
@@ -1294,6 +1281,93 @@ function MediaPicker({
         </div>
       </div>
     </div>
+  );
+}
+
+function MediaPickerAssetTile({
+  asset,
+  onPick,
+}: {
+  asset: MediaAsset;
+  onPick: (asset: MediaAsset) => void;
+}) {
+  const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const isVideo = asset.kind === 'video';
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !hovered || !previewUrl) return;
+    try { video.currentTime = 0; } catch { /* metadata may not be ready yet */ }
+    void video.play().catch(() => undefined);
+  }, [hovered, previewUrl]);
+
+  const startPreview = () => {
+    if (!isVideo) return;
+    setHovered(true);
+    if (!previewUrl) {
+      void objectUrlFor(asset.id).then((url) => {
+        if (url) setPreviewUrl(url);
+      });
+    }
+  };
+
+  const stopPreview = () => {
+    setHovered(false);
+    const video = videoRef.current;
+    if (!video) return;
+    video.pause();
+    try { video.currentTime = 0; } catch { /* noop */ }
+  };
+
+  const badge = mediaAssetBadgeLabel(asset).toUpperCase();
+  return (
+    <button
+      type="button"
+      className="group relative aspect-square min-w-0 overflow-hidden rounded-lg border border-white/10 bg-black text-left transition hover:border-brand-300/70 hover:shadow-[0_0_0_1px_rgba(129,140,248,0.35)] focus-visible:border-brand-300 focus-visible:outline-none"
+      onClick={() => onPick(asset)}
+      onMouseEnter={startPreview}
+      onMouseLeave={stopPreview}
+      onFocus={startPreview}
+      onBlur={stopPreview}
+      title={asset.name}
+    >
+      {isVideo && hovered && previewUrl ? (
+        <video
+          ref={videoRef}
+          src={previewUrl}
+          poster={asset.thumbnailDataUrl}
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : asset.thumbnailDataUrl ? (
+        <img src={asset.thumbnailDataUrl} alt="" className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.025]" draggable={false} />
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-950 text-slate-500">
+          {isVideo ? <Film size={26} /> : <ImageIcon size={26} />}
+          <span className="text-[11px] uppercase tracking-[0.18em]">{asset.kind}</span>
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/85 via-black/30 to-transparent" />
+      <span className="absolute right-2 top-2 rounded-sm bg-black/70 px-1.5 py-1 text-[10px] font-semibold leading-none tracking-[0.12em] text-white shadow-sm">
+        {badge}
+      </span>
+      {isVideo && asset.durationSec > 0 && (
+        <span className="absolute left-2 top-2 rounded-sm bg-black/70 px-1.5 py-1 text-[10px] font-medium leading-none text-white shadow-sm">
+          {asset.durationSec.toFixed(1)}s
+        </span>
+      )}
+      <div className="absolute bottom-2 left-2 right-2">
+        <div className="inline-flex max-w-full rounded-sm bg-black/75 px-2 py-1 text-[11px] font-medium leading-tight text-white shadow-sm ring-1 ring-white/10">
+          <span className="truncate">{asset.name}</span>
+        </div>
+      </div>
+    </button>
   );
 }
 
@@ -1337,6 +1411,17 @@ function recipePreviewText(recipe: GenerateRecipe): string {
 function formatShortDate(timestamp: number) {
   if (!timestamp) return '';
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function mediaAssetBadgeLabel(asset: MediaAsset): string {
+  const trimmed = asset.name.trim();
+  const lastDot = trimmed.lastIndexOf('.');
+  if (lastDot > 0 && lastDot < trimmed.length - 1) return trimmed.slice(lastDot + 1);
+  const subtype = asset.mimeType.split('/')[1]?.split(';')[0];
+  if (!subtype) return asset.kind;
+  if (subtype === 'jpeg') return 'jpg';
+  if (subtype === 'mpeg') return 'mp3';
+  return subtype;
 }
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {
