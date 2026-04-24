@@ -8,12 +8,11 @@ export type TransformTarget = {
   componentIndex?: number | null;
 };
 
-export type TransformPropertyRange = {
-  min: number;
-  max: number;
-};
-
 export const KEYFRAME_EPS_SEC = 1 / 120;
+
+export function keyframeComponentVisibilityKey(clipId: string, componentId: string): string {
+  return `${clipId}:${componentId}`;
+}
 
 export function createDefaultTransformComponent(): ComponentInstance {
   return {
@@ -229,35 +228,6 @@ export function reorderTransformComponents(clip: Clip, fromIndex: number, toInde
   if (!moved) return clip;
   next.splice(to, 0, moved);
   return { ...clip, components: next };
-}
-
-export function transformPropertyRange(
-  property: TransformProperty,
-  points: KeyframePoint[],
-  fallbackValue: number,
-): TransformPropertyRange {
-  const values = [...points.map((point) => point.value), fallbackValue].filter(Number.isFinite);
-  const baseMin = property === 'scale' ? 0.25 : -100;
-  const baseMax = property === 'scale' ? 2 : 100;
-  let min = Math.min(baseMin, ...values);
-  let max = Math.max(baseMax, ...values);
-  const minSpan = property === 'scale' ? 0.5 : 100;
-  const span = Math.max(minSpan, max - min);
-  const padding = span * 0.15;
-  min -= padding;
-  max += padding;
-  if (property === 'scale') min = Math.max(0.01, min);
-  return { min, max };
-}
-
-export function valueToNormalized(value: number, range: TransformPropertyRange): number {
-  const span = Math.max(1e-6, range.max - range.min);
-  return Math.max(0, Math.min(1, (value - range.min) / span));
-}
-
-export function normalizedToValue(normalized: number, range: TransformPropertyRange): number {
-  const n = Math.max(0, Math.min(1, normalized));
-  return range.min + n * (range.max - range.min);
 }
 
 function evalKeyframes(track: KeyframePoint[], t: number, fallback: number): number {

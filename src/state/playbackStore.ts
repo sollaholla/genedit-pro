@@ -15,6 +15,8 @@ type PlaybackState = {
   clipReadiness: Record<string, boolean>;
   /** Active transform card for inspector/preview edits on the selected clip. */
   activeTransformComponentId: string | null;
+  /** Clip/component keys whose keyframes are visible in the timeline. */
+  visibleKeyframeComponentKeys: string[];
   /** Overall output gain (0–2). Applied at the master GainNode in PreviewPlayer. */
   masterVolume: number;
   play: () => void;
@@ -32,6 +34,9 @@ type PlaybackState = {
   setClipboard: (clips: Clip[]) => void;
   setClipReadiness: (readiness: Record<string, boolean>) => void;
   setActiveTransformComponentId: (id: string | null) => void;
+  showKeyframeComponent: (id: string) => void;
+  toggleKeyframeComponent: (id: string) => void;
+  hideKeyframeComponent: (id: string) => void;
   setMasterVolume: (v: number) => void;
 };
 
@@ -43,6 +48,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   clipboard: [],
   clipReadiness: {},
   activeTransformComponentId: null,
+  visibleKeyframeComponentKeys: [],
   masterVolume: 1,
   play: () => set({ playing: true }),
   pause: () => set({ playing: false }),
@@ -61,5 +67,21 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   setClipboard: (clips) => set({ clipboard: clips }),
   setClipReadiness: (readiness) => set({ clipReadiness: readiness }),
   setActiveTransformComponentId: (id) => set({ activeTransformComponentId: id }),
+  showKeyframeComponent: (id) => {
+    const cur = get().visibleKeyframeComponentKeys;
+    if (!cur.includes(id)) set({ visibleKeyframeComponentKeys: [...cur, id] });
+  },
+  toggleKeyframeComponent: (id) => {
+    const cur = get().visibleKeyframeComponentKeys;
+    set({
+      visibleKeyframeComponentKeys: cur.includes(id)
+        ? cur.filter((candidate) => candidate !== id)
+        : [...cur, id],
+    });
+  },
+  hideKeyframeComponent: (id) => {
+    const cur = get().visibleKeyframeComponentKeys;
+    if (cur.includes(id)) set({ visibleKeyframeComponentKeys: cur.filter((candidate) => candidate !== id) });
+  },
   setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(2, v)) }),
 }));

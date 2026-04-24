@@ -1,13 +1,17 @@
 import type { Clip, KeyframePoint } from '@/types';
 import {
   getTransformComponents,
-  transformPropertyRange,
+  keyframeComponentVisibilityKey,
   type TransformProperty,
-  type TransformPropertyRange,
 } from '@/lib/components/transform';
+
+export const KEYFRAME_TITLE_HEIGHT_PX = 18;
+export const KEYFRAME_COMPONENT_ROW_HEIGHT_PX = 24;
+export const KEYFRAME_PROPERTY_ROW_HEIGHT_PX = 30;
 
 export type KeyframeSelection = {
   componentIndex: number;
+  componentId: string;
   property: TransformProperty;
   keyframeId: string;
 };
@@ -15,10 +19,9 @@ export type KeyframeSelection = {
 export type KeyframePropertyRow = {
   label: string;
   componentIndex: number;
+  componentId: string;
   property: TransformProperty;
   points: KeyframePoint[];
-  baseValue: number;
-  range: TransformPropertyRange;
 };
 
 export type SelectedKeyframeData = KeyframeSelection & KeyframePoint;
@@ -31,24 +34,25 @@ const PROPERTY_LABELS: Record<TransformProperty, string> = {
 
 export function laneHeightForClip(visibleRows: number, totalComponents: number): number {
   if (totalComponents === 0) return 0;
-  return Math.min(240, 18 + totalComponents * 22 + visibleRows * 30);
+  return KEYFRAME_TITLE_HEIGHT_PX +
+    totalComponents * KEYFRAME_COMPONENT_ROW_HEIGHT_PX +
+    visibleRows * KEYFRAME_PROPERTY_ROW_HEIGHT_PX;
 }
 
-export function getKeyframeProperties(clip: Clip): KeyframePropertyRow[] {
+export function getKeyframeProperties(clip: Clip, visibleComponentKeys?: Set<string>): KeyframePropertyRow[] {
   const transforms = getTransformComponents(clip);
   const properties: KeyframePropertyRow[] = [];
   transforms.forEach((component, index) => {
+    if (visibleComponentKeys && !visibleComponentKeys.has(keyframeComponentVisibilityKey(clip.id, component.id))) return;
     (['offsetX', 'offsetY', 'scale'] as const).forEach((property) => {
       const points = component.data.keyframes[property];
       if (points.length === 0) return;
-      const baseValue = component.data[property];
       properties.push({
         label: `Transform ${index + 1}.${PROPERTY_LABELS[property]}`,
         componentIndex: index,
+        componentId: component.id,
         property,
         points,
-        baseValue,
-        range: transformPropertyRange(property, points, baseValue),
       });
     });
   });
@@ -58,7 +62,7 @@ export function getKeyframeProperties(clip: Clip): KeyframePropertyRow[] {
 export function findSelectedKeyframe(clip: Clip | null, selectedKeyframe: KeyframeSelection | null): SelectedKeyframeData | null {
   if (!clip || !selectedKeyframe) return null;
   const row = getKeyframeProperties(clip).find((candidate) => (
-    candidate.componentIndex === selectedKeyframe.componentIndex &&
+    candidate.componentId === selectedKeyframe.componentId &&
     candidate.property === selectedKeyframe.property
   ));
   const point = row?.points.find((candidate) => candidate.id === selectedKeyframe.keyframeId);

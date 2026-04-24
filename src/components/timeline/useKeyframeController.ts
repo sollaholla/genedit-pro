@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { Clip, Project } from '@/types';
 import {
-  getTransformComponents,
   removeTransformKeyframeGroup,
   updateTransformKeyframe,
 } from '@/lib/components/transform';
@@ -19,6 +18,7 @@ type UseKeyframeControllerArgs = {
   selectedClip: Clip | null;
   currentTimeSec: number;
   fps: number;
+  visibleKeyframeComponentKeys: string[];
   update: ProjectUpdater;
   updateSilent: ProjectUpdater;
   beginTx: () => void;
@@ -29,23 +29,23 @@ export function useKeyframeController({
   selectedClip,
   currentTimeSec,
   fps,
+  visibleKeyframeComponentKeys,
   update,
   updateSilent,
   beginTx,
   setCurrentTime,
 }: UseKeyframeControllerArgs) {
   const [selectedKeyframe, setSelectedKeyframe] = useState<KeyframeSelection | null>(null);
-  const [collapsedComponents, setCollapsedComponents] = useState<Set<number>>(new Set());
 
   const visibleKeyframeProperties = useMemo(() => {
     if (!selectedClip) return [];
-    return getKeyframeProperties(selectedClip).filter((row) => !collapsedComponents.has(row.componentIndex));
-  }, [selectedClip, collapsedComponents]);
+    return getKeyframeProperties(selectedClip, new Set(visibleKeyframeComponentKeys));
+  }, [selectedClip, visibleKeyframeComponentKeys]);
 
   const keyframeLaneHeight = selectedClip
     ? laneHeightForClip(
       visibleKeyframeProperties.length,
-      countComponentsWithKeyframes(selectedClip),
+      countVisibleComponentsWithKeyframes(visibleKeyframeProperties),
     )
     : 0;
 
@@ -100,6 +100,7 @@ export function useKeyframeController({
     );
     setSelectedKeyframe({
       componentIndex: meta.componentIndex,
+      componentId: meta.componentId,
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
@@ -109,23 +110,14 @@ export function useKeyframeController({
   const selectKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number }) => {
     setSelectedKeyframe({
       componentIndex: meta.componentIndex,
+      componentId: meta.componentId,
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
     if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
   }, [selectedClip, setCurrentTime]);
 
-  const toggleComponentCollapse = useCallback((componentIndex: number) => {
-    setCollapsedComponents((prev) => {
-      const next = new Set(prev);
-      if (next.has(componentIndex)) next.delete(componentIndex);
-      else next.add(componentIndex);
-      return next;
-    });
-  }, []);
-
   return {
-    collapsedComponents,
     currentTimeSec,
     deleteSelectedKeyframe,
     keyframeLaneHeight,
@@ -137,15 +129,10 @@ export function useKeyframeController({
     moveKeyframe,
     nudgeSelectedKeyframe,
     selectKeyframe,
-    toggleComponentCollapse,
     visibleKeyframeProperties,
   };
 }
 
-function countComponentsWithKeyframes(clip: Clip): number {
-  return getTransformComponents(clip).filter((component) => (
-    component.data.keyframes.scale.length > 0 ||
-    component.data.keyframes.offsetX.length > 0 ||
-    component.data.keyframes.offsetY.length > 0
-  )).length;
+function countVisibleComponentsWithKeyframes(rows: Array<{ componentId: string }>): number {
+  return new Set(rows.map((row) => row.componentId)).size;
 }

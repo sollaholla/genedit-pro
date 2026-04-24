@@ -68,6 +68,7 @@ export function Timeline() {
   const selectClip = usePlaybackStore((s) => s.selectClip);
   const toggleClipSelection = usePlaybackStore((s) => s.toggleClipSelection);
   const setClipSelection = usePlaybackStore((s) => s.setClipSelection);
+  const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
   // Convenience: the single-selected clip ID (when exactly one is selected).
   const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
 
@@ -105,7 +106,6 @@ export function Timeline() {
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
   const selectedTrackId = selectedClip?.trackId ?? null;
   const {
-    collapsedComponents,
     deleteSelectedKeyframe,
     keyframeLaneHeight,
     selectedKeyframe,
@@ -116,11 +116,12 @@ export function Timeline() {
     moveKeyframe,
     nudgeSelectedKeyframe,
     selectKeyframe,
-    toggleComponentCollapse,
+    visibleKeyframeProperties,
   } = useKeyframeController({
     selectedClip,
     currentTimeSec: currentTime,
     fps: project.fps,
+    visibleKeyframeComponentKeys,
     update,
     updateSilent,
     beginTx,
@@ -591,9 +592,7 @@ export function Timeline() {
                   />
                   {selectedTrackId === t.id && (
                     <KeyframeSidebarLane
-                      clip={selectedClip}
-                      collapsedComponents={collapsedComponents}
-                      onToggleComponent={toggleComponentCollapse}
+                      rows={visibleKeyframeProperties}
                     />
                   )}
                 </div>
@@ -643,7 +642,7 @@ export function Timeline() {
                       clip={selectedClip}
                       pxPerSec={pxPerSec}
                       selectedKeyframe={selectedKeyframe}
-                      collapsedComponents={collapsedComponents}
+                      rows={visibleKeyframeProperties}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onBeginKeyframeDrag={beginKeyframeDrag}
                       onMoveKeyframe={moveKeyframe}

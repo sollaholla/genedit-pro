@@ -1,15 +1,17 @@
 import { useState } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Diamond, Film, GripVertical, Image as ImageIcon, Loader2, Music, Plus, RotateCcw, Search, Trash2, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Loader2, Music, Plus, RotateCcw, Search, Trash2, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
 import { clipSpeed, clipTimelineDurationSec, setClipProp } from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
+import type { ComponentInstance } from '@/types';
 import {
   addTransformKeyframeAtTime,
   createDefaultTransformComponent,
   getTransformComponents,
+  keyframeComponentVisibilityKey,
   reorderTransformComponents,
   setTransformPropertyAtTime,
   type TransformProperty,
@@ -26,6 +28,10 @@ export function ClipInspector() {
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
   const setActiveTransformComponentId = usePlaybackStore((s) => s.setActiveTransformComponentId);
+  const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
+  const showKeyframeComponent = usePlaybackStore((s) => s.showKeyframeComponent);
+  const toggleKeyframeComponent = usePlaybackStore((s) => s.toggleKeyframeComponent);
+  const hideKeyframeComponent = usePlaybackStore((s) => s.hideKeyframeComponent);
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
@@ -286,6 +292,7 @@ export function ClipInspector() {
                 )),
               }));
               setActiveTransformComponentId(component.id);
+              showKeyframeComponent(keyframeComponentVisibilityKey(selectedId, component.id));
             };
             const moveComponent = (toIndex: number) => {
               update((p) => ({
@@ -297,16 +304,14 @@ export function ClipInspector() {
               setActiveTransformComponentId(component.id);
             };
             const isActive = activeTransformComponentId === component.id || (!activeTransformComponentId && idx === transformComponents.length - 1);
+            const hasKeyframes = hasTransformKeyframes(component);
+            const visibilityKey = keyframeComponentVisibilityKey(selectedId, component.id);
+            const keyframesVisible = visibleKeyframeComponentKeys.includes(visibilityKey);
             return (
               <div
                 key={component.id}
                 className={`space-y-3 rounded border p-2.5 ${isActive ? 'border-brand-400 bg-brand-500/10' : 'border-surface-700 bg-surface-900/50'}`}
-                draggable
-                onMouseDown={() => setActiveTransformComponentId(component.id)}
-                onDragStart={(e) => {
-                  setDraggingComponentId(component.id);
-                  e.dataTransfer.effectAllowed = 'move';
-                }}
+                onClick={() => setActiveTransformComponentId(component.id)}
                 onDragOver={(e) => {
                   if (!draggingComponentId || draggingComponentId === component.id) return;
                   e.preventDefault();
@@ -329,31 +334,70 @@ export function ClipInspector() {
               >
                 <div className="flex items-center justify-between">
                   <div className="flex min-w-0 items-center gap-2">
-                    <GripVertical size={13} className="shrink-0 cursor-grab text-slate-500" />
+                    <button
+                      type="button"
+                      draggable
+                      className="inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-300 active:cursor-grabbing"
+                      title="Drag to reorder"
+                      onDragStart={(e) => {
+                        setDraggingComponentId(component.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <GripVertical size={13} />
+                    </button>
                     <div className="min-w-0">
                       <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
-                      <div className="truncate text-[10px] text-slate-500">{isActive ? 'Preview edits target this component' : 'Click to target preview edits'}</div>
+                      <div className="truncate text-[10px] text-slate-500">{isActive ? 'Active for preview edits' : 'Click card to target preview edits'}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
+                      className={`inline-flex h-6 w-6 items-center justify-center rounded ${
+                        keyframesVisible
+                          ? 'bg-brand-500 text-white hover:bg-brand-400'
+                          : 'bg-surface-700 text-slate-200 hover:bg-surface-600'
+                      } disabled:cursor-not-allowed disabled:opacity-40`}
+                      title={hasKeyframes ? (keyframesVisible ? 'Hide keyframes in timeline' : 'Show keyframes in timeline') : 'Add keyframes first'}
+                      disabled={!hasKeyframes}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleKeyframeComponent(visibilityKey);
+                      }}
+                    >
+                      {keyframesVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+                    </button>
+                    <button
+                      type="button"
                       className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
-                      title="Add transform keyframes"
-                      onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty))}
+                      title="Add transform keyframes and show them"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty));
+                      }}
                     >
                       <Diamond size={10} />
                     </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={() => moveComponent(idx - 1)}>
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={(e) => {
+                      e.stopPropagation();
+                      moveComponent(idx - 1);
+                    }}>
                       <ArrowUp size={11} />
                     </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={() => moveComponent(idx + 1)}>
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={(e) => {
+                      e.stopPropagation();
+                      moveComponent(idx + 1);
+                    }}>
                       <ArrowDown size={11} />
                     </button>
-                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={() => {
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={(e) => {
+                      e.stopPropagation();
                       const next = transformComponents.filter((candidate) => candidate.id !== component.id);
                       setComponents(next);
                       if (activeTransformComponentId === component.id) setActiveTransformComponentId(next.at(-1)?.id ?? null);
+                      hideKeyframeComponent(visibilityKey);
                     }}>
                       <Trash2 size={11} />
                     </button>
@@ -404,6 +448,12 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 function Divider() {
   return <div className="h-px bg-surface-700" />;
+}
+
+function hasTransformKeyframes(component: ComponentInstance): boolean {
+  return component.data.keyframes.scale.length > 0 ||
+    component.data.keyframes.offsetX.length > 0 ||
+    component.data.keyframes.offsetY.length > 0;
 }
 
 function EnvelopeControls({
