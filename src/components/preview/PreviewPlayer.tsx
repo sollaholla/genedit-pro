@@ -5,6 +5,7 @@ import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
 import { clipSpeed, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
+import { activeEditTransform } from '@/lib/media/editTrail';
 import {
   getAudioContext,
   getMasterGain,
@@ -96,7 +97,7 @@ export function PreviewPlayer() {
   // overlapping same-asset clips don't fight over currentTime.
   const videoPool = useRef<ElementPool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
-  // clipId → assetId that el.src is currently set to (for Replace detection)
+  // clipId -> asset id + active blob key that el.src is currently set to.
   const clipAssetRef = useRef<Map<string, string>>(new Map());
   // clipId → GainNode connected to the master bus
   const gainNodes = useRef<Map<string, GainNode>>(new Map());
@@ -104,6 +105,7 @@ export function PreviewPlayer() {
   const sourceNodes = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
 
   const urlCache = useRef<Map<string, string>>(new Map()); // assetId → object URL
+  const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const prerolledRef = useRef<Set<string>>(new Set());
@@ -133,6 +135,10 @@ export function PreviewPlayer() {
     return '4:3';
   });
   const previewAspectRatio = PREVIEW_ASPECTS[aspectPreset];
+
+  useEffect(() => {
+    assetsRef.current = assets;
+  }, [assets]);
   const previewStageStyle = useMemo(() => {
     if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
       return { aspectRatio: previewAspectRatio, width: '100%' };
@@ -299,11 +305,11 @@ export function PreviewPlayer() {
     }
 
     // Revoke URLs for gone assets.
-    const aliveAssetIds = new Set(assets.map((a) => a.id));
-    for (const [assetId, url] of urlCache.current) {
-      if (!aliveAssetIds.has(assetId)) {
+    const aliveMediaKeys = new Set(assets.map((a) => `${a.id}:${a.blobKey}`));
+    for (const [mediaKey, url] of urlCache.current) {
+      if (!aliveMediaKeys.has(mediaKey)) {
         URL.revokeObjectURL(url);
-        urlCache.current.delete(assetId);
+        urlCache.current.delete(mediaKey);
       }
     }
 
@@ -315,14 +321,15 @@ export function PreviewPlayer() {
         const isAudio = asset.kind === 'audio';
         const pool = isAudio ? audioPool.current : videoPool.current;
         const existing = pool.get(clip.id);
-        const previousAssetId = clipAssetRef.current.get(clip.id);
+        const mediaKey = `${asset.id}:${asset.blobKey}`;
+        const previousMediaKey = clipAssetRef.current.get(clip.id);
 
-        let url = urlCache.current.get(asset.id);
+        let url = urlCache.current.get(mediaKey);
         if (!url) {
           const u = await objectUrlFor(asset.id);
           if (!u) continue;
           url = u;
-          urlCache.current.set(asset.id, url);
+          urlCache.current.set(mediaKey, url);
         }
         if (cancelled) return;
 
@@ -346,7 +353,7 @@ export function PreviewPlayer() {
             pool.set(clip.id, v);
             el = v;
           }
-          clipAssetRef.current.set(clip.id, asset.id);
+          clipAssetRef.current.set(clip.id, mediaKey);
 
           // Wire up to the Web Audio graph.
           try {
@@ -361,10 +368,10 @@ export function PreviewPlayer() {
           } catch {
             // Fallback: element won't route through Web Audio; volume stays at el.volume
           }
-        } else if (previousAssetId !== asset.id) {
+        } else if (previousMediaKey !== mediaKey) {
           // Asset replaced on this clip.
           existing.src = url;
-          clipAssetRef.current.set(clip.id, asset.id);
+          clipAssetRef.current.set(clip.id, mediaKey);
         }
       }
       if (!cancelled) setReady(true);
@@ -407,9 +414,13 @@ export function PreviewPlayer() {
         videoEl.style.display = clipId === nextVideoClipId ? '' : 'none';
         if (clipId === nextVideoClipId) {
           const tf = frame.video ? resolvedTransform(frame.video.clip) : null;
-          const s = Math.max(0.1, Math.min(3, tf?.scale ?? frame.video?.clip.scale ?? 1));
-          const ox = tf?.offsetX ?? 0;
-          const oy = tf?.offsetY ?? 0;
+          const asset = frame.video
+            ? assetsRef.current.find((item) => item.id === frame.video?.clip.assetId)
+            : null;
+          const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
+          const s = Math.max(0.1, Math.min(6, (tf?.scale ?? frame.video?.clip.scale ?? 1) * mediaTransform.scale));
+          const ox = (tf?.offsetX ?? 0) + mediaTransform.offsetX;
+          const oy = (tf?.offsetY ?? 0) + mediaTransform.offsetY;
           videoEl.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
           videoEl.style.transformOrigin = 'center center';
           videoEl.style.cursor = tf ? 'move' : 'default';

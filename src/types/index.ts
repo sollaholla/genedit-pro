@@ -1,5 +1,30 @@
 export type MediaKind = 'video' | 'audio' | 'image' | 'recipe';
 
+export type EditTrailTransform = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export type EditTrailIteration = {
+  id: string;
+  label: string;
+  source: 'original' | 'manual' | 'generated';
+  blobKey: string;
+  thumbnailDataUrl?: string;
+  mimeType: string;
+  width?: number;
+  height?: number;
+  durationSec: number;
+  transform: EditTrailTransform;
+  createdAt: number;
+};
+
+export type EditTrail = {
+  activeIterationId: string;
+  iterations: EditTrailIteration[];
+};
+
 export type GenerateRecipe = {
   model: string;
   prompt: string;
@@ -24,6 +49,7 @@ export type MediaAsset = {
   blobKey: string;
   thumbnailDataUrl?: string;
   folderId?: string | null;
+  editTrail?: EditTrail;
   generation?: {
     status: 'generating' | 'done' | 'error';
     progress?: number;

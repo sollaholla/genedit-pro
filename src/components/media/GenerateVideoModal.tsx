@@ -1101,7 +1101,7 @@ function MediaPicker({
                 <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
                   <span className="rounded-full bg-white/10 px-1.5 py-0.5">{asset.kind}</span>
                   {asset.width && asset.height && <span>{asset.width}x{asset.height}</span>}
-                  {asset.durationSec > 0 && <span>{asset.durationSec.toFixed(1)}s</span>}
+                  {(asset.kind === 'video' || asset.kind === 'audio') && asset.durationSec > 0 && <span>{asset.durationSec.toFixed(1)}s</span>}
                   <span>{formatShortDate(asset.createdAt)}</span>
                 </div>
               </div>

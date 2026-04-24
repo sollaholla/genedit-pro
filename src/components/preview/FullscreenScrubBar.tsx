@@ -95,12 +95,13 @@ export function FullscreenScrubBar() {
     vid.style.display = '';
     setPreviewHasFrame(true);
 
-    if (currentSrcAssetRef.current !== asset.id) {
-      currentSrcAssetRef.current = asset.id;
+    const mediaKey = `${asset.id}:${asset.blobKey}`;
+    if (currentSrcAssetRef.current !== mediaKey) {
+      currentSrcAssetRef.current = mediaKey;
       const url = await objectUrlFor(asset.id);
       if (!url || !previewVideoRef.current) return;
       // Race: user may have moved to a different asset mid-fetch.
-      if (currentSrcAssetRef.current !== asset.id) return;
+      if (currentSrcAssetRef.current !== mediaKey) return;
       previewVideoRef.current.src = url;
     }
     seekPreviewTo(frame.video.sourceTimeSec);

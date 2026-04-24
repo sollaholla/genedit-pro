@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { GenerateRecipe, MediaAsset } from '@/types';
+import type { EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset } from '@/types';
+import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
@@ -36,6 +37,14 @@ type MediaState = {
   removeAsset: (id: string) => Promise<void>;
   renameAsset: (id: string, name: string) => void;
   objectUrlFor: (assetId: string) => Promise<string | null>;
+  ensureEditTrail: (assetId: string) => void;
+  addEditTrailIteration: (
+    assetId: string,
+    file: File | null,
+    transform: EditTrailTransform,
+    thumbnailDataUrl?: string,
+  ) => Promise<void>;
+  undoEditTrail: (assetId: string) => Promise<void>;
   createFolder: (name: string) => void;
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
@@ -54,7 +63,58 @@ type MediaState = {
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
 };
 
-const urlCache = new Map<string, string>();
+const urlCache = new Map<string, { blobKey: string; url: string }>();
+
+function revokeCachedUrl(assetId: string) {
+  const cached = urlCache.get(assetId);
+  if (!cached) return;
+  URL.revokeObjectURL(cached.url);
+  urlCache.delete(assetId);
+}
+
+function activeBlobKey(asset: MediaAsset): string {
+  return activeEditIteration(asset)?.blobKey ?? asset.blobKey;
+}
+
+function originalIterationFor(asset: MediaAsset): EditTrailIteration {
+  return {
+    id: nanoid(10),
+    label: 'Original',
+    source: 'original',
+    blobKey: asset.blobKey,
+    thumbnailDataUrl: asset.thumbnailDataUrl,
+    mimeType: asset.mimeType,
+    width: asset.width,
+    height: asset.height,
+    durationSec: asset.durationSec,
+    transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
+    createdAt: asset.createdAt,
+  };
+}
+
+function withEditTrail(asset: MediaAsset): MediaAsset & { editTrail: EditTrail } {
+  if (asset.editTrail?.iterations.length) return asset as MediaAsset & { editTrail: EditTrail };
+  const original = originalIterationFor(asset);
+  return {
+    ...asset,
+    editTrail: {
+      activeIterationId: original.id,
+      iterations: [original],
+    },
+  };
+}
+
+function applyIterationToAsset(asset: MediaAsset, iteration: EditTrailIteration): MediaAsset {
+  return {
+    ...asset,
+    blobKey: iteration.blobKey,
+    thumbnailDataUrl: iteration.thumbnailDataUrl || asset.thumbnailDataUrl,
+    mimeType: iteration.mimeType,
+    width: iteration.width,
+    height: iteration.height,
+    durationSec: iteration.durationSec,
+  };
+}
 
 export const useMediaStore = create<MediaState>((set, get) => ({
   assets: loadAssets(),
@@ -98,12 +158,12 @@ export const useMediaStore = create<MediaState>((set, get) => ({
   removeAsset: async (id) => {
     const asset = get().assets.find((a) => a.id === id);
     if (!asset) return;
-    await deleteBlob(asset.blobKey).catch(() => undefined);
-    const cached = urlCache.get(asset.id);
-    if (cached) {
-      URL.revokeObjectURL(cached);
-      urlCache.delete(asset.id);
-    }
+    const blobKeys = new Set([
+      asset.blobKey,
+      ...(asset.editTrail?.iterations.map((iteration) => iteration.blobKey) ?? []),
+    ].filter(Boolean));
+    await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
+    revokeCachedUrl(asset.id);
     const next = get().assets.filter((a) => a.id !== id);
     saveAssets(next);
     set({ assets: next });
@@ -119,14 +179,108 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
   objectUrlFor: async (assetId) => {
     const cached = urlCache.get(assetId);
-    if (cached) return cached;
     const asset = get().assets.find((a) => a.id === assetId);
     if (!asset) return null;
-    const blob = await getBlob(asset.blobKey);
+    const blobKey = activeBlobKey(asset);
+    if (cached && cached.blobKey === blobKey) return cached.url;
+    if (cached) revokeCachedUrl(assetId);
+    const blob = await getBlob(blobKey);
     if (!blob) return null;
     const url = URL.createObjectURL(blob);
-    urlCache.set(assetId, url);
+    urlCache.set(assetId, { blobKey, url });
     return url;
+  },
+
+  ensureEditTrail: (assetId) => {
+    let changed = false;
+    const next = get().assets.map((asset) => {
+      if (asset.id !== assetId || asset.editTrail?.iterations.length || !asset.blobKey) return asset;
+      changed = true;
+      return withEditTrail(asset);
+    });
+    if (!changed) return;
+    saveAssets(next);
+    set({ assets: next });
+  },
+
+  addEditTrailIteration: async (assetId, file, transform, thumbnailDataUrl) => {
+    const asset = get().assets.find((item) => item.id === assetId);
+    if (!asset || !asset.blobKey || (asset.kind !== 'image' && asset.kind !== 'video')) return;
+
+    const base = withEditTrail(asset);
+    const label = `Edit ${base.editTrail.iterations.length}`;
+    let iteration: EditTrailIteration;
+
+    if (file) {
+      const probed = await probe(file);
+      const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
+      const blobKey = `blob_${nanoid(12)}`;
+      await putBlob(blobKey, file, file.name);
+      iteration = {
+        id: nanoid(10),
+        label,
+        source: 'manual',
+        blobKey,
+        thumbnailDataUrl: thumbnail || thumbnailDataUrl,
+        mimeType: file.type || base.mimeType,
+        width: probed.width ?? base.width,
+        height: probed.height ?? base.height,
+        durationSec: probed.durationSec || base.durationSec,
+        transform,
+        createdAt: Date.now(),
+      };
+    } else {
+      iteration = {
+        id: nanoid(10),
+        label,
+        source: 'manual',
+        blobKey: activeBlobKey(base),
+        thumbnailDataUrl: thumbnailDataUrl || base.thumbnailDataUrl,
+        mimeType: base.mimeType,
+        width: base.width,
+        height: base.height,
+        durationSec: base.durationSec,
+        transform,
+        createdAt: Date.now(),
+      };
+    }
+
+    revokeCachedUrl(assetId);
+    const next = get().assets.map((item) => {
+      if (item.id !== assetId) return item;
+      const trailed = withEditTrail(item);
+      const editTrail = {
+        activeIterationId: iteration.id,
+        iterations: [...trailed.editTrail.iterations, iteration],
+      };
+      return applyIterationToAsset({ ...trailed, editTrail }, iteration);
+    });
+    saveAssets(next);
+    set({ assets: next });
+  },
+
+  undoEditTrail: async (assetId) => {
+    const asset = get().assets.find((item) => item.id === assetId);
+    if (!asset?.editTrail || asset.editTrail.iterations.length <= 1) return;
+    const iterations = asset.editTrail.iterations;
+    const removed = iterations[iterations.length - 1]!;
+    const remaining = iterations.slice(0, -1);
+    const nextActive = remaining[remaining.length - 1]!;
+    const remainingBlobKeys = new Set(remaining.map((iteration) => iteration.blobKey));
+    if (!remainingBlobKeys.has(removed.blobKey)) {
+      await deleteBlob(removed.blobKey).catch(() => undefined);
+    }
+    revokeCachedUrl(assetId);
+    const next = get().assets.map((item) => {
+      if (item.id !== assetId) return item;
+      const editTrail = {
+        activeIterationId: nextActive.id,
+        iterations: remaining,
+      };
+      return applyIterationToAsset({ ...item, editTrail }, nextActive);
+    });
+    saveAssets(next);
+    set({ assets: next });
   },
 
   createFolder: (name) => {

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, Sparkles, Trash2, Upload } from 'lucide-react';
+import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from 'lucide-react';
+import { isEditableMedia } from '@/lib/media/editTrail';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { addClip, sortedTracks } from '@/lib/timeline/operations';
 import type { MediaAsset } from '@/types';
+import { EditTrailDialog } from './EditTrailDialog';
 
 type Props = {
   onImportClick: () => void;
@@ -32,6 +34,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const [dragOver, setDragOver] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const visibleAssets = useMemo(
     () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
     [assets, activeFolderId],
@@ -111,6 +114,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
                 asset={asset}
                 onDelete={() => removeAsset(asset.id)}
                 onRename={(name) => renameAsset(asset.id, name)}
+                onOpenEdit={() => setEditingAssetId(asset.id)}
                 onOpenRecipe={() => onOpenRecipe(asset)}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
               />
@@ -118,6 +122,12 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
           </ul>
         )}
       </div>
+      {editingAssetId && (
+        <EditTrailDialog
+          assetId={editingAssetId}
+          onClose={() => setEditingAssetId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -140,12 +150,14 @@ function MediaTile({
   asset,
   onDelete,
   onRename,
+  onOpenEdit,
   onOpenRecipe,
   onAddToTimeline,
 }: {
   asset: MediaAsset;
   onDelete: () => void;
   onRename: (name: string) => void;
+  onOpenEdit: () => void;
   onOpenRecipe: () => void;
   onAddToTimeline: () => void;
 }) {
@@ -153,11 +165,11 @@ function MediaTile({
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const nameParts = splitFilename(asset.name);
   const badgeLabel = assetBadgeLabel(asset);
-  const statusLabel = asset.kind === 'recipe'
-    ? ''
-    : asset.generation?.status === 'generating'
+  const statusLabel = asset.generation?.status === 'generating'
       ? 'Generating'
-      : `${asset.durationSec.toFixed(1)}s`;
+      : asset.kind === 'video' || asset.kind === 'audio'
+        ? `${asset.durationSec.toFixed(1)}s`
+        : '';
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [playingPreview, setPlayingPreview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -168,6 +180,7 @@ function MediaTile({
   const skipRenameCommitRef = useRef(false);
   const pointerButtonRef = useRef(0);
   const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
+  const canEdit = isEditableMedia(asset);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -398,6 +411,18 @@ function MediaTile({
             <Plus size={12} />
             Insert
           </button>
+          {canEdit && (
+            <button
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+              onClick={() => {
+                setMenuOpen(false);
+                onOpenEdit();
+              }}
+            >
+              <SlidersHorizontal size={12} />
+              Edit
+            </button>
+          )}
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
             onClick={() => {
