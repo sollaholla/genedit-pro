@@ -1,6 +1,19 @@
 import { Clapperboard, Image as ImageIcon, Plus, Upload, X, Save, FolderOpen } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { decryptSecret } from '@/lib/settings/crypto';
+import {
+  DEFAULT_VIDEO_MODELS,
+  buildRemoteVideoModelDefinition,
+  isAdultContentFeatureSupported,
+  isAspectFeatureSupported,
+  isAudioFeatureSupported,
+  isDurationFeatureSupported,
+  isReferencesFeatureSupported,
+  isResolutionFeatureSupported,
+  isVeoModel,
+  type Aspect,
+  type VideoModelDefinition,
+} from '@/lib/videoModels/capabilities';
 import { useMediaStore } from '@/state/mediaStore';
 import type { GenerateRecipe, MediaAsset } from '@/types';
 
@@ -12,18 +25,6 @@ type Props = {
   folderId?: string | null;
 };
 
-type ModelCapabilities = {
-  supportsReferences: boolean;
-  supportsAudio: boolean;
-  durations: string[];
-  resolutions: string[];
-  aspects: Aspect[];
-};
-
-type GenerateModel = { id: string; label: string; capabilities: ModelCapabilities };
-
-type Aspect = '16:9' | '9:16' | '1:1';
-
 type RefToken = {
   id: string;
   token: string;
@@ -33,9 +34,6 @@ type RefToken = {
   thumbnail?: string;
 };
 
-const ASPECTS: Aspect[] = ['16:9', '9:16', '1:1'];
-const RESOLUTIONS = ['720p', '1080p'] as const;
-const DURATIONS = ['4s', '6s', '8s'] as const;
 const KEY_STORAGE = 'genedit-pro:connections:google-veo';
 const MODEL_PRICING_PER_SECOND_USD: Record<string, Partial<Record<'720p' | '1080p' | '4k', number>>> = {
   // https://ai.google.dev/gemini-api/docs/pricing#veo-3.1
@@ -43,31 +41,6 @@ const MODEL_PRICING_PER_SECOND_USD: Record<string, Partial<Record<'720p' | '1080
   'veo-3.1-fast-generate-preview': { '720p': 0.1, '1080p': 0.12, '4k': 0.3 },
   'veo-3.1-lite-generate-preview': { '720p': 0.05, '1080p': 0.08 },
 };
-const FALLBACK_MODELS: GenerateModel[] = [
-  {
-    id: 'veo-3.1-generate-preview',
-    label: 'Veo 3.1 (Preview)',
-    capabilities: {
-      supportsReferences: false,
-      supportsAudio: true,
-      durations: ['4s', '8s'],
-      resolutions: ['720p', '1080p'],
-      aspects: ['16:9', '9:16', '1:1'],
-    },
-  },
-  {
-    id: 'veo-3.1-fast-generate-preview',
-    label: 'Veo 3.1 Fast (Preview)',
-    capabilities: {
-      supportsReferences: false,
-      supportsAudio: true,
-      durations: ['4s', '6s'],
-      resolutions: ['720p'],
-      aspects: ['16:9', '9:16'],
-    },
-  },
-];
-
 export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecipeAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
@@ -77,12 +50,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const failGeneratedAsset = useMediaStore((s) => s.failGeneratedAsset);
   const saveRecipeAsset = useMediaStore((s) => s.saveRecipeAsset);
 
-  const [models, setModels] = useState<GenerateModel[]>(FALLBACK_MODELS);
+  const [models, setModels] = useState<VideoModelDefinition[]>(DEFAULT_VIDEO_MODELS);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [model, setModel] = useState(FALLBACK_MODELS[0].id);
+  const [model, setModel] = useState(DEFAULT_VIDEO_MODELS[0].id);
   const [aspect, setAspect] = useState<Aspect>('16:9');
-  const [resolution, setResolution] = useState<(typeof RESOLUTIONS)[number]>('720p');
-  const [duration, setDuration] = useState<(typeof DURATIONS)[number]>('4s');
+  const [resolution, setResolution] = useState('720p');
+  const [duration, setDuration] = useState('4s');
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [hoveredToken, setHoveredToken] = useState<RefToken | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
@@ -103,7 +76,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
 
   const selectedModel = useMemo(
-    () => models.find((m) => m.id === model) ?? FALLBACK_MODELS[0],
+    () => models.find((m) => m.id === model) ?? DEFAULT_VIDEO_MODELS[0],
     [model, models],
   );
   const estimatedCostUsd = useMemo(() => {
@@ -128,8 +101,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setModel(recipe.model);
     setPrompt(recipe.prompt);
     setAspect((recipe.aspect as Aspect) || '16:9');
-    setResolution((recipe.resolution as (typeof RESOLUTIONS)[number]) || '720p');
-    setDuration((recipe.duration as (typeof DURATIONS)[number]) || '4s');
+    setResolution(recipe.resolution || '720p');
+    setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
     setStartFrame(recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null);
     setEndFrame(recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null);
@@ -148,17 +121,16 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   }, [open, initialRecipeAsset, assets]);
 
   useEffect(() => {
-    const caps = selectedModel.capabilities;
-    if (!caps.resolutions.includes(resolution)) {
-      setResolution((caps.resolutions[0] ?? RESOLUTIONS[0]) as (typeof RESOLUTIONS)[number]);
+    if (!isResolutionFeatureSupported(selectedModel, resolution)) {
+      setResolution(selectedModel.capabilities.resolutions[0] ?? '720p');
     }
-    if (!caps.durations.includes(duration)) {
-      setDuration((caps.durations[0] ?? DURATIONS[0]) as (typeof DURATIONS)[number]);
+    if (!isDurationFeatureSupported(selectedModel, duration)) {
+      setDuration(selectedModel.capabilities.durations[0] ?? '4s');
     }
-    if (!caps.aspects.includes(aspect)) {
-      setAspect((caps.aspects[0] ?? ASPECTS[0]) as Aspect);
+    if (!isAspectFeatureSupported(selectedModel, aspect)) {
+      setAspect(selectedModel.capabilities.aspects[0] ?? '16:9');
     }
-    setAudioEnabled(caps.supportsAudio);
+    setAudioEnabled(isAudioFeatureSupported(selectedModel));
   }, [selectedModel]);
 
   const allMentionItems = useMemo(() => {
@@ -194,8 +166,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     try {
       const encryptedKey = localStorage.getItem(KEY_STORAGE);
       if (!encryptedKey) {
-        setModels(FALLBACK_MODELS);
-        setModel(FALLBACK_MODELS[0].id);
+        setModels(DEFAULT_VIDEO_MODELS);
+        setModel(DEFAULT_VIDEO_MODELS[0].id);
         return;
       }
       const key = await decryptSecret(encryptedKey);
@@ -206,26 +178,19 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         .filter((m) => (m.supportedGenerationMethods ?? []).some((method) => method.toLowerCase().includes('video')) || m.name.toLowerCase().includes('veo'))
         .map((m) => {
           const id = m.name.replace('models/', '');
-          const fallback = FALLBACK_MODELS.find((fm) => fm.id === id);
-          const caps = fallback?.capabilities ?? {
-            supportsReferences: !id.toLowerCase().includes('veo'),
-            supportsAudio: id.toLowerCase().includes('veo'),
-            durations: [...DURATIONS],
-            resolutions: [...RESOLUTIONS],
-            aspects: [...ASPECTS],
-          };
-          return { id, label: m.displayName || id, capabilities: caps };
+          const fallback = DEFAULT_VIDEO_MODELS.find((fm) => fm.id === id);
+          return buildRemoteVideoModelDefinition(m, fallback);
         });
       if (available.length) {
         setModels(available);
         setModel(available[0].id);
       } else {
-        setModels(FALLBACK_MODELS);
-        setModel(FALLBACK_MODELS[0].id);
+        setModels(DEFAULT_VIDEO_MODELS);
+        setModel(DEFAULT_VIDEO_MODELS[0].id);
       }
     } catch {
-      setModels(FALLBACK_MODELS);
-      setModel(FALLBACK_MODELS[0].id);
+      setModels(DEFAULT_VIDEO_MODELS);
+      setModel(DEFAULT_VIDEO_MODELS[0].id);
     } finally {
       setLoadingModels(false);
     }
@@ -329,6 +294,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
           durationSeconds: Number(duration.replace('s', '')),
           resolution,
           generateAudio: audioEnabled,
+          ...(isVeoModel(selectedModel) && isAdultContentFeatureSupported(selectedModel) ? { allowAdult: true } : {}),
         },
       };
 
@@ -401,8 +367,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setModel(recipe.model);
     setPrompt(recipe.prompt);
     setAspect((recipe.aspect as Aspect) || '16:9');
-    setResolution((recipe.resolution as (typeof RESOLUTIONS)[number]) || '720p');
-    setDuration((recipe.duration as (typeof DURATIONS)[number]) || '4s');
+    setResolution(recipe.resolution || '720p');
+    setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
     setStartFrame(recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null);
     setEndFrame(recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null);
@@ -519,7 +485,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
                 <Plus size={12} /> Add reference
               </button>
             </div>
-            {!selectedModel.capabilities.supportsReferences && (
+            {!isReferencesFeatureSupported(selectedModel) && (
               <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
                 References are not supported by the selected model.
               </div>
@@ -539,10 +505,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             <FieldSelect label="Model" value={model} onChange={setModel} options={models.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} />
             <FieldSelect label="Aspect" value={aspect} onChange={(v) => setAspect(v as Aspect)} options={selectedModel.capabilities.aspects.map((v) => ({ value: v, label: v }))} />
-            <FieldSelect label="Resolution" value={resolution} onChange={(v) => setResolution(v as (typeof RESOLUTIONS)[number])} options={selectedModel.capabilities.resolutions.map((v) => ({ value: v, label: v }))} />
-            <FieldSelect label="Duration" value={duration} onChange={(v) => setDuration(v as (typeof DURATIONS)[number])} options={selectedModel.capabilities.durations.map((v) => ({ value: v, label: v }))} />
+            <FieldSelect label="Resolution" value={resolution} onChange={setResolution} options={selectedModel.capabilities.resolutions.map((v) => ({ value: v, label: v }))} />
+            <FieldSelect label="Duration" value={duration} onChange={setDuration} options={selectedModel.capabilities.durations.map((v) => ({ value: v, label: v }))} />
             <button
-              disabled={!selectedModel.capabilities.supportsAudio}
+              disabled={!isAudioFeatureSupported(selectedModel)}
               className={`rounded-lg border px-2 py-2 text-xs ${audioEnabled ? 'border-emerald-400/60 bg-emerald-500/10 text-emerald-200' : 'border-white/15 bg-white/5 text-slate-300'} disabled:cursor-not-allowed disabled:opacity-60`}
               onClick={() => setAudioEnabled((v) => !v)}
             >
