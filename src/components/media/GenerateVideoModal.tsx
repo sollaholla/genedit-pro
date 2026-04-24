@@ -74,14 +74,6 @@ type RefToken = {
 
 type PromptMode = 'freeform' | 'structured';
 
-function stripReferenceTokensFromPromptText(prompt: string, refs: RefToken[]): string {
-  return refs.reduce((next, ref) => next.replaceAll(`@${ref.token}`, ''), prompt).replace(/\s{2,}/g, ' ').trim();
-}
-
-function stripIndexedImageTokensFromPromptText(prompt: string): string {
-  return prompt.replace(/@image\d+\b/gi, '').replace(/\s{2,}/g, ' ').trim();
-}
-
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
   subject: UserRound,
   action: Zap,
@@ -159,9 +151,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   );
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
-  const frameReferenceConflict = Boolean((startFrame || endFrame) && references.length > 0);
+  const referencesIgnoredByFrameMode = Boolean((startFrame || endFrame) && references.length > 0);
   const generateDisabled = isGenerating ||
-    frameReferenceConflict ||
     Boolean(sourceVideo && !isVeoArtifactValid(sourceVideo)) ||
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
@@ -246,8 +237,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setModel(recipe.model);
     const nextStartFrame = recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null;
     const nextEndFrame = recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null;
-    const nextFrameMode = Boolean(nextStartFrame || nextEndFrame);
-    setPrompt(nextFrameMode ? stripIndexedImageTokensFromPromptText(recipe.prompt) : recipe.prompt);
+    setPrompt(recipe.prompt);
     setPromptMode(recipe.promptMode ?? 'freeform');
     setStructuredPrompt(recipe.structuredPrompt ?? {});
     setAspect((recipe.aspect as Aspect) || '16:9');
@@ -260,7 +250,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = nextSourceVideo || nextFrameMode ? [] : recipe.referenceAssetIds
+    const selectedRefs = nextSourceVideo ? [] : recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
       .filter((a) => a.kind === 'image')
@@ -291,10 +281,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     }
     if (!sourceVideoSupported || (sourceVideo && !isVeoArtifactValid(sourceVideo))) setSourceVideo(null);
     if (references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
-    if ((startFrame || endFrame) && references.length > 0) {
-      setPrompt((prev) => stripReferenceTokensFromPromptText(prev, references));
-      setReferences([]);
-    }
     setAudioEnabled(isAudioFeatureSupported(selectedModel));
     if (!selectedModel.promptGuidelines?.structuredSections.length && promptMode === 'structured') {
       setPromptMode('freeform');
@@ -306,14 +292,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     frameInputsSupported,
     imageReferenceLimit,
     references.length,
-    references,
     resolution,
     resolutionOptions,
     selectedModel,
     sourceVideo,
     sourceVideoSupported,
-    startFrame,
-    endFrame,
     promptMode,
   ]);
 
@@ -371,14 +354,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     return `${kind}${index + 1}`;
   }
 
-  function clearReferenceAssets() {
-    setPrompt((prev) => stripReferenceTokensFromPromptText(prev, references));
-    setReferences([]);
-  }
-
   function addReferenceAsset(asset: MediaAsset) {
     if (asset.kind !== 'image') return;
-    if (startFrame || endFrame) return;
     if (imageReferenceLimit <= 0) return;
     if (references.length >= imageReferenceLimit) return;
     const kind = asset.kind as RefToken['kind'];
@@ -456,16 +433,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       if (!first) return;
       if (pickerMode === 'start') {
         setStartFrame(first.kind === 'image' ? first : null);
-        if (first.kind === 'image') {
-          setSourceVideo(null);
-          clearReferenceAssets();
-        }
+        if (first.kind === 'image') setSourceVideo(null);
       } else if (pickerMode === 'end') {
         setEndFrame(first.kind === 'image' ? first : null);
-        if (first.kind === 'image') {
-          setSourceVideo(null);
-          clearReferenceAssets();
-        }
+        if (first.kind === 'image') setSourceVideo(null);
       } else if (pickerMode === 'source-video') {
         const validSource = first.kind === 'video' && isVeoArtifactValid(first);
         setSourceVideo(validSource ? first : null);
@@ -483,10 +454,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   async function generate() {
     setGenerationError(null);
     const promptForGeneration = activePrompt.trim();
-    if (frameReferenceConflict) {
-      setGenerationError('Veo start/end frame mode cannot be combined with image references.');
-      return;
-    }
     if (promptMode === 'structured') {
       const missing = missingRequiredStructuredSections(selectedModel, structuredPrompt);
       if (missing.length > 0) {
@@ -542,7 +509,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         startFrame,
         endFrame,
         sourceVideo,
-        referenceImages: referenceImageAssets,
+        referenceImages: startFrame || endFrame ? [] : referenceImageAssets,
       });
       const payload = await buildGoogleVeoPredictRequest(mutation);
 
@@ -633,8 +600,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setModel(recipe.model);
     const nextStartFrame = recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null;
     const nextEndFrame = recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null;
-    const nextFrameMode = Boolean(nextStartFrame || nextEndFrame);
-    setPrompt(nextFrameMode ? stripIndexedImageTokensFromPromptText(recipe.prompt) : recipe.prompt);
+    setPrompt(recipe.prompt);
     setPromptMode(recipe.promptMode ?? 'freeform');
     setStructuredPrompt(recipe.structuredPrompt ?? {});
     setAspect((recipe.aspect as Aspect) || '16:9');
@@ -647,7 +613,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = nextSourceVideo || nextFrameMode ? [] : recipe.referenceAssetIds
+    const selectedRefs = nextSourceVideo ? [] : recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
       .filter((a) => a.kind === 'image')
@@ -795,7 +761,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs text-slate-400">Image references</span>
               <button
-                disabled={!isReferencesFeatureSupported(selectedModel) || references.length >= imageReferenceLimit || Boolean(sourceVideo || startFrame || endFrame)}
+                disabled={!isReferencesFeatureSupported(selectedModel) || references.length >= imageReferenceLimit || Boolean(sourceVideo)}
                 className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-xs hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => {
                   setPickerMode('reference');
@@ -812,7 +778,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             )}
             {isReferencesFeatureSupported(selectedModel) && (
               <div className="mb-2 text-[11px] text-slate-500">
-                Up to {imageReferenceLimit} image references. Reference-image, frame, and source-video modes are mutually exclusive.
+                Up to {imageReferenceLimit} image references. Start/end frames take precedence over image references.
+              </div>
+            )}
+            {referencesIgnoredByFrameMode && (
+              <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+                References will not be used since start / end frame is specified.
               </div>
             )}
             <div className="flex flex-wrap gap-2">
@@ -919,16 +890,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
           onPick={(asset) => {
             if (pickerMode === 'start') {
               setStartFrame(asset.kind === 'image' ? asset : null);
-              if (asset.kind === 'image') {
-                setSourceVideo(null);
-                clearReferenceAssets();
-              }
+              if (asset.kind === 'image') setSourceVideo(null);
             } else if (pickerMode === 'end') {
               setEndFrame(asset.kind === 'image' ? asset : null);
-              if (asset.kind === 'image') {
-                setSourceVideo(null);
-                clearReferenceAssets();
-              }
+              if (asset.kind === 'image') setSourceVideo(null);
             } else if (pickerMode === 'source-video') {
               const validSource = asset.kind === 'video' && isVeoArtifactValid(asset);
               setSourceVideo(validSource ? asset : null);
