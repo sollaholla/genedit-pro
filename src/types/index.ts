@@ -29,6 +29,9 @@ export type MediaAsset = {
     progress?: number;
     estimatedCostUsd?: number;
     actualCostUsd?: number;
+    provider?: string;
+    providerArtifactUri?: string;
+    providerArtifactExpiresAt?: number;
   };
   recipe?: GenerateRecipe;
   createdAt: number;

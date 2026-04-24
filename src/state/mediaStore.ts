@@ -40,7 +40,16 @@ type MediaState = {
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
   finalizeGeneratedAsset: (id: string) => void;
-  finalizeGeneratedAssetWithBlob: (id: string, file: File, actualCostUsd?: number) => Promise<void>;
+  finalizeGeneratedAssetWithBlob: (
+    id: string,
+    file: File,
+    metadata?: {
+      actualCostUsd?: number;
+      provider?: string;
+      providerArtifactUri?: string;
+      providerArtifactExpiresAt?: number;
+    },
+  ) => Promise<void>;
   failGeneratedAsset: (id: string, actualCostUsd?: number) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
 };
@@ -161,7 +170,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     set({ assets: next });
   },
 
-  finalizeGeneratedAssetWithBlob: async (id, file, actualCostUsd) => {
+  finalizeGeneratedAssetWithBlob: async (id, file, metadata = {}) => {
     const probed = await probe(file);
     const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
     const blobKey = `blob_${nanoid(12)}`;
@@ -182,7 +191,10 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             status: 'done' as const,
             progress: 100,
             estimatedCostUsd: a.generation?.estimatedCostUsd,
-            actualCostUsd: actualCostUsd ?? a.generation?.estimatedCostUsd,
+            actualCostUsd: metadata.actualCostUsd ?? a.generation?.estimatedCostUsd,
+            provider: metadata.provider ?? a.generation?.provider,
+            providerArtifactUri: metadata.providerArtifactUri ?? a.generation?.providerArtifactUri,
+            providerArtifactExpiresAt: metadata.providerArtifactExpiresAt ?? a.generation?.providerArtifactExpiresAt,
           },
         }
       : a));

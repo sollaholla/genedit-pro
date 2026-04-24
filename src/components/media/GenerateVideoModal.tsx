@@ -14,7 +14,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { createMockGeneratedVideo } from '@/lib/media/mockVideoGenerator';
-import { buildGoogleVeoPredictRequest, generatedVideoUriFromOperation } from '@/lib/videoGeneration/googleVeo';
+import {
+  buildGoogleVeoPredictRequest,
+  GOOGLE_VEO_ARTIFACT_TTL_MS,
+  generatedVideoUriFromOperation,
+  isVeoArtifactValid,
+} from '@/lib/videoGeneration/googleVeo';
 import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
 import {
   DEFAULT_VIDEO_MODELS,
@@ -50,9 +55,16 @@ type RefToken = {
   thumbnail?: string;
 };
 
+type GoogleApiError = {
+  code?: number;
+  message?: string;
+  status?: string;
+};
+
 type VideoGenerationOperation = {
   name?: string;
   done?: boolean;
+  error?: GoogleApiError;
   response?: {
     generatedVideos?: Array<{
       video?: {
@@ -158,7 +170,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         return;
       }
       const key = await decryptSecret(encryptedKey);
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+        headers: { 'x-goog-api-key': key },
+      });
       if (!res.ok) throw new Error(`Unable to fetch models: ${res.status}`);
       const data = await res.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> };
       const available = sortModelsByPriority((data.models ?? [])
@@ -201,7 +215,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
-    const nextSourceVideo = recipe.sourceVideoAssetId ? assets.find((a) => a.id === recipe.sourceVideoAssetId) ?? null : null;
+    const nextSourceVideo = recipe.sourceVideoAssetId
+      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && isVeoArtifactValid(a)) ?? null
+      : null;
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null);
     setEndFrame(nextSourceVideo ? null : recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null);
@@ -234,7 +250,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       setStartFrame(null);
       setEndFrame(null);
     }
-    if (!sourceVideoSupported) setSourceVideo(null);
+    if (!sourceVideoSupported || (sourceVideo && !isVeoArtifactValid(sourceVideo))) setSourceVideo(null);
     if (references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
     setAudioEnabled(isAudioFeatureSupported(selectedModel));
   }, [
@@ -247,6 +263,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     resolution,
     resolutionOptions,
     selectedModel,
+    sourceVideo,
     sourceVideoSupported,
   ]);
 
@@ -384,8 +401,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         setEndFrame(first.kind === 'image' ? first : null);
         if (first.kind === 'image') setSourceVideo(null);
       } else if (pickerMode === 'source-video') {
-        setSourceVideo(first.kind === 'video' ? first : null);
-        if (first.kind === 'video') {
+        const validSource = first.kind === 'video' && isVeoArtifactValid(first);
+        setSourceVideo(validSource ? first : null);
+        if (validSource) {
           setStartFrame(null);
           setEndFrame(null);
           setReferences([]);
@@ -398,6 +416,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
 
   async function generate() {
     setGenerationError(null);
+    if (sourceVideo && !isVeoArtifactValid(sourceVideo)) {
+      setGenerationError('This Veo source video is older than 48 hours and can no longer be extended.');
+      return;
+    }
     setIsGenerating(true);
     const encryptedKey = localStorage.getItem(KEY_STORAGE);
     const useLocalGenerator = import.meta.env.DEV || !encryptedKey;
@@ -417,7 +439,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
           audioEnabled,
           onProgress: (progress) => updateGenerationProgress(id, progress),
         });
-        await finalizeGeneratedAssetWithBlob(id, file, generationCostUsd);
+        await finalizeGeneratedAssetWithBlob(id, file, { actualCostUsd: generationCostUsd });
         onClose();
         return;
       }
@@ -442,33 +464,45 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       });
       const payload = await buildGoogleVeoPredictRequest(mutation);
 
-      const opRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:predictLongRunning?key=${encodeURIComponent(apiKey)}`, {
+      const opRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:predictLongRunning`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
         body: JSON.stringify(payload),
       });
-      if (!opRes.ok) throw new Error(`Generation request failed (${opRes.status}).`);
+      if (!opRes.ok) throw new Error(await googleApiErrorMessage(opRes, 'Generation request failed'));
 
       let operation = await opRes.json() as VideoGenerationOperation;
+      if (operation.error) throw new Error(formatGoogleOperationError(operation.error));
       if (!operation.name) throw new Error('Generation operation did not return an operation id.');
       let spinnerProgress = 5;
       while (!operation.done) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         spinnerProgress = Math.min(95, spinnerProgress + 10);
         updateGenerationProgress(id, spinnerProgress);
-        const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operation.name}?key=${encodeURIComponent(apiKey)}`);
-        if (!pollRes.ok) throw new Error(`Generation poll failed (${pollRes.status}).`);
+        const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operation.name}`, {
+          headers: { 'x-goog-api-key': apiKey },
+        });
+        if (!pollRes.ok) throw new Error(await googleApiErrorMessage(pollRes, 'Generation poll failed'));
         operation = await pollRes.json() as VideoGenerationOperation;
+        if (operation.error) throw new Error(formatGoogleOperationError(operation.error));
       }
 
       const fileUri = generatedVideoUriFromOperation(operation);
       if (!fileUri) throw new Error('No generated video URI returned by API.');
 
       const videoRes = await fetch(fileUri, { headers: { 'x-goog-api-key': apiKey } });
-      if (!videoRes.ok) throw new Error(`Failed downloading generated video (${videoRes.status}).`);
+      if (!videoRes.ok) throw new Error(await googleApiErrorMessage(videoRes, 'Failed downloading generated video'));
       const blob = await videoRes.blob();
       const file = new File([blob], `generated_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
-      await finalizeGeneratedAssetWithBlob(id, file, generationCostUsd);
+      await finalizeGeneratedAssetWithBlob(id, file, {
+        actualCostUsd: generationCostUsd,
+        provider: 'google-veo',
+        providerArtifactUri: fileUri,
+        providerArtifactExpiresAt: Date.now() + GOOGLE_VEO_ARTIFACT_TTL_MS,
+      });
       onClose();
     } catch (err) {
       failGeneratedAsset(id, generationCostUsd);
@@ -514,7 +548,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
-    const nextSourceVideo = recipe.sourceVideoAssetId ? assets.find((a) => a.id === recipe.sourceVideoAssetId) ?? null : null;
+    const nextSourceVideo = recipe.sourceVideoAssetId
+      ? assets.find((a) => a.id === recipe.sourceVideoAssetId && isVeoArtifactValid(a)) ?? null
+      : null;
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : recipe.startFrameAssetId ? assets.find((a) => a.id === recipe.startFrameAssetId) ?? null : null);
     setEndFrame(nextSourceVideo ? null : recipe.endFrameAssetId ? assets.find((a) => a.id === recipe.endFrameAssetId) ?? null : null);
@@ -718,7 +754,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             <button
               type="button"
               onClick={generate}
-              disabled={!prompt.trim() || isGenerating}
+              disabled={!prompt.trim() || isGenerating || Boolean(sourceVideo && !isVeoArtifactValid(sourceVideo))}
               className="inline-flex h-9 items-center rounded-full bg-white px-4 text-sm font-semibold text-black transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-500"
             >
               {isGenerating ? 'Generating...' : (
@@ -779,8 +815,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               setEndFrame(asset.kind === 'image' ? asset : null);
               if (asset.kind === 'image') setSourceVideo(null);
             } else if (pickerMode === 'source-video') {
-              setSourceVideo(asset.kind === 'video' ? asset : null);
-              if (asset.kind === 'video') {
+              const validSource = asset.kind === 'video' && isVeoArtifactValid(asset);
+              setSourceVideo(validSource ? asset : null);
+              if (validSource) {
                 setStartFrame(null);
                 setEndFrame(null);
                 setReferences([]);
@@ -991,8 +1028,11 @@ function MediaPicker({
   const visibleAssets = pickerMode === 'reference'
     ? assets.filter((a) => a.kind === 'image')
     : pickerMode === 'source-video'
-      ? assets.filter((a) => a.kind === 'video')
+      ? assets.filter((a) => a.kind === 'video' && isVeoArtifactValid(a))
       : assets.filter((a) => a.kind === 'image');
+  const expiredSourceCount = pickerMode === 'source-video'
+    ? assets.filter((a) => a.kind === 'video' && a.generation?.provider === 'google-veo' && !isVeoArtifactValid(a)).length
+    : 0;
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
     return [...visibleAssets]
@@ -1014,7 +1054,7 @@ function MediaPicker({
   const helperText = pickerMode === 'reference'
     ? 'Choose up to three image references.'
     : pickerMode === 'source-video'
-      ? 'Choose one Veo-generated video source for extension.'
+      ? 'Choose one active Veo-generated video source for extension.'
       : 'Only image assets are valid for frame slots.';
   const title = pickerMode === 'source-video' ? 'Pick source video' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
@@ -1040,7 +1080,9 @@ function MediaPicker({
             />
           </label>
           <SortPills value={sortKey} onChange={setSortKey} />
-          <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
+          {pickerMode !== 'source-video' && (
+            <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
+          )}
         </div>
         </div>
         <div className="max-h-[430px] overflow-auto p-2">
@@ -1067,6 +1109,11 @@ function MediaPicker({
           ))}
           {filteredAssets.length === 0 && <div className="col-span-full rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
           </div>
+          {expiredSourceCount > 0 && (
+            <div className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-100/80">
+              {expiredSourceCount} Veo source {expiredSourceCount === 1 ? 'video is' : 'videos are'} older than 48 hours and hidden from extension references.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1104,4 +1151,21 @@ function SortPills({
 function formatShortDate(timestamp: number) {
   if (!timestamp) return '';
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+async function googleApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  const body = await response.text().catch(() => '');
+  if (!body) return `${fallback} (${response.status}).`;
+  try {
+    const parsed = JSON.parse(body) as { error?: GoogleApiError };
+    if (parsed.error) return `${fallback} (${response.status}): ${formatGoogleOperationError(parsed.error)}`;
+  } catch {
+    // fall through to trimmed body
+  }
+  return `${fallback} (${response.status}): ${body.slice(0, 300)}`;
+}
+
+function formatGoogleOperationError(error: GoogleApiError): string {
+  const message = error.message || 'Google returned an unknown error.';
+  return error.status ? `${error.status}: ${message}` : message;
 }
