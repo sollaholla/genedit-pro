@@ -83,6 +83,7 @@ export function Timeline() {
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
   const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{ componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null>(null);
+  const [collapsedComponents, setCollapsedComponents] = useState<Set<number>>(new Set());
 
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
   // A Set version for O(1) membership checks in the render path.
@@ -104,7 +105,11 @@ export function Timeline() {
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
   const selectedTrackId = selectedClip?.trackId ?? null;
-  const keyframeLaneHeight = selectedClip ? laneHeightForClip(selectedClip) : 0;
+  const visibleKeyframeProperties = useMemo(() => {
+    if (!selectedClip) return [];
+    return getKeyframeProperties(selectedClip).filter((row) => !collapsedComponents.has(row.componentIndex));
+  }, [selectedClip, collapsedComponents]);
+  const keyframeLaneHeight = selectedClip ? laneHeightForClip(visibleKeyframeProperties.length, getTransformComponents(selectedClip).length) : 0;
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -573,7 +578,18 @@ export function Timeline() {
                     onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
                   />
                   {selectedTrackId === t.id && (
-                    <KeyframeSidebarLane clip={selectedClip} />
+                    <KeyframeSidebarLane
+                      clip={selectedClip}
+                      collapsedComponents={collapsedComponents}
+                      onToggleComponent={(componentIndex) => {
+                        setCollapsedComponents((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(componentIndex)) next.delete(componentIndex);
+                          else next.add(componentIndex);
+                          return next;
+                        });
+                      }}
+                    />
                   )}
                 </div>
               ))}
@@ -622,6 +638,7 @@ export function Timeline() {
                       clip={selectedClip}
                       pxPerSec={pxPerSec}
                       selectedKeyframe={selectedKeyframe}
+                      visibleProperties={visibleKeyframeProperties}
                       onSelectKeyframe={(meta) => {
                         setSelectedKeyframe(meta);
                         setCurrentTime(selectedClip.startSec + meta.timeSec);
@@ -689,18 +706,20 @@ function KeyframeTrackLane({
   clip,
   pxPerSec,
   selectedKeyframe,
+  visibleProperties,
   onSelectKeyframe,
 }: {
   clip: Clip;
   pxPerSec: number;
   selectedKeyframe: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null;
+  visibleProperties: Array<KeyframePropertyRow>;
   onSelectKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
 }) {
   const transforms = getTransformComponents(clip);
   if (transforms.length === 0) return null;
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(clipTimelineDurationSec(clip), pxPerSec));
-  const properties = getKeyframeProperties(clip);
+  const properties = visibleProperties;
 
   return (
     <div className="border-b border-surface-800 bg-[#0c1222] py-1.5">
@@ -755,15 +774,21 @@ function KeyframeTrackLane({
   );
 }
 
-function laneHeightForClip(clip: Clip): number {
-  const rows = getKeyframeProperties(clip).length;
-  if (rows === 0) return 0;
-  return Math.min(240, 20 + rows * 40);
+type KeyframePropertyRow = {
+  label: string;
+  componentIndex: number;
+  property: 'scale' | 'offsetX' | 'offsetY';
+  points: Array<{ id: string; timeSec: number; value: number }>;
+};
+
+function laneHeightForClip(visibleRows: number, totalComponents: number): number {
+  if (totalComponents === 0) return 0;
+  return Math.min(260, 20 + totalComponents * 26 + visibleRows * 34);
 }
 
-function getKeyframeProperties(clip: Clip): Array<{ label: string; componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; points: Array<{ id: string; timeSec: number; value: number }> }> {
+function getKeyframeProperties(clip: Clip): Array<KeyframePropertyRow> {
   const transforms = getTransformComponents(clip);
-  const properties: Array<{ label: string; componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
+  const properties: Array<KeyframePropertyRow> = [];
   transforms.forEach((component, index) => {
     properties.push({ label: `Transform ${index + 1}.offsetX`, componentIndex: index, property: 'offsetX', points: component.data.keyframes.offsetX });
     properties.push({ label: `Transform ${index + 1}.offsetY`, componentIndex: index, property: 'offsetY', points: component.data.keyframes.offsetY });
@@ -772,19 +797,51 @@ function getKeyframeProperties(clip: Clip): Array<{ label: string; componentInde
   return properties;
 }
 
-function KeyframeSidebarLane({ clip }: { clip: Clip | null }) {
+function KeyframeSidebarLane({
+  clip,
+  collapsedComponents,
+  onToggleComponent,
+}: {
+  clip: Clip | null;
+  collapsedComponents: Set<number>;
+  onToggleComponent: (componentIndex: number) => void;
+}) {
   if (!clip) return null;
+  const components = getTransformComponents(clip);
   const properties = getKeyframeProperties(clip);
   if (properties.length === 0) return null;
   return (
-    <div className="border-b border-surface-800 bg-[#0c1222] px-2 py-1.5" style={{ height: laneHeightForClip(clip) }}>
+    <div
+      className="border-b border-surface-800 bg-[#0c1222] px-2 py-1.5"
+      style={{ height: laneHeightForClip(properties.filter((p) => !collapsedComponents.has(p.componentIndex)).length, components.length) }}
+    >
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
       <div className="max-h-[220px] overflow-auto">
-        {properties.map((row) => (
-          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1 text-[11px] text-slate-400">
-            {row.label}
-          </div>
-        ))}
+        {components.map((_, componentIndex) => {
+          const groupRows = properties.filter((row) => row.componentIndex === componentIndex);
+          const collapsed = collapsedComponents.has(componentIndex);
+          return (
+            <div key={`group-${componentIndex}`} className="mb-1 rounded border border-surface-800 bg-surface-900/70 px-1.5 py-1">
+              <button
+                type="button"
+                className="mb-1 flex w-full items-center justify-between text-left text-[11px] font-medium text-slate-300"
+                onClick={() => onToggleComponent(componentIndex)}
+              >
+                <span>{`Transform ${componentIndex + 1}`}</span>
+                <span className="text-slate-500">{collapsed ? '▸' : '▾'}</span>
+              </button>
+              {!collapsed && (
+                <div className="space-y-1 pl-3">
+                  {groupRows.map((row) => (
+                    <div key={row.label} className="rounded bg-surface-900/80 px-1.5 py-0.5 text-[11px] text-slate-400">
+                      {row.label.split('.').at(-1)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
