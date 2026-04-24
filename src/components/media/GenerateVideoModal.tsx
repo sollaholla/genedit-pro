@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { decryptSecret } from '@/lib/settings/crypto';
 import {
   DEFAULT_VIDEO_MODELS,
+  GOOGLE_ALLOWED_VIDEO_MODEL_IDS,
   buildRemoteVideoModelDefinition,
   isAdultContentFeatureSupported,
   isAspectFeatureSupported,
@@ -11,6 +12,7 @@ import {
   isReferencesFeatureSupported,
   isResolutionFeatureSupported,
   isVeoModel,
+  sortModelsByPriority,
   type Aspect,
   type VideoModelDefinition,
 } from '@/lib/videoModels/capabilities';
@@ -39,7 +41,6 @@ const MODEL_PRICING_PER_SECOND_USD: Record<string, Partial<Record<'720p' | '1080
   // https://ai.google.dev/gemini-api/docs/pricing#veo-3.1
   'veo-3.1-generate-preview': { '720p': 0.4, '1080p': 0.4, '4k': 0.6 },
   'veo-3.1-fast-generate-preview': { '720p': 0.1, '1080p': 0.12, '4k': 0.3 },
-  'veo-3.1-lite-generate-preview': { '720p': 0.05, '1080p': 0.08 },
 };
 export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecipeAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
@@ -166,31 +167,35 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     try {
       const encryptedKey = localStorage.getItem(KEY_STORAGE);
       if (!encryptedKey) {
-        setModels(DEFAULT_VIDEO_MODELS);
-        setModel(DEFAULT_VIDEO_MODELS[0].id);
+        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+        setModels(prioritized);
+        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
         return;
       }
       const key = await decryptSecret(encryptedKey);
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
       if (!res.ok) throw new Error(`Unable to fetch models: ${res.status}`);
       const data = await res.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> };
-      const available = (data.models ?? [])
+      const available = sortModelsByPriority((data.models ?? [])
         .filter((m) => (m.supportedGenerationMethods ?? []).some((method) => method.toLowerCase().includes('video')) || m.name.toLowerCase().includes('veo'))
+        .filter((m) => GOOGLE_ALLOWED_VIDEO_MODEL_IDS.has(m.name.replace('models/', '')))
         .map((m) => {
           const id = m.name.replace('models/', '');
           const fallback = DEFAULT_VIDEO_MODELS.find((fm) => fm.id === id);
           return buildRemoteVideoModelDefinition(m, fallback);
-        });
+        }));
       if (available.length) {
         setModels(available);
-        setModel(available[0].id);
+        if (!initialRecipeAsset?.recipe) setModel(available[0]!.id);
       } else {
-        setModels(DEFAULT_VIDEO_MODELS);
-        setModel(DEFAULT_VIDEO_MODELS[0].id);
+        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+        setModels(prioritized);
+        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
       }
     } catch {
-      setModels(DEFAULT_VIDEO_MODELS);
-      setModel(DEFAULT_VIDEO_MODELS[0].id);
+      const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
+      setModels(prioritized);
+      if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
     } finally {
       setLoadingModels(false);
     }

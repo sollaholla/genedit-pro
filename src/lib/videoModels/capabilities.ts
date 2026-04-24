@@ -13,6 +13,7 @@ export type VideoModelDefinition = {
   id: string;
   label: string;
   provider: 'veo' | 'generic';
+  priority: number;
   capabilities: VideoModelCapabilities;
 };
 
@@ -25,6 +26,7 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     id: 'veo-3.1-generate-preview',
     label: 'Veo 3.1 (Preview)',
     provider: 'veo',
+    priority: 100,
     capabilities: {
       references: false,
       audio: true,
@@ -38,6 +40,7 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     id: 'veo-3.1-fast-generate-preview',
     label: 'Veo 3.1 Fast (Preview)',
     provider: 'veo',
+    priority: 80,
     capabilities: {
       references: false,
       audio: true,
@@ -48,6 +51,8 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     },
   },
 ];
+
+export const GOOGLE_ALLOWED_VIDEO_MODEL_IDS = new Set(DEFAULT_VIDEO_MODELS.map((m) => m.id));
 
 export function isVeoModel(model: VideoModelDefinition): boolean {
   return model.provider === 'veo' || model.id.toLowerCase().includes('veo');
@@ -84,6 +89,7 @@ export function buildRemoteVideoModelDefinition(input: { name: string; displayNa
     id,
     label: input.displayName || id,
     provider: veo ? 'veo' : 'generic',
+    priority: fallback?.priority ?? (veo ? 50 : 10),
     capabilities: fallback?.capabilities ?? {
       references: !veo,
       audio: veo,
@@ -93,4 +99,8 @@ export function buildRemoteVideoModelDefinition(input: { name: string; displayNa
       aspects: [...DEFAULT_ASPECTS],
     },
   };
+}
+
+export function sortModelsByPriority(models: VideoModelDefinition[]): VideoModelDefinition[] {
+  return [...models].sort((a, b) => b.priority - a.priority || a.label.localeCompare(b.label));
 }
