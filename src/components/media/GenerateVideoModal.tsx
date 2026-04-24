@@ -466,7 +466,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       return;
     }
     if (sourceVideo && !isVeoArtifactValid(sourceVideo)) {
-      setGenerationError('This Veo source video is older than 48 hours and can no longer be extended.');
+      setGenerationError('This Veo video reference is older than 48 hours and can no longer be extended.');
       return;
     }
     setIsGenerating(true);
@@ -694,7 +694,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               onClear={() => setEndFrame(null)}
             />
             <FrameRefButton
-              label="Source video"
+              label="Video reference"
               value={sourceVideo}
               disabled={!sourceVideoSupported || Boolean(startFrame || endFrame || references.length)}
               onClick={() => {
@@ -1072,7 +1072,7 @@ function RecipePicker({
                     <span>{modelLabelFor(recipe.model)}</span>
                     <span>{recipe.resolution}</span>
                     {recipe.referenceAssetIds.length > 0 && <span>{recipe.referenceAssetIds.length} refs</span>}
-                    {recipe.sourceVideoAssetId && <span>source video</span>}
+                    {recipe.sourceVideoAssetId && <span>video reference</span>}
                     <span>{formatShortDate(asset.createdAt)}</span>
                   </div>
                 </div>
@@ -1215,9 +1215,9 @@ function MediaPicker({
   const helperText = pickerMode === 'reference'
     ? 'Choose up to three image references.'
     : pickerMode === 'source-video'
-      ? 'Choose one active Veo-generated video source for extension.'
+      ? 'Choose one active Veo-generated video reference for extension.'
       : 'Only image assets are valid for frame slots.';
-  const title = pickerMode === 'source-video' ? 'Pick source video' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
+  const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
       <div className="w-[min(820px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
@@ -1272,7 +1272,7 @@ function MediaPicker({
           </div>
           {expiredSourceCount > 0 && (
             <div className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-100/80">
-              {expiredSourceCount} Veo source {expiredSourceCount === 1 ? 'video is' : 'videos are'} older than 48 hours and hidden from extension references.
+              {expiredSourceCount} Veo video {expiredSourceCount === 1 ? 'reference is' : 'references are'} older than 48 hours and hidden from extension references.
             </div>
           )}
         </div>
