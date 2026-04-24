@@ -1,13 +1,19 @@
 import { useState } from 'react';
-import { BookOpen, Diamond, Film, Image as ImageIcon, Loader2, Music, RotateCcw, Volume2 } from 'lucide-react';
-import { nanoid } from 'nanoid';
+import { ArrowDown, ArrowUp, BookOpen, Diamond, Film, GripVertical, Image as ImageIcon, Loader2, Music, Plus, RotateCcw, Search, Trash2, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
 import { clipSpeed, clipTimelineDurationSec, setClipProp } from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
-import { createDefaultTransformComponent, getTransformComponents } from '@/lib/components/transform';
+import {
+  addTransformKeyframeAtTime,
+  createDefaultTransformComponent,
+  getTransformComponents,
+  reorderTransformComponents,
+  setTransformPropertyAtTime,
+  type TransformProperty,
+} from '@/lib/components/transform';
 
 const kindIcon = { video: Film, audio: Music, image: ImageIcon, recipe: BookOpen };
 
@@ -15,8 +21,11 @@ export function ClipInspector() {
   const [applyingSpeed, setApplyingSpeed] = useState(false);
   const [componentPickerOpen, setComponentPickerOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState('');
+  const [draggingComponentId, setDraggingComponentId] = useState<string | null>(null);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
+  const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
+  const setActiveTransformComponentId = usePlaybackStore((s) => s.setActiveTransformComponentId);
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
@@ -50,7 +59,6 @@ export function ClipInspector() {
   const Icon = asset ? kindIcon[asset.kind] : Film;
 
   const setVolume = (v: number) => update((p) => setClipProp(p, selectedId, 'volume', v));
-  const setScale = (v: number) => update((p) => setClipProp(p, selectedId, 'scale', v));
   const setSpeedAsync = async (nextSpeed: number) => {
     setApplyingSpeed(true);
     // Keep speed updates async so any future time-stretch preprocessing
@@ -64,6 +72,13 @@ export function ClipInspector() {
     !!clip.volumeEnvelope &&
     (clip.volumeEnvelope.points.length !== 2 ||
       clip.volumeEnvelope.points.some((p) => p.v !== 1 || p.curvature !== 0));
+  const transformComponents = getTransformComponents(clip);
+  const componentOptions = [
+    { id: 'transform', label: 'Transform', description: 'Position/scale offsets and keyframes.' },
+  ];
+  const filteredComponentOptions = componentOptions.filter((option) => (
+    `${option.label} ${option.description}`.toLowerCase().includes(componentSearch.trim().toLowerCase())
+  ));
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -185,120 +200,163 @@ export function ClipInspector() {
 
       <Section label="Components">
         <div className="space-y-2">
-          <button
-            type="button"
-            className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
-            disabled={asset?.kind !== 'video'}
-            onClick={() => setComponentPickerOpen(true)}
-          >
-            Add Component
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] text-slate-500">{transformComponents.length} active</div>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
+              disabled={asset?.kind !== 'video'}
+              onClick={() => setComponentPickerOpen(true)}
+            >
+              <Plus size={12} />
+              Add
+            </button>
+          </div>
           {componentPickerOpen && (
             <div className="rounded border border-surface-700 bg-surface-900 p-2.5">
-              <input
-                value={componentSearch}
-                onChange={(e) => setComponentSearch(e.target.value)}
-                placeholder="Search components…"
-                className="mb-2 w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-slate-100 outline-none"
-              />
-              {['transform']
-                .filter((name) => name.includes(componentSearch.trim().toLowerCase()))
-                .map((name) => (
+              <div className="mb-2 flex items-center gap-1.5 rounded border border-surface-600 bg-surface-800 px-2 py-1">
+                <Search size={12} className="text-slate-500" />
+                <input
+                  value={componentSearch}
+                  onChange={(e) => setComponentSearch(e.target.value)}
+                  placeholder="Search components..."
+                  className="min-w-0 flex-1 bg-transparent text-xs text-slate-100 outline-none"
+                />
+                <button
+                  type="button"
+                  className="text-slate-500 hover:text-slate-200"
+                  onClick={() => {
+                    setComponentPickerOpen(false);
+                    setComponentSearch('');
+                  }}
+                  title="Close"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              {filteredComponentOptions.map((option) => (
                   <button
-                    key={name}
+                    key={option.id}
                     type="button"
                     className="mb-1 block w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700"
                     onClick={() => {
-                      if (name === 'transform') {
-                        update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), createDefaultTransformComponent()]));
+                      if (option.id === 'transform') {
+                        const nextComponent = createDefaultTransformComponent();
+                        update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), nextComponent]));
+                        setActiveTransformComponentId(nextComponent.id);
                       }
                       setComponentPickerOpen(false);
                       setComponentSearch('');
                     }}
                   >
-                    <div className="font-medium">Transform</div>
-                    <div className="text-[10px] text-slate-400">Position/scale offsets and keyframes.</div>
+                    <div className="font-medium">{option.label}</div>
+                    <div className="text-[10px] text-slate-400">{option.description}</div>
                   </button>
                 ))}
-              <button
-                type="button"
-                className="mt-1 rounded px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200"
-                onClick={() => {
-                  setComponentPickerOpen(false);
-                  setComponentSearch('');
-                }}
-              >
-                Close
-              </button>
+              {filteredComponentOptions.length === 0 && (
+                <div className="rounded border border-dashed border-surface-700 px-2 py-2 text-[11px] text-slate-500">No matching components.</div>
+              )}
             </div>
           )}
-          {getTransformComponents(clip).length === 0 && (
+          {transformComponents.length === 0 && (
             <div className="rounded border border-dashed border-surface-600 bg-surface-900/30 p-2.5 text-[11px] text-slate-500">
               No components on this clip yet.
             </div>
           )}
-          {getTransformComponents(clip).map((component, idx) => {
-            const components = getTransformComponents(clip);
-            const setComponents = (next: typeof components) => update((p) => setClipProp(p, selectedId, 'components', next));
-            const updateData = (patch: Partial<typeof component.data>) =>
-              setComponents(components.map((c) => (c.id === component.id ? { ...c, data: { ...c.data, ...patch } } : c)));
-            const setPropertyAtPlayhead = (property: 'scale' | 'offsetX' | 'offsetY', value: number) => {
-              const localTimeSec = Math.max(0, currentTime - clip.startSec);
-              const points = component.data.keyframes[property];
-              if (points.length === 0) {
-                updateData({ [property]: value });
-                return;
-              }
-              let matched = false;
-              const updatedPoints = points.map((k) => {
-                if (Math.abs(k.timeSec - localTimeSec) <= 1 / 120) {
-                  matched = true;
-                  return { ...k, value };
-                }
-                return k;
-              });
-              updateData({
-                [property]: value,
-                keyframes: {
-                  ...component.data.keyframes,
-                  [property]: matched ? updatedPoints : [...updatedPoints, { id: nanoid(8), timeSec: localTimeSec, value }],
-                },
-              });
+          {transformComponents.map((component, idx) => {
+            const setComponents = (next: typeof transformComponents) => update((p) => setClipProp(p, selectedId, 'components', next));
+            const setPropertyAtPlayhead = (property: TransformProperty, value: number) => {
+              update((p) => ({
+                ...p,
+                clips: p.clips.map((candidate) => (
+                  candidate.id === selectedId
+                    ? setTransformPropertyAtTime(candidate, { componentId: component.id, property }, currentTime, value)
+                    : candidate
+                )),
+              }));
+              setActiveTransformComponentId(component.id);
             };
-            const addPropertyKeyframe = (property: 'scale' | 'offsetX' | 'offsetY') => {
-              const value = component.data[property];
-              const entry = { id: nanoid(8), timeSec: Math.max(0, currentTime - clip.startSec), value };
-              updateData({
-                keyframes: {
-                  ...component.data.keyframes,
-                  [property]: [...component.data.keyframes[property], entry],
-                },
-              });
+            const addPropertyKeyframe = (property: TransformProperty) => {
+              update((p) => ({
+                ...p,
+                clips: p.clips.map((candidate) => (
+                  candidate.id === selectedId
+                    ? addTransformKeyframeAtTime(candidate, { componentId: component.id, property }, currentTime)
+                    : candidate
+                )),
+              }));
+              setActiveTransformComponentId(component.id);
             };
+            const moveComponent = (toIndex: number) => {
+              update((p) => ({
+                ...p,
+                clips: p.clips.map((candidate) => (
+                  candidate.id === selectedId ? reorderTransformComponents(candidate, idx, toIndex) : candidate
+                )),
+              }));
+              setActiveTransformComponentId(component.id);
+            };
+            const isActive = activeTransformComponentId === component.id || (!activeTransformComponentId && idx === transformComponents.length - 1);
             return (
-              <div key={component.id} className="space-y-3 rounded border border-surface-700 bg-surface-900/50 p-2.5">
+              <div
+                key={component.id}
+                className={`space-y-3 rounded border p-2.5 ${isActive ? 'border-brand-400 bg-brand-500/10' : 'border-surface-700 bg-surface-900/50'}`}
+                draggable
+                onMouseDown={() => setActiveTransformComponentId(component.id)}
+                onDragStart={(e) => {
+                  setDraggingComponentId(component.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  if (!draggingComponentId || draggingComponentId === component.id) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const fromIndex = transformComponents.findIndex((candidate) => candidate.id === draggingComponentId);
+                  if (fromIndex >= 0 && fromIndex !== idx) {
+                    update((p) => ({
+                      ...p,
+                      clips: p.clips.map((candidate) => (
+                        candidate.id === selectedId ? reorderTransformComponents(candidate, fromIndex, idx) : candidate
+                      )),
+                    }));
+                  }
+                  setDraggingComponentId(null);
+                }}
+                onDragEnd={() => setDraggingComponentId(null)}
+              >
                 <div className="flex items-center justify-between">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <GripVertical size={13} className="shrink-0 cursor-grab text-slate-500" />
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Transform #{idx + 1}</div>
+                      <div className="truncate text-[10px] text-slate-500">{isActive ? 'Preview edits target this component' : 'Click to target preview edits'}</div>
+                    </div>
+                  </div>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600"
-                      title="Add keyframe"
-                      onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((p) => addPropertyKeyframe(p as 'scale' | 'offsetX' | 'offsetY'))}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
+                      title="Add transform keyframes"
+                      onClick={() => ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty))}
                     >
                       <Diamond size={10} />
                     </button>
-                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} onClick={() => {
-                      const next = [...components];
-                      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={() => moveComponent(idx - 1)}>
+                      <ArrowUp size={11} />
+                    </button>
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={() => moveComponent(idx + 1)}>
+                      <ArrowDown size={11} />
+                    </button>
+                    <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={() => {
+                      const next = transformComponents.filter((candidate) => candidate.id !== component.id);
                       setComponents(next);
-                    }}>↑</button>
-                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === components.length - 1} onClick={() => {
-                      const next = [...components];
-                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                      setComponents(next);
-                    }}>↓</button>
-                    <button type="button" className="rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-surface-600" onClick={() => setComponents(components.filter((c) => c.id !== component.id))}>Remove</button>
+                      if (activeTransformComponentId === component.id) setActiveTransformComponentId(next.at(-1)?.id ?? null);
+                    }}>
+                      <Trash2 size={11} />
+                    </button>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
@@ -308,7 +366,6 @@ export function ClipInspector() {
                 <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(component.data.scale * 100)}%</span></div>
                 <input type="range" min={25} max={200} step={1} value={Math.round(component.data.scale * 100)} onChange={(e) => {
                   const next = Number(e.target.value) / 100;
-                  if (idx === 0) setScale(next);
                   setPropertyAtPlayhead('scale', next);
                 }} className="volume-slider w-full" />
                 <div className="flex items-center gap-2">

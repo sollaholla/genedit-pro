@@ -12,22 +12,13 @@ import {
 } from '@/lib/audio/context';
 import { PlayerControls } from './PlayerControls';
 import { FullscreenScrubBar } from './FullscreenScrubBar';
-import { getTransformComponents, resolveTransformAtTime } from '@/lib/components/transform';
-import { nanoid } from 'nanoid';
-
-const KEYFRAME_EPS_SEC = 1 / 120;
-
-function upsertKeyframeValue(track: Array<{ id: string; timeSec: number; value: number }>, timeSec: number, value: number) {
-  let matched = false;
-  const updated = track.map((k) => {
-    if (Math.abs(k.timeSec - timeSec) <= KEYFRAME_EPS_SEC) {
-      matched = true;
-      return { ...k, value };
-    }
-    return k;
-  });
-  return matched ? updated : [...updated, { id: nanoid(8), timeSec, value }];
-}
+import {
+  getActiveTransformComponent,
+  getTransformComponents,
+  resolveTransformAtTime,
+  resolveTransformComponentAtTime,
+  setTransformPropertyAtTime,
+} from '@/lib/components/transform';
 
 function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -78,6 +69,8 @@ export function PreviewPlayer() {
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const pause = usePlaybackStore((s) => s.pause);
   const updateSilent = useProjectStore((s) => s.updateSilent);
+  const beginTx = useProjectStore((s) => s.beginTx);
+  const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -153,41 +146,29 @@ export function PreviewPlayer() {
       if (!clip) return;
       const components = getTransformComponents(clip);
       if (components.length === 0) return;
-      const top = components[components.length - 1]!;
+      const active = getActiveTransformComponent(clip, activeTransformComponentId);
+      if (!active) return;
       const startX = e.clientX;
       const startY = e.clientY;
-      const baseX = top.data.offsetX;
-      const baseY = top.data.offsetY;
+      const resolved = resolveTransformComponentAtTime(clip, active, currentTime);
+      const baseX = resolved.offsetX;
+      const baseY = resolved.offsetY;
+      beginTx();
 
       const onMove = (ev: MouseEvent) => {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
-        const localTimeSec = Math.max(0, currentTime - clip.startSec);
         const nextX = baseX + dx;
         const nextY = baseY + dy;
         updateSilent((p) => ({
           ...p,
           clips: p.clips.map((c) => (c.id === selectedId
-            ? {
-                ...c,
-                components: getTransformComponents(c).map((component, idx, arr) => (
-                  idx === arr.length - 1
-                    ? {
-                        ...component,
-                        data: {
-                          ...component.data,
-                          offsetX: nextX,
-                          offsetY: nextY,
-                          keyframes: {
-                            ...component.data.keyframes,
-                            offsetX: upsertKeyframeValue(component.data.keyframes.offsetX, localTimeSec, nextX),
-                            offsetY: upsertKeyframeValue(component.data.keyframes.offsetY, localTimeSec, nextY),
-                          },
-                        },
-                      }
-                    : component
-                )),
-              }
+            ? setTransformPropertyAtTime(
+              setTransformPropertyAtTime(c, { componentId: active.id, property: 'offsetX' }, currentTime, nextX),
+              { componentId: active.id, property: 'offsetY' },
+              currentTime,
+              nextY,
+            )
             : c)),
         }));
       };
@@ -201,7 +182,7 @@ export function PreviewPlayer() {
 
     el.addEventListener('mousedown', onDown);
     return () => el.removeEventListener('mousedown', onDown);
-  }, [project, currentTime, selectedClipIds, updateSilent]);
+  }, [project, currentTime, selectedClipIds, updateSilent, beginTx, activeTransformComponentId]);
 
   // Reconcile: one HTMLMediaElement + one GainNode per clip.
   useEffect(() => {

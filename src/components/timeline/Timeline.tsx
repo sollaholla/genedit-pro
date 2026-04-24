@@ -19,7 +19,6 @@ import { Playhead } from './Playhead';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
-import { getTransformComponents } from '@/lib/components/transform';
 import {
   addClip,
   addTrack,
@@ -41,6 +40,8 @@ import {
 } from '@/lib/timeline/operations';
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
+import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
+import { useKeyframeController } from './useKeyframeController';
 
 type DragOverlay = {
   clipId: string;
@@ -82,8 +83,6 @@ export function Timeline() {
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
   const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
-  const [selectedKeyframe, setSelectedKeyframe] = useState<{ componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null>(null);
-  const [collapsedComponents, setCollapsedComponents] = useState<Set<number>>(new Set());
 
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
   // A Set version for O(1) membership checks in the render path.
@@ -105,35 +104,29 @@ export function Timeline() {
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
   const selectedTrackId = selectedClip?.trackId ?? null;
-  const visibleKeyframeProperties = useMemo(() => {
-    if (!selectedClip) return [];
-    return getKeyframeProperties(selectedClip).filter((row) => !collapsedComponents.has(row.componentIndex));
-  }, [selectedClip, collapsedComponents]);
-  const keyframeLaneHeight = selectedClip ? laneHeightForClip(visibleKeyframeProperties.length, getTransformComponents(selectedClip).length) : 0;
-  const deleteSelectedKeyframe = useCallback(() => {
-    if (!selectedClip || !selectedKeyframe) return;
-    update((p) => ({
-      ...p,
-      clips: p.clips.map((c) => {
-        if (c.id !== selectedClip.id) return c;
-        const components = getTransformComponents(c).map((component, idx) => {
-          if (idx !== selectedKeyframe.componentIndex) return component;
-          return {
-            ...component,
-            data: {
-              ...component.data,
-              keyframes: {
-                ...component.data.keyframes,
-                [selectedKeyframe.property]: component.data.keyframes[selectedKeyframe.property].filter((k) => k.id !== selectedKeyframe.keyframeId),
-              },
-            },
-          };
-        });
-        return { ...c, components };
-      }),
-    }));
-    setSelectedKeyframe(null);
-  }, [selectedClip, selectedKeyframe, update]);
+  const {
+    collapsedComponents,
+    deleteSelectedKeyframe,
+    keyframeLaneHeight,
+    selectedKeyframe,
+    selectedKeyframeData,
+    setSelectedKeyframe,
+    setSelectedKeyframeValue,
+    beginKeyframeDrag,
+    moveKeyframe,
+    nudgeSelectedKeyframe,
+    selectKeyframe,
+    toggleComponentCollapse,
+    visibleKeyframeProperties,
+  } = useKeyframeController({
+    selectedClip,
+    currentTimeSec: currentTime,
+    fps: project.fps,
+    update,
+    updateSilent,
+    beginTx,
+    setCurrentTime,
+  });
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -222,12 +215,22 @@ export function Timeline() {
         update((p) => ids.reduce((proj, id) => removeClip(proj, id), p));
         selectClip(null);
       } else if (e.key === 'Escape') {
+        if (selectedKeyframe) {
+          setSelectedKeyframe(null);
+          return;
+        }
         selectClip(null);
+      } else if (selectedKeyframe && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') nudgeSelectedKeyframe('time', -1);
+        if (e.key === 'ArrowRight') nudgeSelectedKeyframe('time', 1);
+        if (e.key === 'ArrowUp') nudgeSelectedKeyframe('value', 1);
+        if (e.key === 'ArrowDown') nudgeSelectedKeyframe('value', -1);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard, selectedKeyframe, deleteSelectedKeyframe]);
+  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe]);
 
   // ---- Clip right-click context menu ----
   const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -415,7 +418,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [pxPerSec, snapTargets, selectClip, beginTx, updateSilent]);
+  }, [assetById, pxPerSec, snapTargets, selectClip, beginTx, updateSilent]);
 
   // ---- Asset drop from media bin ----
   const handleDropAsset = useCallback((trackId: string, assetId: string, startSec: number) => {
@@ -511,13 +514,6 @@ export function Timeline() {
     ? project.clips.find((c) => c.id === dragOverlay.clipId)
     : null;
   const ghostAsset = ghostClip ? assetById.get(ghostClip.assetId) : undefined;
-  const selectedKeyframeData = useMemo(() => {
-    if (!selectedClip || !selectedKeyframe) return null;
-    const properties = getKeyframeProperties(selectedClip);
-    const row = properties.find((r) => r.componentIndex === selectedKeyframe.componentIndex && r.property === selectedKeyframe.property);
-    const point = row?.points.find((p) => p.id === selectedKeyframe.keyframeId);
-    return point ? { ...selectedKeyframe, ...point } : null;
-  }, [selectedClip, selectedKeyframe]);
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-1.5">
@@ -550,26 +546,7 @@ export function Timeline() {
               onChange={(e) => {
                 const nextValue = Number(e.target.value);
                 if (!Number.isFinite(nextValue)) return;
-                update((p) => ({
-                  ...p,
-                  clips: p.clips.map((c) => {
-                    if (c.id !== selectedClip.id) return c;
-                    const components = getTransformComponents(c).map((component, idx) => {
-                      if (idx !== selectedKeyframeData.componentIndex) return component;
-                      const points = component.data.keyframes[selectedKeyframeData.property].map((k) => (
-                        k.id === selectedKeyframeData.keyframeId ? { ...k, value: nextValue } : k
-                      ));
-                      return {
-                        ...component,
-                        data: {
-                          ...component.data,
-                          keyframes: { ...component.data.keyframes, [selectedKeyframeData.property]: points },
-                        },
-                      };
-                    });
-                    return { ...c, components };
-                  }),
-                }));
+                setSelectedKeyframeValue(nextValue);
               }}
             />
             <button
@@ -617,14 +594,7 @@ export function Timeline() {
                     <KeyframeSidebarLane
                       clip={selectedClip}
                       collapsedComponents={collapsedComponents}
-                      onToggleComponent={(componentIndex) => {
-                        setCollapsedComponents((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(componentIndex)) next.delete(componentIndex);
-                          else next.add(componentIndex);
-                          return next;
-                        });
-                      }}
+                      onToggleComponent={toggleComponentCollapse}
                     />
                   )}
                 </div>
@@ -676,34 +646,9 @@ export function Timeline() {
                       selectedKeyframe={selectedKeyframe}
                       visibleProperties={visibleKeyframeProperties}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
-                      onMoveKeyframe={(meta) => {
-                        update((p) => ({
-                          ...p,
-                          clips: p.clips.map((c) => {
-                            if (c.id !== selectedClip.id) return c;
-                            const components = getTransformComponents(c).map((component, idx) => {
-                              if (idx !== meta.componentIndex) return component;
-                              const points = component.data.keyframes[meta.property].map((k) => (
-                                k.id === meta.keyframeId ? { ...k, timeSec: meta.timeSec } : k
-                              ));
-                              return {
-                                ...component,
-                                data: {
-                                  ...component.data,
-                                  keyframes: { ...component.data.keyframes, [meta.property]: points },
-                                },
-                              };
-                            });
-                            return { ...c, components };
-                          }),
-                        }));
-                        setSelectedKeyframe({ componentIndex: meta.componentIndex, property: meta.property, keyframeId: meta.keyframeId });
-                        setCurrentTime(selectedClip.startSec + meta.timeSec);
-                      }}
-                      onSelectKeyframe={(meta) => {
-                        setSelectedKeyframe(meta);
-                        setCurrentTime(selectedClip.startSec + meta.timeSec);
-                      }}
+                      onBeginKeyframeDrag={beginKeyframeDrag}
+                      onMoveKeyframe={moveKeyframe}
+                      onSelectKeyframe={selectKeyframe}
                     />
                   )}
                 </div>
@@ -759,188 +704,6 @@ export function Timeline() {
           onClose={() => setReplaceClipId(null)}
         />
       )}
-    </div>
-  );
-}
-
-function KeyframeTrackLane({
-  clip,
-  pxPerSec,
-  selectedKeyframe,
-  visibleProperties,
-  onDeselectKeyframe,
-  onMoveKeyframe,
-  onSelectKeyframe,
-}: {
-  clip: Clip;
-  pxPerSec: number;
-  selectedKeyframe: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string } | null;
-  visibleProperties: Array<KeyframePropertyRow>;
-  onDeselectKeyframe: () => void;
-  onMoveKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
-  onSelectKeyframe: (meta: { componentIndex: number; property: 'scale' | 'offsetX' | 'offsetY'; keyframeId: string; timeSec: number }) => void;
-}) {
-  const transforms = getTransformComponents(clip);
-  if (transforms.length === 0) return null;
-  const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
-  const clipWidthPx = Math.max(48, timeToPx(clipTimelineDurationSec(clip), pxPerSec));
-  const properties = visibleProperties;
-
-  return (
-    <div
-      className="border-b border-surface-800 bg-[#0c1222] py-1.5"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onDeselectKeyframe();
-      }}
-    >
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
-      <div className="max-h-[220px] overflow-auto">
-        {properties.map((row) => (
-          <div
-            key={row.label}
-            className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-0 py-1"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) onDeselectKeyframe();
-            }}
-          >
-            <div className="relative h-8 overflow-hidden rounded bg-[#0a0f1c]">
-              <div
-                className="absolute inset-y-0 border border-brand-400/40 bg-brand-500/10"
-                style={{ left: clipLeftPx, width: clipWidthPx }}
-              >
-                <svg className="h-full w-full" viewBox="0 0 500 32" preserveAspectRatio="none">
-                  {row.points.length > 1 && (
-                    <polyline
-                      points={row.points
-                        .sort((a, b) => a.timeSec - b.timeSec)
-                        .map((k) => {
-                          const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
-                          const x = (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500;
-                          return `${x},${16 - Math.max(-12, Math.min(12, k.value * 0.1))}`;
-                        })
-                        .join(' ')}
-                      fill="none"
-                      stroke="#7dd3fc"
-                      strokeWidth="1.5"
-                    />
-                  )}
-                  {row.points.map((k) => {
-                    const localSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), k.timeSec));
-                    const x = Math.max(6, Math.min(494, (localSec / Math.max(1e-6, clipTimelineDurationSec(clip))) * 500));
-                    const selected = selectedKeyframe?.keyframeId === k.id && selectedKeyframe.componentIndex === row.componentIndex && selectedKeyframe.property === row.property;
-                    return (
-                      <circle
-                        key={k.id}
-                        cx={x}
-                        cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))}
-                        r={selected ? 5.2 : 4}
-                        fill={selected ? '#fbbf24' : '#a78bfa'}
-                        className="cursor-pointer"
-                        onMouseDown={(e) => {
-                          e.stopPropagation();
-                          onSelectKeyframe({ componentIndex: row.componentIndex, property: row.property, keyframeId: k.id, timeSec: k.timeSec });
-                          const svg = (e.currentTarget as SVGCircleElement).ownerSVGElement;
-                          if (!svg) return;
-                          const duration = Math.max(1e-6, clipTimelineDurationSec(clip));
-                          const move = (ev: MouseEvent) => {
-                            const rect = svg.getBoundingClientRect();
-                            const normalized = Math.max(0, Math.min(1, (ev.clientX - rect.left) / Math.max(1, rect.width)));
-                            onMoveKeyframe({
-                              componentIndex: row.componentIndex,
-                              property: row.property,
-                              keyframeId: k.id,
-                              timeSec: normalized * duration,
-                            });
-                          };
-                          const up = () => {
-                            window.removeEventListener('mousemove', move);
-                            window.removeEventListener('mouseup', up);
-                          };
-                          window.addEventListener('mousemove', move);
-                          window.addEventListener('mouseup', up);
-                        }}
-                      />
-                    );
-                  })}
-                </svg>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-type KeyframePropertyRow = {
-  label: string;
-  componentIndex: number;
-  property: 'scale' | 'offsetX' | 'offsetY';
-  points: Array<{ id: string; timeSec: number; value: number }>;
-};
-
-function laneHeightForClip(visibleRows: number, totalComponents: number): number {
-  if (totalComponents === 0) return 0;
-  return Math.min(260, 20 + totalComponents * 26 + visibleRows * 34);
-}
-
-function getKeyframeProperties(clip: Clip): Array<KeyframePropertyRow> {
-  const transforms = getTransformComponents(clip);
-  const properties: Array<KeyframePropertyRow> = [];
-  transforms.forEach((component, index) => {
-    properties.push({ label: `Transform ${index + 1}.offsetX`, componentIndex: index, property: 'offsetX', points: component.data.keyframes.offsetX });
-    properties.push({ label: `Transform ${index + 1}.offsetY`, componentIndex: index, property: 'offsetY', points: component.data.keyframes.offsetY });
-    properties.push({ label: `Transform ${index + 1}.scale`, componentIndex: index, property: 'scale', points: component.data.keyframes.scale });
-  });
-  return properties;
-}
-
-function KeyframeSidebarLane({
-  clip,
-  collapsedComponents,
-  onToggleComponent,
-}: {
-  clip: Clip | null;
-  collapsedComponents: Set<number>;
-  onToggleComponent: (componentIndex: number) => void;
-}) {
-  if (!clip) return null;
-  const components = getTransformComponents(clip);
-  const properties = getKeyframeProperties(clip);
-  if (properties.length === 0) return null;
-  return (
-    <div
-      className="border-b border-surface-800 bg-[#0c1222] px-2 py-1.5"
-      style={{ height: laneHeightForClip(properties.filter((p) => !collapsedComponents.has(p.componentIndex)).length, components.length) }}
-    >
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
-      <div className="max-h-[220px] overflow-auto">
-        {components.map((_, componentIndex) => {
-          const groupRows = properties.filter((row) => row.componentIndex === componentIndex);
-          const collapsed = collapsedComponents.has(componentIndex);
-          return (
-            <div key={`group-${componentIndex}`} className="mb-1 rounded border border-surface-800 bg-surface-900/70 px-1.5 py-1">
-              <button
-                type="button"
-                className="mb-1 flex w-full items-center justify-between text-left text-[11px] font-medium text-slate-300"
-                onClick={() => onToggleComponent(componentIndex)}
-              >
-                <span>{`Transform ${componentIndex + 1}`}</span>
-                <span className="text-slate-500">{collapsed ? '▸' : '▾'}</span>
-              </button>
-              {!collapsed && (
-                <div className="space-y-1 pl-3">
-                  {groupRows.map((row) => (
-                    <div key={row.label} className="rounded bg-surface-900/80 px-1.5 py-0.5 text-[11px] text-slate-400">
-                      {row.label.split('.').at(-1)}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
