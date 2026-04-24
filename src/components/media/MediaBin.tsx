@@ -151,14 +151,22 @@ function MediaTile({
 }) {
   const Icon = kindIcon[asset.kind];
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
+  const nameParts = splitFilename(asset.name);
+  const badgeLabel = assetBadgeLabel(asset);
+  const statusLabel = asset.kind === 'recipe'
+    ? ''
+    : asset.generation?.status === 'generating'
+      ? 'Generating'
+      : `${asset.durationSec.toFixed(1)}s`;
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [playingPreview, setPlayingPreview] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [renaming, setRenaming] = useState(false);
-  const [draftName, setDraftName] = useState(asset.name);
+  const [draftName, setDraftName] = useState(nameParts.base);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const skipRenameCommitRef = useRef(false);
+  const pointerButtonRef = useRef(0);
   const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
 
   useEffect(() => {
@@ -173,7 +181,7 @@ function MediaTile({
   }, [menuOpen]);
 
   useEffect(() => {
-    if (!renaming) setDraftName(asset.name);
+    if (!renaming) setDraftName(splitFilename(asset.name).base);
   }, [asset.name, renaming]);
 
   useEffect(() => {
@@ -198,7 +206,7 @@ function MediaTile({
   }, [playingPreview, asset.id, asset.kind, asset.blobKey, asset.generation?.status, objectUrlFor]);
 
   const beginRename = () => {
-    setDraftName(asset.name);
+    setDraftName(splitFilename(asset.name).base);
     skipRenameCommitRef.current = false;
     setRenaming(true);
     setMenuOpen(false);
@@ -209,14 +217,16 @@ function MediaTile({
       skipRenameCommitRef.current = false;
       return;
     }
-    const nextName = draftName.trim();
+    const nextBaseName = draftName.trim();
     setRenaming(false);
-    if (nextName && nextName !== asset.name) onRename(nextName);
+    if (!nextBaseName) return;
+    const nextName = nameParts.extension ? `${nextBaseName}.${nameParts.extension}` : nextBaseName;
+    if (nextName !== asset.name) onRename(nextName);
   };
 
   const cancelRename = () => {
     skipRenameCommitRef.current = true;
-    setDraftName(asset.name);
+    setDraftName(nameParts.base);
     setRenaming(false);
   };
 
@@ -226,7 +236,14 @@ function MediaTile({
         renaming ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
       }`}
       draggable={!renaming}
+      onMouseDown={(e) => {
+        pointerButtonRef.current = e.button;
+      }}
       onDragStart={(e) => {
+        if (renaming || pointerButtonRef.current !== 0) {
+          e.preventDefault();
+          return;
+        }
         e.dataTransfer.setData('application/x-genedit-asset', asset.id);
         e.dataTransfer.effectAllowed = 'copy';
       }}
@@ -243,6 +260,8 @@ function MediaTile({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
+        e.stopPropagation();
+        pointerButtonRef.current = 2;
         setMenuPos({ x: e.clientX, y: e.clientY });
         setMenuOpen(true);
       }}
@@ -270,9 +289,16 @@ function MediaTile({
             <Icon size={24} />
           </div>
         )}
-        <span className="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-white">
-          {asset.kind === 'recipe' ? 'Recipe' : asset.generation?.status === 'generating' ? 'Generating' : `${asset.durationSec.toFixed(1)}s`}
-        </span>
+        {badgeLabel && (
+          <span className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+            {badgeLabel}
+          </span>
+        )}
+        {statusLabel && (
+          <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-white">
+            {statusLabel}
+          </span>
+        )}
         {asset.generation?.status === 'generating' && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/35 text-xs text-white">
             <div className="rounded bg-black/60 px-2 py-1">{Math.round(asset.generation.progress ?? 0)}%</div>
@@ -301,24 +327,33 @@ function MediaTile({
         <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs">
           <Icon size={12} className="shrink-0 text-slate-400" />
           {renaming ? (
-            <input
-              ref={renameInputRef}
-              value={draftName}
-              onChange={(e) => setDraftName(e.target.value)}
-              onBlur={commitRename}
-              onClick={(e) => e.stopPropagation()}
-              onDoubleClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  commitRename();
-                } else if (e.key === 'Escape') {
-                  e.preventDefault();
-                  cancelRename();
-                }
-              }}
-              className="min-w-0 flex-1 rounded border border-brand-400/60 bg-surface-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none"
-            />
+            <div className="flex min-w-0 flex-1 items-center">
+              <input
+                ref={renameInputRef}
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onBlur={commitRename}
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitRename();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelRename();
+                  }
+                }}
+                className={`min-w-0 flex-1 border border-brand-400/60 bg-surface-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none ${
+                  nameParts.extension ? 'rounded-l' : 'rounded'
+                }`}
+              />
+              {nameParts.extension && (
+                <span className="shrink-0 rounded-r border-y border-r border-brand-400/60 bg-surface-700 px-1.5 py-0.5 text-xs text-slate-300">
+                  .{nameParts.extension}
+                </span>
+              )}
+            </div>
           ) : (
             <button
               type="button"
@@ -330,7 +365,7 @@ function MediaTile({
                 beginRename();
               }}
             >
-              {asset.name}
+              {nameParts.base}
             </button>
           )}
         </div>
@@ -387,4 +422,25 @@ function MediaTile({
       )}
     </li>
   );
+}
+
+function splitFilename(name: string): { base: string; extension: string } {
+  const trimmed = name.trim();
+  const lastDot = trimmed.lastIndexOf('.');
+  if (lastDot <= 0 || lastDot === trimmed.length - 1) return { base: trimmed, extension: '' };
+  return {
+    base: trimmed.slice(0, lastDot),
+    extension: trimmed.slice(lastDot + 1),
+  };
+}
+
+function assetBadgeLabel(asset: MediaAsset): string {
+  if (asset.kind === 'recipe') return 'Recipe';
+  const extension = splitFilename(asset.name).extension;
+  if (extension) return extension;
+  const subtype = asset.mimeType.split('/')[1]?.split(';')[0];
+  if (!subtype) return asset.kind;
+  if (subtype === 'mpeg') return 'mp3';
+  if (subtype === 'jpeg') return 'jpg';
+  return subtype;
 }
