@@ -40,7 +40,7 @@ export type VideoModelCapabilities = {
 export type VideoModelDefinition = {
   id: string;
   label: string;
-  provider: 'veo' | 'kling' | 'generic';
+  provider: 'piapi' | 'veo' | 'kling' | 'generic';
   priority: number;
   capabilities: VideoModelCapabilities;
   promptGuidelines?: PromptGuidelines;
@@ -51,6 +51,9 @@ export const DEFAULT_RESOLUTIONS = ['720p', '1080p'] as const;
 export const DEFAULT_DURATIONS = ['4s', '6s', '8s'] as const;
 export const KLING_DURATIONS = ['3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s', '11s', '12s', '13s', '14s', '15s'] as const;
 export const KLING_OMNI_IMAGE_REFERENCE_LIMIT = 7;
+export const PIAPI_VEO_STANDARD_MODEL_ID = 'piapi-veo-3.1';
+export const PIAPI_VEO_FAST_MODEL_ID = 'piapi-veo-3.1-fast';
+export const PIAPI_KLING_3_OMNI_MODEL_ID = 'piapi-kling-3-omni';
 
 export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[] = [
   {
@@ -110,9 +113,9 @@ export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[]
 
 export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
   {
-    id: 'veo-3.1-generate-preview',
-    label: 'Veo 3.1 (Preview)',
-    provider: 'veo',
+    id: PIAPI_VEO_STANDARD_MODEL_ID,
+    label: 'Veo 3.1',
+    provider: 'piapi',
     priority: 100,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
@@ -122,20 +125,20 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       audio: true,
       adult: true,
       durations: ['4s', '6s', '8s'],
-      resolutions: ['720p', '1080p', '4k'],
+      resolutions: ['720p', '1080p'],
       aspects: ['16:9', '9:16'],
       assetInputs: {
         startFrame: true,
         endFrame: true,
         imageReferencesMax: 3,
-        videoExtension: true,
+        videoExtension: false,
       },
     },
   },
   {
-    id: 'veo-3.1-fast-generate-preview',
-    label: 'Veo 3.1 Fast (Preview)',
-    provider: 'veo',
+    id: PIAPI_VEO_FAST_MODEL_ID,
+    label: 'Veo 3.1 Fast',
+    provider: 'piapi',
     priority: 80,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
@@ -145,20 +148,20 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       audio: true,
       adult: true,
       durations: ['4s', '6s', '8s'],
-      resolutions: ['720p', '1080p', '4k'],
+      resolutions: ['720p', '1080p'],
       aspects: ['16:9', '9:16'],
       assetInputs: {
         startFrame: true,
         endFrame: true,
         imageReferencesMax: 3,
-        videoExtension: true,
+        videoExtension: false,
       },
     },
   },
   {
-    id: 'kling-v3',
+    id: PIAPI_KLING_3_OMNI_MODEL_ID,
     label: 'Kling 3.0 Omni',
-    provider: 'kling',
+    provider: 'piapi',
     priority: 70,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
@@ -168,36 +171,13 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       audio: true,
       adult: false,
       durations: [...KLING_DURATIONS],
-      resolutions: ['720p', '1080p', '4k'],
+      resolutions: ['720p', '1080p'],
       aspects: ['16:9', '9:16', '1:1'],
       assetInputs: {
         startFrame: true,
         endFrame: true,
         imageReferencesMax: KLING_OMNI_IMAGE_REFERENCE_LIMIT,
         videoExtension: true,
-      },
-    },
-  },
-  {
-    id: 'kling-v2-6',
-    label: 'Kling 2.6',
-    provider: 'kling',
-    priority: 65,
-    promptGuidelines: {
-      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
-    },
-    capabilities: {
-      references: false,
-      audio: false,
-      adult: false,
-      durations: ['5s', '10s'],
-      resolutions: ['720p', '1080p'],
-      aspects: ['16:9', '9:16', '1:1'],
-      assetInputs: {
-        startFrame: true,
-        endFrame: true,
-        imageReferencesMax: 0,
-        videoExtension: false,
       },
     },
   },
@@ -211,6 +191,18 @@ export function isVeoModel(model: VideoModelDefinition): boolean {
 
 export function isKlingModel(model: VideoModelDefinition): boolean {
   return model.provider === 'kling' || model.id.toLowerCase().includes('kling');
+}
+
+export function isPiApiModel(model: VideoModelDefinition): boolean {
+  return model.provider === 'piapi' || model.id.toLowerCase().startsWith('piapi-');
+}
+
+export function isPiApiVeoModel(model: VideoModelDefinition): boolean {
+  return isPiApiModel(model) && isVeoModel(model);
+}
+
+export function isPiApiKlingModel(model: VideoModelDefinition): boolean {
+  return isPiApiModel(model) && isKlingModel(model);
 }
 
 export function isReferencesFeatureSupported(model: VideoModelDefinition): boolean {

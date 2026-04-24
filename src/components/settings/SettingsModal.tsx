@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, X } from 'lucide-react';
+import { Copy, ExternalLink, Eye, EyeOff, X } from 'lucide-react';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
-  GOOGLE_VEO_API_KEY_STORAGE,
-  KLING_ACCESS_KEY_STORAGE,
-  KLING_SECRET_KEY_STORAGE,
+  PIAPI_API_KEY_STORAGE,
+  PIAPI_KLING_API_KEY_STORAGE,
+  PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret, encryptSecret } from '@/lib/settings/crypto';
 
@@ -17,37 +17,27 @@ type Tab = 'connections' | 'general';
 
 export function SettingsModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('connections');
-  const [googleKey, setGoogleKey] = useState('');
-  const [klingAccessKey, setKlingAccessKey] = useState('');
-  const [klingSecretKey, setKlingSecretKey] = useState('');
+  const [piapiKey, setPiapiKey] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     const load = async () => {
-      setGoogleKey(await readStoredSecret(GOOGLE_VEO_API_KEY_STORAGE));
-      setKlingAccessKey(await readStoredSecret(KLING_ACCESS_KEY_STORAGE));
-      setKlingSecretKey(await readStoredSecret(KLING_SECRET_KEY_STORAGE));
+      setPiapiKey(await readFirstStoredSecret([
+        PIAPI_API_KEY_STORAGE,
+        PIAPI_VEO_API_KEY_STORAGE,
+        PIAPI_KLING_API_KEY_STORAGE,
+      ]));
     };
     void load();
   }, [open]);
 
   if (!open) return null;
 
-  const saveGoogleKey = async () => {
+  const savePiApiKey = async () => {
     setSaving(true);
     try {
-      await storeSecret(GOOGLE_VEO_API_KEY_STORAGE, googleKey);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveKlingKeys = async () => {
-    setSaving(true);
-    try {
-      await storeSecret(KLING_ACCESS_KEY_STORAGE, klingAccessKey);
-      await storeSecret(KLING_SECRET_KEY_STORAGE, klingSecretKey);
+      await storeSecret(PIAPI_API_KEY_STORAGE, piapiKey);
     } finally {
       setSaving(false);
     }
@@ -83,83 +73,13 @@ export function SettingsModal({ open, onClose }: Props) {
           <div className="min-h-0 flex-1 overflow-auto p-4">
             {tab === 'connections' ? (
               <div className="space-y-4">
-                <p className="text-xs text-slate-500">🔐 Your API keys are encrypted.</p>
-                <div className="rounded border border-surface-700 bg-surface-900/60 p-3">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-sm font-bold text-[#4285F4]">G</span>
-                    <div>
-                      <div className="text-sm font-semibold text-slate-200">Google Veo</div>
-                      <div className="text-[11px] text-slate-500">Google AI Studio API key</div>
-                    </div>
-                  </div>
-                  <label className="mb-2 block text-[11px] text-slate-400">API Key</label>
-                  <input
-                    type="password"
-                    value={googleKey}
-                    onChange={(e) => setGoogleKey(e.target.value)}
-                    placeholder="AIza..."
-                    className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1.5 text-sm text-slate-200 outline-none focus:border-brand-500"
-                  />
-                  <div className="mt-3 flex justify-end">
-                    <button
-                      className="btn-primary px-3 py-1.5 text-xs disabled:opacity-40"
-                      disabled={saving}
-                      onClick={() => void saveGoogleKey()}
-                    >
-                      {saving ? 'Saving…' : 'Save Key'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded border border-surface-700 bg-surface-900/60 p-3">
-                  <div className="mb-3 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <div>
-                        <KlingAiLogo />
-                        <div className="text-[11px] text-slate-500">Access Key + Secret Key</div>
-                      </div>
-                    </div>
-                    <a
-                      href="https://kling.ai/dev/api-key"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
-                    >
-                      Create key <ExternalLink size={11} />
-                    </a>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="block">
-                      <span className="mb-2 block text-[11px] text-slate-400">Access Key</span>
-                      <input
-                        type="password"
-                        value={klingAccessKey}
-                        onChange={(e) => setKlingAccessKey(e.target.value)}
-                        placeholder="Kling Access Key"
-                        className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1.5 text-sm text-slate-200 outline-none focus:border-brand-500"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="mb-2 block text-[11px] text-slate-400">Secret Key</span>
-                      <input
-                        type="password"
-                        value={klingSecretKey}
-                        onChange={(e) => setKlingSecretKey(e.target.value)}
-                        placeholder="Kling Secret Key"
-                        className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1.5 text-sm text-slate-200 outline-none focus:border-brand-500"
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-3 flex justify-end">
-                    <button
-                      className="btn-primary px-3 py-1.5 text-xs disabled:opacity-40"
-                      disabled={saving}
-                      onClick={() => void saveKlingKeys()}
-                    >
-                      {saving ? 'Saving…' : 'Save Keys'}
-                    </button>
-                  </div>
-                </div>
+                <p className="text-xs text-slate-500">Your API keys are encrypted in this browser.</p>
+                <PiApiConnectionCard
+                  value={piapiKey}
+                  onChange={setPiapiKey}
+                  saving={saving}
+                  onSave={() => void savePiApiKey()}
+                />
               </div>
             ) : (
               <div className="text-sm text-slate-400">General settings coming soon.</div>
@@ -171,33 +91,90 @@ export function SettingsModal({ open, onClose }: Props) {
   );
 }
 
-function KlingAiLogo() {
+function PiApiConnectionCard({
+  value,
+  onChange,
+  saving,
+  onSave,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  const [visible, setVisible] = useState(false);
   return (
-    <svg
-      aria-label="KlingAI"
-      className="h-6 w-[104px] text-slate-50"
-      role="img"
-      viewBox="0 0 126 28"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5">
-        <ellipse cx="16" cy="14" rx="12" ry="7.2" transform="rotate(-32 16 14)" />
-        <ellipse cx="16" cy="14" rx="12" ry="7.2" transform="rotate(32 16 14)" />
-        <path d="M4.8 17.8C7.8 9.4 13.9 3.6 24.2 2.2" />
-        <path d="M27.5 10.2c-2.7 8.5-9 14.4-19.4 15.7" />
-      </g>
-      <text
-        fill="currentColor"
-        fontFamily="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
-        fontSize="23"
-        fontWeight="700"
-        letterSpacing="0"
-        x="36"
-        y="22"
-      >
-        KlingAI
-      </text>
-    </svg>
+    <div className="rounded border border-surface-700 bg-surface-900/60 p-3">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-200">PiAPI</div>
+          <div className="mt-0.5 text-[11px] text-slate-500">One key enables Veo 3.1, Veo 3.1 Fast, and Kling 3.0 Omni.</div>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <a
+            href="https://piapi.ai/workspace/veo3"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
+          >
+            Veo <ExternalLink size={11} />
+          </a>
+          <a
+            href="https://piapi.ai/workspace/kling"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
+          >
+            Kling <ExternalLink size={11} />
+          </a>
+        </div>
+      </div>
+
+      <div className="rounded-md border border-surface-700 bg-surface-950/50 p-3">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+          <span className="rounded-full bg-brand-500/15 px-2 py-0.5 font-mono text-brand-200">X-API-KEY</span>
+          <span>Header used for PiAPI requests</span>
+        </div>
+        <div className="flex overflow-hidden rounded border border-surface-600 bg-surface-800">
+          <input
+            type={visible ? 'text' : 'password'}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="Enter PiAPI API key"
+            className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+          />
+          <button
+            type="button"
+            className="flex h-10 w-10 items-center justify-center border-l border-surface-600 text-slate-300 hover:bg-surface-700 hover:text-slate-100"
+            title={visible ? 'Hide API key' : 'Show API key'}
+            onClick={() => setVisible((next) => !next)}
+          >
+            {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+          </button>
+          <button
+            type="button"
+            className="flex h-10 w-10 items-center justify-center border-l border-surface-600 text-slate-300 hover:bg-surface-700 hover:text-slate-100"
+            title="Copy API key"
+            onClick={() => {
+              if (value.trim()) void navigator.clipboard?.writeText(value.trim());
+            }}
+          >
+            <Copy size={17} />
+          </button>
+        </div>
+        <div className="mt-2 text-[11px] text-slate-500">Use the key shown in PiAPI's workspace under Header Params.</div>
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <button
+          className="btn-primary px-3 py-1.5 text-xs disabled:opacity-40"
+          disabled={saving}
+          onClick={onSave}
+        >
+          {saving ? 'Saving...' : 'Save Key'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -209,6 +186,14 @@ async function readStoredSecret(storageKey: string): Promise<string> {
   } catch {
     return '';
   }
+}
+
+async function readFirstStoredSecret(storageKeys: string[]): Promise<string> {
+  for (const storageKey of storageKeys) {
+    const secret = await readStoredSecret(storageKey);
+    if (secret.trim()) return secret;
+  }
+  return '';
 }
 
 async function storeSecret(storageKey: string, value: string): Promise<void> {

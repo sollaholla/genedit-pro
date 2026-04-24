@@ -23,41 +23,32 @@ import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
-  GOOGLE_VEO_API_KEY_STORAGE,
-  KLING_ACCESS_KEY_STORAGE,
-  KLING_SECRET_KEY_STORAGE,
+  PIAPI_API_KEY_STORAGE,
+  PIAPI_KLING_API_KEY_STORAGE,
+  PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
-  buildGoogleVeoPredictRequest,
-  GOOGLE_VEO_ARTIFACT_TTL_MS,
-  generatedVideoUriFromOperation,
-  generationErrorFromOperation,
-  isVeoArtifactValid,
-  type GoogleVeoOperationResponse,
-} from '@/lib/videoGeneration/googleVeo';
-import {
-  buildKlingCreateTaskRequest,
-  createKlingVideoTask,
-  generatedKlingVideoFromTask,
-  isKlingVideoReferenceAsset,
-  KLING_ARTIFACT_TTL_MS,
-  pollKlingVideoTask,
-  type KlingCredentials,
-} from '@/lib/videoGeneration/kling';
+  buildPiApiCreateTaskRequest,
+  createPiApiVideoTask,
+  generatedPiApiVideoFromTask,
+  isPiApiReferenceAsset,
+  PIAPI_ARTIFACT_TTL_MS,
+  pollPiApiVideoTask,
+} from '@/lib/videoGeneration/piapi';
 import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
 import {
   DEFAULT_VIDEO_MODELS,
-  GOOGLE_ALLOWED_VIDEO_MODEL_IDS,
   buildStructuredPromptText,
-  buildRemoteVideoModelDefinition,
   isAspectFeatureSupported,
   isAudioFeatureSupported,
   isDurationFeatureSupported,
   isReferencesFeatureSupported,
   isResolutionFeatureSupported,
   isKlingModel,
+  isPiApiKlingModel,
+  isPiApiVeoModel,
   isVeoModel,
   missingRequiredStructuredSections,
   sortModelsByPriority,
@@ -90,8 +81,7 @@ type RefToken = {
 type PromptMode = 'freeform' | 'structured';
 
 type VideoProviderCredentialAvailability = {
-  googleVeo: boolean;
-  kling: boolean;
+  piapi: boolean;
 };
 
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
@@ -104,17 +94,6 @@ const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = 
   ambience: SunMedium,
 };
 
-type GoogleApiError = {
-  code?: number;
-  message?: string;
-  status?: string;
-};
-
-const MODEL_PRICING_PER_SECOND_USD: Record<string, Partial<Record<'720p' | '1080p' | '4k', number>>> = {
-  // https://ai.google.dev/gemini-api/docs/pricing#veo-3.1
-  'veo-3.1-generate-preview': { '720p': 0.4, '1080p': 0.4, '4k': 0.6 },
-  'veo-3.1-fast-generate-preview': { '720p': 0.1, '1080p': 0.12, '4k': 0.3 },
-};
 export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecipeAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
@@ -188,21 +167,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
     const seconds = Number(duration.replace('s', ''));
-    if (!Number.isFinite(seconds) || seconds <= 0) return 0;
-    const modelRates = MODEL_PRICING_PER_SECOND_USD[selectedModel.id];
-    if (!modelRates) return 0;
-    const rate = modelRates[(resolution as '720p' | '1080p' | '4k')] ?? modelRates['720p'];
-    if (!rate) return 0;
-    return Number((rate * seconds).toFixed(2));
-  }, [duration, resolution, selectedModel.id]);
+    return estimatePiApiCostUsd(selectedModel, resolution, seconds, audioEnabled);
+  }, [audioEnabled, duration, resolution, selectedModel]);
   const imageReferenceLimit = sourceVideo && isKlingModel(selectedModel)
     ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
     : selectedModel.capabilities.assetInputs.imageReferencesMax;
   const sourceVideoSupported = selectedModel.capabilities.assetInputs.videoExtension;
   const frameInputsSupported = selectedModel.capabilities.assetInputs.startFrame;
   const constrainedByEightSecondGeneration = Boolean(
-    isVeoModel(selectedModel) &&
-      (references.length > 0 || sourceVideo || resolution === '1080p' || resolution === '4k'),
+    isPiApiVeoModel(selectedModel) && references.length > 0,
   );
   const durationOptions = useMemo(
     () => (constrainedByEightSecondGeneration
@@ -211,47 +184,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     [constrainedByEightSecondGeneration, selectedModel.capabilities.durations],
   );
   const resolutionOptions = useMemo(
-    () => (sourceVideo && isVeoModel(selectedModel)
-      ? selectedModel.capabilities.resolutions.filter((candidate) => candidate === '720p')
-      : selectedModel.capabilities.resolutions),
-    [selectedModel, sourceVideo],
+    () => selectedModel.capabilities.resolutions,
+    [selectedModel.capabilities.resolutions],
   );
 
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
     try {
-      const encryptedKey = localStorage.getItem(GOOGLE_VEO_API_KEY_STORAGE);
-      if (!encryptedKey) {
-        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
-        setModels(prioritized);
-        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
-        return;
-      }
-      const key = await decryptSecret(encryptedKey);
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-        headers: { 'x-goog-api-key': key },
-      });
-      if (!res.ok) throw new Error(`Unable to fetch models: ${res.status}`);
-      const data = await res.json() as { models?: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> };
-      const googleModels = (data.models ?? [])
-        .filter((m) => (m.supportedGenerationMethods ?? []).some((method) => method.toLowerCase().includes('video')) || m.name.toLowerCase().includes('veo'))
-        .filter((m) => GOOGLE_ALLOWED_VIDEO_MODEL_IDS.has(m.name.replace('models/', '')))
-        .map((m) => {
-          const id = m.name.replace('models/', '');
-          const fallback = DEFAULT_VIDEO_MODELS.find((fm) => fm.id === id);
-          return buildRemoteVideoModelDefinition(m, fallback);
-        });
-      const defaultNonGoogleModels = DEFAULT_VIDEO_MODELS.filter((m) => m.provider !== 'veo');
-      const available = sortModelsByPriority([...googleModels, ...defaultNonGoogleModels]);
-      if (available.length) {
-        setModels(available);
-        if (!initialRecipeAsset?.recipe) setModel(available[0]!.id);
-      } else {
-        const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
-        setModels(prioritized);
-        if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
-      }
-    } catch {
       const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
       setModels(prioritized);
       if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
@@ -536,9 +475,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       return;
     }
     if (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo)) {
-      setGenerationError(isVeoModel(selectedModel)
-        ? 'This Veo video reference is older than 48 hours and can no longer be extended.'
-        : 'This Kling video reference needs an active remote URL. Local video upload is not available yet.');
+      setGenerationError('This video reference needs an active hosted URL. Local video upload is not browser-callable through PiAPI yet.');
       return;
     }
     setIsGenerating(true);
@@ -551,7 +488,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       generationRecipe,
     );
     try {
-      const modelId = selectedModel.id;
       const referenceImageAssets = references
         .map((ref) => assets.find((asset) => asset.id === ref.assetId))
         .filter((asset): asset is MediaAsset => asset !== undefined)
@@ -560,7 +496,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
       const mutation = buildVideoGenerationMutation({
         prompt: promptForGeneration,
-        modelId,
+        modelId: selectedModel.id,
         aspectRatio: aspect,
         duration,
         resolution,
@@ -571,79 +507,28 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         referenceImages: shouldSendImageReferences ? referenceImageAssets : [],
       });
 
-      if (isKlingModel(selectedModel)) {
-        const credentials = await readKlingCredentials();
-        if (!credentials) throw new Error('Missing Kling API keys.');
-        const request = await buildKlingCreateTaskRequest(mutation);
-        const initialTask = await createKlingVideoTask(request, credentials);
-        const finalTask = await pollKlingVideoTask({
-          request,
-          credentials,
-          initialTask,
-          onProgress: (progress) => updateGenerationProgress(id, progress),
-        });
-        const generatedVideo = generatedKlingVideoFromTask(finalTask);
-        if (!generatedVideo?.url) throw new VideoGenerationProviderError('InternalError', 'No generated video URL returned by Kling.');
+      const apiKey = await readPiApiKey();
+      if (!apiKey) throw new Error(`Missing ${providerNameForModel(selectedModel)} API key.`);
+      const request = await buildPiApiCreateTaskRequest(mutation);
+      const initialTask = await createPiApiVideoTask(request, { apiKey });
+      const finalTask = await pollPiApiVideoTask({
+        credentials: { apiKey },
+        initialTask,
+        onProgress: (progress) => updateGenerationProgress(id, progress),
+      });
+      const generatedVideo = generatedPiApiVideoFromTask(finalTask);
+      if (!generatedVideo.url) throw new VideoGenerationProviderError('InternalError', 'No generated video URL returned by PiAPI.');
 
-        const videoRes = await fetch(generatedVideo.url);
-        if (!videoRes.ok) throw new Error(await responseErrorMessage(videoRes, 'Failed downloading Kling video'));
-        const blob = await videoRes.blob();
-        const file = new File([blob], `kling_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
-        await finalizeGeneratedAssetWithBlob(id, file, {
-          actualCostUsd: generationCostUsd,
-          provider: 'kling',
-          providerArtifactUri: generatedVideo.url,
-          providerArtifactExpiresAt: Date.now() + KLING_ARTIFACT_TTL_MS,
-        });
-      } else {
-        const apiKey = await readEncryptedSecret(GOOGLE_VEO_API_KEY_STORAGE);
-        if (!apiKey) throw new Error('Missing Google API key.');
-        const payload = await buildGoogleVeoPredictRequest(mutation);
-
-        const opRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:predictLongRunning`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify(payload),
-        });
-        if (!opRes.ok) throw new Error(await googleApiErrorMessage(opRes, 'Generation request failed'));
-
-        let operation = await opRes.json() as GoogleVeoOperationResponse;
-        const initialGenerationError = generationErrorFromOperation(operation);
-        if (initialGenerationError) throw initialGenerationError;
-        if (!operation.name) throw new Error('Generation operation did not return an operation id.');
-        let spinnerProgress = 5;
-        while (!operation.done) {
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-          spinnerProgress = Math.min(95, spinnerProgress + 10);
-          updateGenerationProgress(id, spinnerProgress);
-          const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operation.name}`, {
-            headers: { 'x-goog-api-key': apiKey },
-          });
-          if (!pollRes.ok) throw new Error(await googleApiErrorMessage(pollRes, 'Generation poll failed'));
-          operation = await pollRes.json() as GoogleVeoOperationResponse;
-          const generationError = generationErrorFromOperation(operation);
-          if (generationError) throw generationError;
-        }
-
-        const finalGenerationError = generationErrorFromOperation(operation);
-        if (finalGenerationError) throw finalGenerationError;
-        const fileUri = generatedVideoUriFromOperation(operation);
-        if (!fileUri) throw new VideoGenerationProviderError('InternalError', 'No generated video URI returned by API.');
-
-        const videoRes = await fetch(fileUri, { headers: { 'x-goog-api-key': apiKey } });
-        if (!videoRes.ok) throw new Error(await googleApiErrorMessage(videoRes, 'Failed downloading generated video'));
-        const blob = await videoRes.blob();
-        const file = new File([blob], `generated_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
-        await finalizeGeneratedAssetWithBlob(id, file, {
-          actualCostUsd: generationCostUsd,
-          provider: 'google-veo',
-          providerArtifactUri: fileUri,
-          providerArtifactExpiresAt: Date.now() + GOOGLE_VEO_ARTIFACT_TTL_MS,
-        });
-      }
+      const videoRes = await fetch(generatedVideo.url);
+      if (!videoRes.ok) throw new Error(await responseErrorMessage(videoRes, 'Failed downloading PiAPI video'));
+      const blob = await videoRes.blob();
+      const file = new File([blob], `piapi_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
+      await finalizeGeneratedAssetWithBlob(id, file, {
+        actualCostUsd: generationCostUsd,
+        provider: 'piapi',
+        providerArtifactUri: generatedVideo.url,
+        providerArtifactExpiresAt: Date.now() + PIAPI_ARTIFACT_TTL_MS,
+      });
       onClose();
     } catch (err) {
       failGeneratedAsset(id, generationCostUsd);
@@ -868,7 +753,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               <div className="mb-2 text-[11px] text-slate-500">
                 Up to {imageReferenceLimit} image references. {isVeoModel(selectedModel)
                   ? 'Start/end frames take precedence over image references.'
-                  : 'References are sent through Kling Omni image_list.'}
+                  : 'References are sent through Kling Omni images.'}
               </div>
             )}
             {referencesIgnoredByFrameMode && (
@@ -915,13 +800,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             </div>
             {!hasConfiguredProviderModels && (
               <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
-                Add a Google or Kling key to enable generation models.
+                Add a PiAPI key to enable generation models.
               </div>
             )}
             {generationError && (
               <div className="flex items-center gap-2 text-xs text-rose-300">
                 <span>{generationError}</span>
-                {(generationError.includes('Missing Google API key') || generationError.includes('Missing Kling API keys')) && (
+                {generationError.includes('Missing PiAPI') && (
                   <button
                     className="rounded border border-rose-300/40 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/10"
                     onClick={onOpenSettings}
@@ -1325,8 +1210,8 @@ function MediaPicker({
     ? 'Choose image references supported by the selected model.'
     : pickerMode === 'source-video'
       ? (isKlingModel(selectedModel)
-        ? 'Choose one active remote video reference. Local videos need hosted URL support.'
-        : 'Choose one active Veo-generated video reference for extension.')
+        ? 'Choose one active hosted video reference. Local videos need PiAPI upload support.'
+        : 'Choose one active hosted video reference.')
       : 'Only image assets are valid for frame slots.';
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
@@ -1436,21 +1321,21 @@ function formatShortDate(timestamp: number) {
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {
   if (asset.kind !== 'video') return false;
-  if (isVeoModel(model)) return isVeoArtifactValid(asset);
-  if (isKlingModel(model)) return isKlingVideoReferenceAsset(asset);
-  return false;
+  return isPiApiKlingModel(model) && isPiApiReferenceAsset(asset);
 }
 
 function providerNameForModel(model: VideoModelDefinition): string {
-  if (isKlingModel(model)) return 'Kling';
-  if (isVeoModel(model)) return 'Google Veo';
+  if (isPiApiKlingModel(model) || isPiApiVeoModel(model)) return 'PiAPI';
   return 'this provider';
 }
 
 function readVideoProviderCredentialAvailability(): VideoProviderCredentialAvailability {
   return {
-    googleVeo: Boolean(localStorage.getItem(GOOGLE_VEO_API_KEY_STORAGE)),
-    kling: Boolean(localStorage.getItem(KLING_ACCESS_KEY_STORAGE) && localStorage.getItem(KLING_SECRET_KEY_STORAGE)),
+    piapi: Boolean(
+      localStorage.getItem(PIAPI_API_KEY_STORAGE) ||
+      localStorage.getItem(PIAPI_VEO_API_KEY_STORAGE) ||
+      localStorage.getItem(PIAPI_KLING_API_KEY_STORAGE),
+    ),
   };
 }
 
@@ -1458,8 +1343,7 @@ function hasVideoProviderCredentials(
   model: VideoModelDefinition,
   availability: VideoProviderCredentialAvailability = readVideoProviderCredentialAvailability(),
 ): boolean {
-  if (isKlingModel(model)) return availability.kling;
-  if (isVeoModel(model)) return availability.googleVeo;
+  if (isPiApiKlingModel(model) || isPiApiVeoModel(model)) return availability.piapi;
   return false;
 }
 
@@ -1474,30 +1358,36 @@ async function readEncryptedSecret(storageKey: string): Promise<string | null> {
   }
 }
 
-async function readKlingCredentials(): Promise<KlingCredentials | null> {
-  const [accessKey, secretKey] = await Promise.all([
-    readEncryptedSecret(KLING_ACCESS_KEY_STORAGE),
-    readEncryptedSecret(KLING_SECRET_KEY_STORAGE),
-  ]);
-  if (!accessKey || !secretKey) return null;
-  return { accessKey, secretKey };
+async function readPiApiKey(): Promise<string | null> {
+  return (await readEncryptedSecret(PIAPI_API_KEY_STORAGE)) ||
+    (await readEncryptedSecret(PIAPI_VEO_API_KEY_STORAGE)) ||
+    (await readEncryptedSecret(PIAPI_KLING_API_KEY_STORAGE));
+}
+
+function estimatePiApiCostUsd(
+  model: VideoModelDefinition,
+  resolution: string,
+  seconds: number,
+  audioEnabled: boolean,
+): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  let rate = 0;
+  if (isPiApiKlingModel(model)) {
+    rate = resolution === '1080p'
+      ? (audioEnabled ? 0.2 : 0.15)
+      : (audioEnabled ? 0.15 : 0.1);
+  } else if (isPiApiVeoModel(model)) {
+    const fast = model.id.toLowerCase().includes('fast');
+    rate = fast
+      ? (audioEnabled ? 0.09 : 0.06)
+      : (audioEnabled ? 0.24 : 0.12);
+  }
+  return rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
 }
 
 async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
   const body = await response.text().catch(() => '');
   return body ? `${fallback} (${response.status}): ${body.slice(0, 300)}` : `${fallback} (${response.status}).`;
-}
-
-async function googleApiErrorMessage(response: Response, fallback: string): Promise<string> {
-  const body = await response.text().catch(() => '');
-  if (!body) return `${fallback} (${response.status}).`;
-  try {
-    const parsed = JSON.parse(body) as { error?: GoogleApiError };
-    if (parsed.error) return `${fallback} (${response.status}): ${formatGoogleOperationError(parsed.error)}`;
-  } catch {
-    // fall through to trimmed body
-  }
-  return `${fallback} (${response.status}): ${body.slice(0, 300)}`;
 }
 
 function formatGenerationError(err: unknown): string {
@@ -1510,9 +1400,4 @@ function formatGenerationError(err: unknown): string {
     return `${label}: ${err.message}`;
   }
   return err instanceof Error ? err.message : 'Generation failed.';
-}
-
-function formatGoogleOperationError(error: GoogleApiError): string {
-  const message = error.message || 'Google returned an unknown error.';
-  return error.status ? `${error.status}: ${message}` : message;
 }
