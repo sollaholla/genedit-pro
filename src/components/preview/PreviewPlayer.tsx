@@ -13,6 +13,21 @@ import {
 import { PlayerControls } from './PlayerControls';
 import { FullscreenScrubBar } from './FullscreenScrubBar';
 import { getTransformComponents, resolveTransformAtTime } from '@/lib/components/transform';
+import { nanoid } from 'nanoid';
+
+const KEYFRAME_EPS_SEC = 1 / 120;
+
+function upsertKeyframeValue(track: Array<{ id: string; timeSec: number; value: number }>, timeSec: number, value: number) {
+  let matched = false;
+  const updated = track.map((k) => {
+    if (Math.abs(k.timeSec - timeSec) <= KEYFRAME_EPS_SEC) {
+      matched = true;
+      return { ...k, value };
+    }
+    return k;
+  });
+  return matched ? updated : [...updated, { id: nanoid(8), timeSec, value }];
+}
 
 function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -147,6 +162,9 @@ export function PreviewPlayer() {
       const onMove = (ev: MouseEvent) => {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
+        const localTimeSec = Math.max(0, currentTime - clip.startSec);
+        const nextX = baseX + dx;
+        const nextY = baseY + dy;
         updateSilent((p) => ({
           ...p,
           clips: p.clips.map((c) => (c.id === selectedId
@@ -154,7 +172,19 @@ export function PreviewPlayer() {
                 ...c,
                 components: getTransformComponents(c).map((component, idx, arr) => (
                   idx === arr.length - 1
-                    ? { ...component, data: { ...component.data, offsetX: baseX + dx, offsetY: baseY + dy } }
+                    ? {
+                        ...component,
+                        data: {
+                          ...component.data,
+                          offsetX: nextX,
+                          offsetY: nextY,
+                          keyframes: {
+                            ...component.data.keyframes,
+                            offsetX: upsertKeyframeValue(component.data.keyframes.offsetX, localTimeSec, nextX),
+                            offsetY: upsertKeyframeValue(component.data.keyframes.offsetY, localTimeSec, nextY),
+                          },
+                        },
+                      }
                     : component
                 )),
               }

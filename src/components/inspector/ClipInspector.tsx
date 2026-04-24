@@ -242,6 +242,29 @@ export function ClipInspector() {
             const setComponents = (next: typeof components) => update((p) => setClipProp(p, selectedId, 'components', next));
             const updateData = (patch: Partial<typeof component.data>) =>
               setComponents(components.map((c) => (c.id === component.id ? { ...c, data: { ...c.data, ...patch } } : c)));
+            const setPropertyAtPlayhead = (property: 'scale' | 'offsetX' | 'offsetY', value: number) => {
+              const localTimeSec = Math.max(0, currentTime - clip.startSec);
+              const points = component.data.keyframes[property];
+              if (points.length === 0) {
+                updateData({ [property]: value });
+                return;
+              }
+              let matched = false;
+              const updatedPoints = points.map((k) => {
+                if (Math.abs(k.timeSec - localTimeSec) <= 1 / 120) {
+                  matched = true;
+                  return { ...k, value };
+                }
+                return k;
+              });
+              updateData({
+                [property]: value,
+                keyframes: {
+                  ...component.data.keyframes,
+                  [property]: matched ? updatedPoints : [...updatedPoints, { id: nanoid(8), timeSec: localTimeSec, value }],
+                },
+              });
+            };
             const addPropertyKeyframe = (property: 'scale' | 'offsetX' | 'offsetY') => {
               const value = component.data[property];
               const entry = { id: nanoid(8), timeSec: Math.max(0, currentTime - clip.startSec), value };
@@ -279,18 +302,21 @@ export function ClipInspector() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(component.data.offsetX)} onChange={(e) => updateData({ offsetX: Number(e.target.value) || 0 })} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
-                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(component.data.offsetY)} onChange={(e) => updateData({ offsetY: Number(e.target.value) || 0 })} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(component.data.offsetX)} onChange={(e) => setPropertyAtPlayhead('offsetX', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
+                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(component.data.offsetY)} onChange={(e) => setPropertyAtPlayhead('offsetY', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
                 </div>
                 <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(component.data.scale * 100)}%</span></div>
                 <input type="range" min={25} max={200} step={1} value={Math.round(component.data.scale * 100)} onChange={(e) => {
                   const next = Number(e.target.value) / 100;
                   if (idx === 0) setScale(next);
-                  updateData({ scale: next });
+                  setPropertyAtPlayhead('scale', next);
                 }} className="volume-slider w-full" />
                 <div className="flex items-center gap-2">
-                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => updateData({ scale: 1 })}>Reset Scale</button>
-                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => updateData({ offsetX: 0, offsetY: 0 })}>Reset Position</button>
+                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => setPropertyAtPlayhead('scale', 1)}>Reset Scale</button>
+                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => {
+                    setPropertyAtPlayhead('offsetX', 0);
+                    setPropertyAtPlayhead('offsetY', 0);
+                  }}>Reset Position</button>
                 </div>
               </div>
             );
