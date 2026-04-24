@@ -40,7 +40,7 @@ export type VideoModelCapabilities = {
 export type VideoModelDefinition = {
   id: string;
   label: string;
-  provider: 'veo' | 'generic';
+  provider: 'veo' | 'kling' | 'generic';
   priority: number;
   capabilities: VideoModelCapabilities;
   promptGuidelines?: PromptGuidelines;
@@ -49,6 +49,7 @@ export type VideoModelDefinition = {
 export const DEFAULT_ASPECTS: Aspect[] = ['16:9', '9:16', '1:1'];
 export const DEFAULT_RESOLUTIONS = ['720p', '1080p'] as const;
 export const DEFAULT_DURATIONS = ['4s', '6s', '8s'] as const;
+export const KLING_DURATIONS = ['3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s', '11s', '12s', '13s', '14s', '15s'] as const;
 
 export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[] = [
   {
@@ -153,12 +154,62 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       },
     },
   },
+  {
+    id: 'kling-v3',
+    label: 'Kling 3.0',
+    provider: 'kling',
+    priority: 70,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
+    capabilities: {
+      references: false,
+      audio: true,
+      adult: false,
+      durations: [...KLING_DURATIONS],
+      resolutions: ['720p', '1080p', '4k'],
+      aspects: ['16:9', '9:16', '1:1'],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 0,
+        videoExtension: false,
+      },
+    },
+  },
+  {
+    id: 'kling-v2-6',
+    label: 'Kling 2.6',
+    provider: 'kling',
+    priority: 65,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
+    capabilities: {
+      references: false,
+      audio: false,
+      adult: false,
+      durations: ['5s', '10s'],
+      resolutions: ['720p', '1080p'],
+      aspects: ['16:9', '9:16', '1:1'],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 0,
+        videoExtension: false,
+      },
+    },
+  },
 ];
 
-export const GOOGLE_ALLOWED_VIDEO_MODEL_IDS = new Set(DEFAULT_VIDEO_MODELS.map((m) => m.id));
+export const GOOGLE_ALLOWED_VIDEO_MODEL_IDS = new Set(DEFAULT_VIDEO_MODELS.filter((m) => m.provider === 'veo').map((m) => m.id));
 
 export function isVeoModel(model: VideoModelDefinition): boolean {
   return model.provider === 'veo' || model.id.toLowerCase().includes('veo');
+}
+
+export function isKlingModel(model: VideoModelDefinition): boolean {
+  return model.provider === 'kling' || model.id.toLowerCase().includes('kling');
 }
 
 export function isReferencesFeatureSupported(model: VideoModelDefinition): boolean {

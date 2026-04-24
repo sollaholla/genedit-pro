@@ -1,5 +1,10 @@
 import { getBlob } from '@/lib/media/storage';
 import type { MediaAsset } from '@/types';
+import {
+  classifyProviderErrorText,
+  VideoGenerationProviderError,
+  type GenerationErrorType,
+} from './errors';
 import { assetsByRole, type VideoGenerationMutation } from './mutations';
 
 export const GOOGLE_VEO_ARTIFACT_TTL_MS = 48 * 60 * 60 * 1000;
@@ -32,17 +37,7 @@ export type GoogleVeoPredictRequest = {
   };
 };
 
-export type GenerationErrorType = 'NSFW' | 'GuidelinesViolation' | 'InternalError';
-
-export class VideoGenerationProviderError extends Error {
-  readonly type: GenerationErrorType;
-
-  constructor(type: GenerationErrorType, message: string) {
-    super(message);
-    this.name = 'VideoGenerationProviderError';
-    this.type = type;
-  }
-}
+export { VideoGenerationProviderError, type GenerationErrorType } from './errors';
 
 export type GoogleVeoOperationError = {
   code?: number;
@@ -135,10 +130,8 @@ export function generationErrorFromOperation(operation: GoogleVeoOperationRespon
 
 function classifyGoogleOperationError(error: GoogleVeoOperationError): GenerationErrorType {
   const text = `${error.status ?? ''} ${error.message ?? ''}`.toLowerCase();
-  if (isNsfwText(text)) return 'NSFW';
-  if (text.includes('policy') || text.includes('safety') || text.includes('guardrail') || text.includes('guideline')) {
-    return 'GuidelinesViolation';
-  }
+  const classified = classifyProviderErrorText(text);
+  if (classified !== 'InternalError') return classified;
   if (error.status === 'INTERNAL' || error.status === 'UNKNOWN' || error.status === 'UNAVAILABLE' || (error.code ?? 0) >= 500) {
     return 'InternalError';
   }
@@ -147,11 +140,8 @@ function classifyGoogleOperationError(error: GoogleVeoOperationError): Generatio
 
 function classifyRaiFilteredReasons(reasons: string[]): GenerationErrorType {
   const text = reasons.join(' ').toLowerCase();
-  return isNsfwText(text) ? 'NSFW' : 'GuidelinesViolation';
-}
-
-function isNsfwText(text: string): boolean {
-  return /\b(nsfw|sexual|explicit|nudity|nude|porn|adult)\b/.test(text);
+  const classified = classifyProviderErrorText(text);
+  return classified === 'InternalError' ? 'GuidelinesViolation' : classified;
 }
 
 function formatGoogleOperationError(error: GoogleVeoOperationError): string {
