@@ -71,7 +71,6 @@ export function Timeline() {
   const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
 
   const assets = useMediaStore((s) => s.assets);
-  const [showKeyframePanel, setShowKeyframePanel] = useState(true);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewportWidth, setViewportWidth] = useState(1200);
@@ -103,6 +102,8 @@ export function Timeline() {
   const tracks = sortedTracks(project);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
+  const selectedTrackId = selectedClip?.trackId ?? null;
+  const keyframeLaneHeight = selectedClip ? 96 : 0;
 
   const snapTargets = useMemo(() => {
     const s = new Set<number>([0, currentTime]);
@@ -496,17 +497,6 @@ export function Timeline() {
         </div>
         <ShortcutHints />
       </div>
-      <div className="border-t border-surface-700 bg-surface-900/50">
-        <button
-          type="button"
-          className="w-full px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:bg-surface-800"
-          onClick={() => setShowKeyframePanel((v) => !v)}
-        >
-          {showKeyframePanel ? 'Hide' : 'Show'} Keyframe Timeline
-        </button>
-        {showKeyframePanel && <KeyframePanel clip={selectedClip} pxPerSec={pxPerSec} />}
-      </div>
-
       <div className="flex min-h-0 flex-1">
         {/* Track headers: pinned ruler + vertically synced track list */}
         <div className="relative min-h-0 shrink-0 overflow-hidden border-r border-surface-700" style={{ width: TRACK_HEADER_WIDTH_PX }}>
@@ -514,29 +504,33 @@ export function Timeline() {
           <div className="relative" style={{ height: tracks.length * TRACK_HEIGHT_PX }}>
             <div style={{ transform: `translateY(-${scrollTop}px)` }}>
               {tracks.map((t) => (
-                <TrackHeader
-                  key={`h-${t.id}`}
-                  track={t}
-                  label={labelForTrack(t.id)}
-                  isDragging={dragTrackId === t.id}
-                  showDropBefore={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'before'}
-                  showDropAfter={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'after'}
-                  onDragStart={() => {
-                    setDragTrackId(t.id);
-                    setTrackDropTarget(null);
-                  }}
-                  onDragOver={(position) => {
-                    if (!dragTrackId || dragTrackId === t.id) return;
-                    setTrackDropTarget({ trackId: t.id, position });
-                  }}
-                  onDrop={handleTrackDrop}
-                  onDragEnd={() => {
-                    setDragTrackId(null);
-                    setTrackDropTarget(null);
-                  }}
-                  onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
-                  onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
-                />
+                <div key={`h-${t.id}`}>
+                  <TrackHeader
+                    track={t}
+                    label={labelForTrack(t.id)}
+                    isDragging={dragTrackId === t.id}
+                    showDropBefore={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'before'}
+                    showDropAfter={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'after'}
+                    onDragStart={() => {
+                      setDragTrackId(t.id);
+                      setTrackDropTarget(null);
+                    }}
+                    onDragOver={(position) => {
+                      if (!dragTrackId || dragTrackId === t.id) return;
+                      setTrackDropTarget({ trackId: t.id, position });
+                    }}
+                    onDrop={handleTrackDrop}
+                    onDragEnd={() => {
+                      setDragTrackId(null);
+                      setTrackDropTarget(null);
+                    }}
+                    onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
+                    onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
+                  />
+                  {selectedTrackId === t.id && (
+                    <div className="border-b border-surface-800 bg-surface-900/70" style={{ height: keyframeLaneHeight }} />
+                  )}
+                </div>
               ))}
             </div>
           </div>
@@ -554,7 +548,7 @@ export function Timeline() {
         >
           <div
             className="relative"
-            style={{ width: contentWidth, minHeight: RULER_HEIGHT_PX + tracks.length * TRACK_HEIGHT_PX }}
+            style={{ width: contentWidth, minHeight: RULER_HEIGHT_PX + tracks.length * TRACK_HEIGHT_PX + keyframeLaneHeight }}
           >
             <TimelineRuler
               pxPerSec={pxPerSec}
@@ -565,19 +559,23 @@ export function Timeline() {
             />
             <div>
               {tracks.map((track) => (
-                <TimelineTrack
-                  key={track.id}
-                  track={track}
-                  clips={project.clips.filter((c) => c.trackId === track.id)}
-                  pxPerSec={pxPerSec}
-                  selectedClipIds={selectedSet}
-                  contentWidth={contentWidth}
-                  onDropAsset={handleDropAsset}
-                  onClipBodyMouseDown={handleClipBodyMouseDown}
-                  onClipTrimMouseDown={handleClipTrimMouseDown}
-                  onClipContextMenu={handleClipContextMenu}
-                  onEmptyMouseDown={handleEmptyMouseDown}
-                />
+                <div key={track.id}>
+                  <TimelineTrack
+                    track={track}
+                    clips={project.clips.filter((c) => c.trackId === track.id)}
+                    pxPerSec={pxPerSec}
+                    selectedClipIds={selectedSet}
+                    contentWidth={contentWidth}
+                    onDropAsset={handleDropAsset}
+                    onClipBodyMouseDown={handleClipBodyMouseDown}
+                    onClipTrimMouseDown={handleClipTrimMouseDown}
+                    onClipContextMenu={handleClipContextMenu}
+                    onEmptyMouseDown={handleEmptyMouseDown}
+                  />
+                  {selectedClip && selectedTrackId === track.id && (
+                    <KeyframeTrackLane clip={selectedClip} pxPerSec={pxPerSec} />
+                  )}
+                </div>
               ))}
             </div>
 
@@ -607,7 +605,7 @@ export function Timeline() {
             <Playhead
               timeSec={currentTime}
               pxPerSec={pxPerSec}
-              height={RULER_HEIGHT_PX + tracks.length * TRACK_HEIGHT_PX}
+              height={RULER_HEIGHT_PX + tracks.length * TRACK_HEIGHT_PX + keyframeLaneHeight}
               offsetLeft={0}
             />
           </div>
@@ -634,14 +632,9 @@ export function Timeline() {
   );
 }
 
-function KeyframePanel({ clip, pxPerSec }: { clip: Clip | null; pxPerSec: number }) {
-  if (!clip) {
-    return <div className="px-3 py-2 text-xs text-slate-500">Select a clip to view keyframe curves.</div>;
-  }
+function KeyframeTrackLane({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }) {
   const transforms = getTransformComponents(clip);
-  if (transforms.length === 0) {
-    return <div className="px-3 py-2 text-xs text-slate-500">Selected clip has no keyframe-enabled components.</div>;
-  }
+  if (transforms.length === 0) return null;
   const properties: Array<{ label: string; points: Array<{ id: string; timeSec: number; value: number }> }> = [];
   transforms.forEach((component, index) => {
     properties.push({ label: `Transform ${index + 1}.offsetX`, points: component.data.keyframes.offsetX });
@@ -650,34 +643,37 @@ function KeyframePanel({ clip, pxPerSec }: { clip: Clip | null; pxPerSec: number
   });
 
   return (
-    <div className="max-h-52 overflow-auto px-3 pb-2">
-      {properties.map((row) => (
-        <div key={row.label} className="mb-1 rounded border border-surface-700 bg-surface-900/80 p-1.5">
-          <div className="mb-1 text-[10px] text-slate-400">{row.label}</div>
-          <svg className="h-10 w-full" viewBox="0 0 500 40" preserveAspectRatio="none">
-            {row.points.length > 1 && (
-              <polyline
-                points={row.points
-                  .sort((a, b) => a.timeSec - b.timeSec)
-                  .map((k) => `${Math.min(500, (k.timeSec * pxPerSec) / 2)},${20 - Math.max(-18, Math.min(18, k.value * 0.1))}`)
-                  .join(' ')}
-                fill="none"
-                stroke="#7dd3fc"
-                strokeWidth="1.5"
-              />
-            )}
-            {row.points.map((k) => (
-              <circle
-                key={k.id}
-                cx={Math.min(500, (k.timeSec * pxPerSec) / 2)}
-                cy={20 - Math.max(-18, Math.min(18, k.value * 0.1))}
-                r="2.5"
-                fill="#a78bfa"
-              />
-            ))}
-          </svg>
-        </div>
-      ))}
+    <div className="border-b border-surface-800 bg-[#0c1222] px-3 py-1.5">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Keyframes</div>
+      <div className="max-h-[84px] overflow-auto">
+        {properties.map((row) => (
+          <div key={row.label} className="mb-1 rounded border border-surface-800 bg-surface-900/80 px-1.5 py-1">
+            <div className="mb-1 text-[10px] text-slate-400">{row.label}</div>
+            <svg className="h-8 w-full" viewBox="0 0 500 32" preserveAspectRatio="none">
+              {row.points.length > 1 && (
+                <polyline
+                  points={row.points
+                    .sort((a, b) => a.timeSec - b.timeSec)
+                    .map((k) => `${Math.min(500, (k.timeSec * pxPerSec) / 2)},${16 - Math.max(-12, Math.min(12, k.value * 0.1))}`)
+                    .join(' ')}
+                  fill="none"
+                  stroke="#7dd3fc"
+                  strokeWidth="1.5"
+                />
+              )}
+              {row.points.map((k) => (
+                <circle
+                  key={k.id}
+                  cx={Math.min(500, (k.timeSec * pxPerSec) / 2)}
+                  cy={16 - Math.max(-12, Math.min(12, k.value * 0.1))}
+                  r="2.3"
+                  fill="#a78bfa"
+                />
+              ))}
+            </svg>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
