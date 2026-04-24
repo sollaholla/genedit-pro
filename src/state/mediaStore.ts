@@ -50,6 +50,7 @@ type MediaState = {
     transform: EditTrailTransform,
     thumbnailDataUrl?: string,
   ) => Promise<void>;
+  setActiveEditTrailIteration: (assetId: string, iterationId: string) => void;
   undoEditTrail: (assetId: string) => Promise<void>;
   createFolder: (name: string) => void;
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number) => string;
@@ -316,13 +317,35 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     }
   },
 
+  setActiveEditTrailIteration: (assetId, iterationId) => {
+    const asset = get().assets.find((item) => item.id === assetId);
+    if (!asset?.editTrail || asset.editTrail.activeIterationId === iterationId) return;
+    const iteration = asset.editTrail.iterations.find((candidate) => candidate.id === iterationId);
+    if (!iteration) return;
+
+    revokeCachedUrl(assetId);
+    const next = get().assets.map((item) => {
+      if (item.id !== assetId) return item;
+      const trailed = withEditTrail(item);
+      const editTrail = {
+        ...trailed.editTrail,
+        activeIterationId: iteration.id,
+      };
+      return applyIterationToAsset({ ...trailed, editTrail }, iteration);
+    });
+    saveAssets(next);
+    set({ assets: next });
+  },
+
   undoEditTrail: async (assetId) => {
     const asset = get().assets.find((item) => item.id === assetId);
     if (!asset?.editTrail || asset.editTrail.iterations.length <= 1) return;
     const iterations = asset.editTrail.iterations;
-    const removed = iterations[iterations.length - 1]!;
-    const remaining = iterations.slice(0, -1);
-    const nextActive = remaining[remaining.length - 1]!;
+    const activeIndex = iterations.findIndex((iteration) => iteration.id === asset.editTrail?.activeIterationId);
+    if (activeIndex <= 0) return;
+    const removed = iterations[activeIndex]!;
+    const remaining = iterations.filter((_, index) => index !== activeIndex);
+    const nextActive = remaining[Math.max(0, activeIndex - 1)]!;
     const remainingBlobKeys = new Set(remaining.map((iteration) => iteration.blobKey));
     if (!remainingBlobKeys.has(removed.blobKey)) {
       await deleteBlob(removed.blobKey).catch(() => undefined);

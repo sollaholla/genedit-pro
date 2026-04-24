@@ -14,6 +14,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const asset = useMediaStore((s) => s.assets.find((item) => item.id === assetId) ?? null);
   const ensureEditTrail = useMediaStore((s) => s.ensureEditTrail);
   const saveEditTrailIteration = useMediaStore((s) => s.saveEditTrailIteration);
+  const setActiveEditTrailIteration = useMediaStore((s) => s.setActiveEditTrailIteration);
   const undoEditTrail = useMediaStore((s) => s.undoEditTrail);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -40,6 +41,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   useEffect(() => {
     let mounted = true;
     if (!asset?.blobKey) return;
+    setSourceUrl(null);
     void objectUrlFor(asset.id).then((url) => {
       if (mounted) setSourceUrl(url);
     });
@@ -57,7 +59,11 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const iterations = useMemo(() => {
     return [...(asset?.editTrail?.iterations ?? [])].sort((a, b) => b.createdAt - a.createdAt);
   }, [asset?.editTrail?.iterations]);
-  const canUndo = (asset?.editTrail?.iterations.length ?? 0) > 1;
+  const activeIteration = useMemo(() => {
+    if (!asset?.editTrail) return null;
+    return asset.editTrail.iterations.find((iteration) => iteration.id === asset.editTrail?.activeIterationId) ?? null;
+  }, [asset?.editTrail]);
+  const canUndo = Boolean(activeIteration && activeIteration.source !== 'original');
 
   if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return null;
 
@@ -129,20 +135,25 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             <div className="space-y-2">
-              {iterations.map((iteration, index) => {
+              {iterations.map((iteration) => {
                 const active = iteration.id === asset.editTrail?.activeIterationId;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={iteration.id}
-                    className={`rounded-lg border p-2 ${
-                      active ? 'border-emerald-400/80 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(52,211,153,0.18)]' : 'border-white/10 bg-white/[0.03]'
+                    aria-current={active ? 'true' : undefined}
+                    onClick={() => setActiveEditTrailIteration(asset.id, iteration.id)}
+                    className={`w-full rounded-lg border p-2 text-left transition ${
+                      active
+                        ? 'border-emerald-400/80 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(52,211,153,0.18)]'
+                        : 'border-white/10 bg-white/[0.03] hover:border-brand-300/70 hover:bg-brand-500/10 focus-visible:border-brand-300/80 focus-visible:outline-none'
                     }`}
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <div className="truncate text-xs font-semibold text-slate-100">{iteration.label}</div>
                         <div className="text-[10px] uppercase tracking-wide text-slate-500">
-                          {index === 0 ? 'Current source' : iteration.source}
+                          {active ? 'Current source' : iteration.source}
                         </div>
                       </div>
                       {active && <span className="rounded-full bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200">Active</span>}
@@ -161,7 +172,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                       <span>x {Math.round(iteration.transform.offsetX)}</span>
                       <span>y {Math.round(iteration.transform.offsetY)}</span>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
