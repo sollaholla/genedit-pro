@@ -32,6 +32,7 @@ type ElementPool = Map<string, HTMLMediaElement>;
 
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
+const HAVE_CURRENT_DATA = 2;
 const PREVIEW_ASPECTS = {
   '16:9': 16 / 9,
   '2.39:1': 2.39,
@@ -55,6 +56,19 @@ function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   if (drift > threshold && !el.seeking && el.readyState >= 1) {
     try { el.currentTime = target; } catch { /* noop */ }
   }
+}
+
+function canPaintSyncedVideo(el: HTMLVideoElement, target: number, playing: boolean) {
+  if (el.readyState < HAVE_CURRENT_DATA || el.seeking) return false;
+  const threshold = playing ? 0.15 : 0.015;
+  return Math.abs(el.currentTime - target) <= threshold;
+}
+
+function hideVideoElement(el: HTMLVideoElement) {
+  el.style.display = 'none';
+  el.style.visibility = 'hidden';
+  el.style.transform = '';
+  el.style.cursor = 'default';
 }
 
 function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
@@ -349,6 +363,7 @@ export function PreviewPlayer() {
             v.src = url;
             v.className = 'absolute inset-0 h-full w-full object-cover';
             v.style.display = 'none';
+            v.style.visibility = 'hidden';
             videoHostRef.current?.appendChild(v);
             pool.set(clip.id, v);
             el = v;
@@ -371,6 +386,7 @@ export function PreviewPlayer() {
         } else if (previousMediaKey !== mediaKey) {
           // Asset replaced on this clip.
           existing.src = url;
+          if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
           clipAssetRef.current.set(clip.id, mediaKey);
         }
       }
@@ -408,25 +424,27 @@ export function PreviewPlayer() {
       const frame = resolveFrame(proj, t);
 
       // ---- VIDEO DISPLAY ----
-      const nextVideoClipId = frame.video?.clip.id ?? null;
+      const activeVideoLayer = frame.video;
+      const nextVideoClipId = activeVideoLayer?.clip.id ?? null;
       for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
-        videoEl.style.display = clipId === nextVideoClipId ? '' : 'none';
-        if (clipId === nextVideoClipId) {
-          const tf = frame.video ? resolvedTransform(frame.video.clip) : null;
-          const asset = frame.video
-            ? assetsRef.current.find((item) => item.id === frame.video?.clip.assetId)
-            : null;
+        if (clipId === nextVideoClipId && activeVideoLayer) {
+          seekIfNeeded(videoEl, activeVideoLayer.sourceTimeSec, state.playing);
+          const tf = resolvedTransform(activeVideoLayer.clip);
+          const asset = assetsRef.current.find((item) => item.id === activeVideoLayer.clip.assetId);
           const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
-          const s = Math.max(0.1, Math.min(6, (tf?.scale ?? frame.video?.clip.scale ?? 1) * mediaTransform.scale));
+          const s = Math.max(0.1, Math.min(6, (tf?.scale ?? activeVideoLayer.clip.scale ?? 1) * mediaTransform.scale));
           const ox = (tf?.offsetX ?? 0) + mediaTransform.offsetX;
           const oy = (tf?.offsetY ?? 0) + mediaTransform.offsetY;
+          videoEl.style.display = '';
+          videoEl.style.visibility = canPaintSyncedVideo(videoEl, activeVideoLayer.sourceTimeSec, state.playing)
+            ? 'visible'
+            : 'hidden';
           videoEl.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
           videoEl.style.transformOrigin = 'center center';
           videoEl.style.cursor = tf ? 'move' : 'default';
         } else {
-          videoEl.style.transform = '';
-          videoEl.style.cursor = 'default';
+          hideVideoElement(videoEl);
         }
       }
       const hasVideo = nextVideoClipId !== null;
