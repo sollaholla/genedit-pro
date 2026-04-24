@@ -95,7 +95,7 @@ function MasterFader({ value, onChange }: MasterFaderProps) {
 
   return (
     <div
-      className="relative h-full w-7 touch-none select-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+      className="relative h-full w-5 touch-none select-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
       role="slider"
       aria-label="Master volume"
       aria-valuemin={0}
@@ -132,18 +132,18 @@ function MasterFader({ value, onChange }: MasterFaderProps) {
       }}
       title={`Master volume: ${pct}%`}
     >
-      <div ref={railRef} className="absolute inset-y-0 left-1/2 w-1.5 -translate-x-1/2 rounded-full bg-surface-700">
+      <div ref={railRef} className="absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 rounded-full bg-surface-700">
         <div
           className="absolute inset-x-0 bottom-0 rounded-full bg-brand-500/65"
           style={{ height: `${norm * 100}%` }}
         />
       </div>
       <div
-        className="absolute left-1/2 h-3.5 w-3.5 -translate-x-1/2 translate-y-1/2 rounded-full border border-brand-200 bg-brand-500 shadow-sm shadow-brand-950/50"
+        className="absolute left-1/2 h-3 w-3 -translate-x-1/2 translate-y-1/2 rounded-full border border-brand-200 bg-brand-500 shadow-sm shadow-brand-950/50"
         style={{ bottom: `${norm * 100}%` }}
       />
       <div
-        className="absolute left-1/2 h-px w-4 -translate-x-1/2 bg-white/30"
+        className="absolute left-1/2 h-px w-3 -translate-x-1/2 bg-white/30"
         style={{ bottom: '50%' }}
       />
     </div>
@@ -227,41 +227,41 @@ export function MasterBussPanel() {
   const isClipping = channels[0].clipping || channels[1].clipping;
 
   return (
-    <div className="flex h-full flex-col px-2 pb-3 pt-2">
-      <div className="shrink-0 pb-2 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-500">
+    <div className="flex h-full flex-col px-2 pb-2 pt-2">
+      <div className="shrink-0 pb-1 text-center text-[9px] font-semibold uppercase tracking-widest text-slate-500">
         Master
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[28px_14px_14px_24px] gap-2">
+      <div className="grid min-h-0 flex-1 grid-cols-[20px_14px_14px_22px] gap-1.5">
         <div className="flex min-h-0 flex-col items-center">
           <div className="relative min-h-0 flex-1">
             <MasterFader value={masterVolume} onChange={setMasterVolume} />
           </div>
-          <div className="shrink-0 pt-1 text-center font-mono text-[10px] text-slate-300">{Math.round(masterVolume * 100)}%</div>
-          <div className="shrink-0 text-center text-[8px] uppercase tracking-wide text-slate-600">Vol</div>
+          <div className="h-6 shrink-0 pt-1 text-center">
+            <div className="font-mono text-[8px] leading-none text-slate-300">{Math.round(masterVolume * 100)}%</div>
+            <div className="pt-0.5 text-[6px] uppercase leading-none tracking-wide text-slate-600">Vol</div>
+          </div>
         </div>
 
         <div className="flex min-h-0 flex-col items-center">
           <div className="min-h-0 flex-1">
             <VuBar {...channels[0]} />
           </div>
-          <span className="shrink-0 pt-1 text-center text-[8px] text-slate-500">L</span>
-          <div className="h-[10px] shrink-0" />
+          <div className="h-6 shrink-0 pt-1 text-center text-[8px] leading-none text-slate-500">L</div>
         </div>
 
         <div className="flex min-h-0 flex-col items-center">
           <div className="min-h-0 flex-1">
             <VuBar {...channels[1]} />
           </div>
-          <span className="shrink-0 pt-1 text-center text-[8px] text-slate-500">R</span>
-          <div className="h-[10px] shrink-0" />
+          <div className="h-6 shrink-0 pt-1 text-center text-[8px] leading-none text-slate-500">R</div>
         </div>
 
         <div className="flex min-h-0 flex-col">
           <div className="relative min-h-0 flex-1">
             <DbScale />
           </div>
-          <div className="flex h-[19px] shrink-0 items-start justify-start pt-1">
+          <div className="flex h-6 shrink-0 items-start justify-start pt-1">
             {isClipping && (
               <span className="rounded bg-red-600 px-1 py-px text-[7px] font-bold text-white">
                 CLIP
