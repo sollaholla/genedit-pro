@@ -56,3 +56,9 @@ export async function getFFmpeg(onLog?: LoadProgress): Promise<FFmpeg> {
     throw error;
   }
 }
+
+export function resetFFmpeg(): void {
+  instance?.terminate();
+  instance = null;
+  loadingPromise = null;
+}

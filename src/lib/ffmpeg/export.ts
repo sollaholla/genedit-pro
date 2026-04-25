@@ -1,11 +1,14 @@
-import { fetchFile } from '@ffmpeg/util';
+import { FFFSType } from '@ffmpeg/ffmpeg';
 import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { getBlob } from '@/lib/media/storage';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { resolveFrame } from '@/lib/playback/engine';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { colorCorrectionFfmpegFilters } from '@/lib/components/colorCorrection';
-import { getFFmpeg } from './client';
+import { getFFmpeg, resetFFmpeg } from './client';
+
+const SOURCE_MOUNT_DIR = '/source-media';
+const CONCAT_MOUNT_DIR = '/concat-media';
 
 type Segment = {
   index: number;
@@ -58,19 +61,75 @@ export function planSegments(project: Project): Segment[] {
   return segments;
 }
 
-async function writeAssetToFs(
-  ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
-  asset: MediaAsset,
-  vfsName: string,
-): Promise<void> {
-  const blob = await getBlob(asset.blobKey);
-  if (!blob) throw new Error(`Missing blob for asset ${asset.name}`);
-  await ffmpeg.writeFile(vfsName, await fetchFile(blob));
-}
-
 function vfsNameForAsset(asset: MediaAsset): string {
   const ext = asset.name.split('.').pop() || 'mp4';
-  return `asset_${asset.id}.${ext.toLowerCase()}`;
+  return `${SOURCE_MOUNT_DIR}/asset_${asset.id}.${ext.toLowerCase()}`;
+}
+
+function workerFsNameForAsset(asset: MediaAsset): string {
+  return vfsNameForAsset(asset).slice(SOURCE_MOUNT_DIR.length + 1);
+}
+
+async function createDirIfMissing(ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>, path: string): Promise<void> {
+  await ffmpeg.createDir(path).catch(() => undefined);
+}
+
+async function mountSourceAssets(
+  ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
+  assets: MediaAsset[],
+): Promise<void> {
+  const blobs: Array<{ name: string; data: Blob }> = [];
+  for (const asset of assets) {
+    const blob = await getBlob(asset.blobKey);
+    if (!blob) throw new Error(`Missing blob for asset ${asset.name}`);
+    blobs.push({ name: workerFsNameForAsset(asset), data: blob });
+  }
+
+  await unmountDir(ffmpeg, SOURCE_MOUNT_DIR);
+  await createDirIfMissing(ffmpeg, SOURCE_MOUNT_DIR);
+  await ffmpeg.mount(FFFSType.WORKERFS, { blobs }, SOURCE_MOUNT_DIR);
+}
+
+async function mountConcatSource(
+  ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
+  blob: Blob,
+): Promise<string> {
+  await unmountDir(ffmpeg, CONCAT_MOUNT_DIR);
+  await createDirIfMissing(ffmpeg, CONCAT_MOUNT_DIR);
+  await ffmpeg.mount(FFFSType.WORKERFS, { blobs: [{ name: 'timeline.ts', data: blob }] }, CONCAT_MOUNT_DIR);
+  return `${CONCAT_MOUNT_DIR}/timeline.ts`;
+}
+
+async function unmountDir(ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>, path: string): Promise<void> {
+  await ffmpeg.unmount(path).catch(() => undefined);
+  await ffmpeg.deleteDir(path).catch(() => undefined);
+}
+
+async function execOrThrow(
+  ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
+  args: string[],
+  label: string,
+): Promise<void> {
+  const code = await ffmpeg.exec(args);
+  if (code !== 0) {
+    throw new Error(`FFmpeg ${label} failed with exit code ${code}.`);
+  }
+}
+
+function isFfmpegMemoryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /memory access out of bounds|out of memory|Cannot enlarge memory/i.test(message);
+}
+
+function exportErrorMessage(error: unknown): string {
+  if (!isFfmpegMemoryError(error)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return [
+    'The browser encoder ran out of WebAssembly memory while exporting.',
+    'This export path now avoids copying source media and intermediate segments into the encoder, so retry the export once.',
+    'If it still happens, the timeline is too large for the in-browser encoder at the current resolution.',
+  ].join(' ');
 }
 
 function segmentVideoFilter(width: number, height: number, fps: number, clip: Clip | null, timelineTimeSec: number): string {
@@ -147,21 +206,24 @@ export async function exportProject(
   if (segments.length === 0) throw new Error('No segments to export.');
 
   onStatus?.('Preparing source media…');
-  const writtenAssets = new Set<string>();
   const uniqueAssetIds = new Set<string>();
   for (const seg of segments) {
     if (seg.videoLayer) uniqueAssetIds.add(seg.videoLayer.clip.assetId);
     if (seg.audioLayer) uniqueAssetIds.add(seg.audioLayer.clip.assetId);
   }
-  for (const assetId of uniqueAssetIds) {
-    const asset = assetById.get(assetId);
-    if (!asset) continue;
-    await writeAssetToFs(ffmpeg, asset, vfsNameForAsset(asset));
-    writtenAssets.add(asset.id);
+  const sourceAssets = [...uniqueAssetIds]
+    .map((assetId) => assetById.get(assetId))
+    .filter((asset): asset is MediaAsset => !!asset);
+  let sourceMounted = false;
+  if (sourceAssets.length > 0) {
+    await mountSourceAssets(ffmpeg, sourceAssets);
+    sourceMounted = true;
   }
 
-  const concatListLines: string[] = [];
-  const segmentFiles: string[] = [];
+  const segmentChunks: BlobPart[] = [];
+  const temporaryFiles = new Set<string>();
+  let concatMounted = false;
+  let resetEncoder = false;
   let lastFfmpegProgress = 0;
 
   // ffmpeg progress is reported per-invocation; we scale each to its slice of total.
@@ -175,6 +237,7 @@ export async function exportProject(
       const seg = segments[i]!;
       const segDuration = seg.endSec - seg.startSec;
       const outName = `seg_${String(i).padStart(4, '0')}.ts`;
+      temporaryFiles.add(outName);
       onStatus?.(`Encoding segment ${i + 1}/${segments.length}`);
 
       const args: string[] = [];
@@ -252,44 +315,52 @@ export async function exportProject(
       args.push('-y', outName);
 
       lastFfmpegProgress = 0;
-      await ffmpeg.exec(args);
-      segmentFiles.push(outName);
-      concatListLines.push(`file '${outName}'`);
+      await execOrThrow(ffmpeg, args, `segment ${i + 1}/${segments.length}`);
+      const segmentData = (await ffmpeg.readFile(outName)) as Uint8Array;
+      const segmentCopy = new Uint8Array(segmentData.byteLength);
+      segmentCopy.set(segmentData);
+      segmentChunks.push(segmentCopy.buffer);
+      await ffmpeg.deleteFile(outName).catch(() => undefined);
+      temporaryFiles.delete(outName);
 
       const overall = (i + lastFfmpegProgress) / segments.length;
       onProgress?.(Math.min(0.98, overall));
     }
 
     onStatus?.('Finalizing…');
-    const concatFile = 'concat.txt';
-    await ffmpeg.writeFile(concatFile, new TextEncoder().encode(concatListLines.join('\n')));
+    await unmountDir(ffmpeg, SOURCE_MOUNT_DIR);
+    sourceMounted = false;
+
+    const concatBlob = new Blob(segmentChunks, { type: 'video/mp2t' });
+    segmentChunks.length = 0;
+    const concatInput = await mountConcatSource(ffmpeg, concatBlob);
+    concatMounted = true;
+
     const outputFile = 'output.mp4';
-    await ffmpeg.exec([
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', concatFile,
+    temporaryFiles.add(outputFile);
+    await execOrThrow(ffmpeg, [
+      '-fflags', '+genpts',
+      '-i', concatInput,
       '-c', 'copy',
       '-movflags', '+faststart',
       '-y', outputFile,
-    ]);
+    ], 'final mux');
 
     const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
     onProgress?.(1);
     onStatus?.('Done');
 
-    // Clean up VFS
-    for (const f of segmentFiles) {
-      await ffmpeg.deleteFile(f).catch(() => undefined);
-    }
-    await ffmpeg.deleteFile(concatFile).catch(() => undefined);
-    await ffmpeg.deleteFile(outputFile).catch(() => undefined);
-    for (const assetId of writtenAssets) {
-      const asset = assetById.get(assetId);
-      if (asset) await ffmpeg.deleteFile(vfsNameForAsset(asset)).catch(() => undefined);
-    }
-
     return new Blob([data.slice().buffer], { type: 'video/mp4' });
+  } catch (error) {
+    resetEncoder = isFfmpegMemoryError(error);
+    throw new Error(exportErrorMessage(error));
   } finally {
     ffmpeg.off('progress', progressHandler);
+    for (const file of temporaryFiles) {
+      await ffmpeg.deleteFile(file).catch(() => undefined);
+    }
+    if (concatMounted) await unmountDir(ffmpeg, CONCAT_MOUNT_DIR);
+    if (sourceMounted) await unmountDir(ffmpeg, SOURCE_MOUNT_DIR);
+    if (resetEncoder) resetFFmpeg();
   }
 }
