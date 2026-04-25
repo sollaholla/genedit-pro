@@ -84,6 +84,8 @@ export function Timeline() {
   const assets = useMediaStore((s) => s.assets);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const trackEditorRef = useRef<HTMLDivElement | null>(null);
+  const trackEditorHoverRef = useRef(false);
   const [viewportWidth, setViewportWidth] = useState(1200);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
@@ -184,6 +186,10 @@ export function Timeline() {
     return Math.max(0, tracks.length - 1);
   }, [keyframeLanesByTrack, tracks]);
 
+  const isTrackEditorHovered = useCallback(() => (
+    trackEditorHoverRef.current || Boolean(trackEditorRef.current?.matches(':hover'))
+  ), []);
+
   // Zoom on Cmd/Ctrl+wheel
   useEffect(() => {
     const el = scrollRef.current;
@@ -211,8 +217,17 @@ export function Timeline() {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
 
-      if (mod && (e.key === 'c' || e.key === 'C')) {
+      if (mod && key === 'a' && isTrackEditorHovered()) {
+        e.preventDefault();
+        const allClipIds = useProjectStore.getState().project.clips.map((clip) => clip.id);
+        setSelectedKeyframe(null);
+        setClipSelection(allClipIds);
+        return;
+      }
+
+      if (mod && key === 'c') {
         const selected = usePlaybackStore.getState().selectedClipIds;
         if (selected.length === 0) return;
         const idSet = new Set(selected);
@@ -227,7 +242,7 @@ export function Timeline() {
         setClipboard(copied);
         return;
       }
-      if (mod && (e.key === 'v' || e.key === 'V')) {
+      if (mod && key === 'v') {
         const copied = usePlaybackStore.getState().clipboard;
         if (copied.length === 0) return;
         if (copied.length === 1) {
@@ -238,7 +253,7 @@ export function Timeline() {
         }
         return;
       }
-      if (mod && (e.key === 'd' || e.key === 'D')) {
+      if (mod && key === 'd') {
         if (!selectedClipId) return;
         e.preventDefault();
         update((p) => duplicateClip(p, selectedClipId));
@@ -274,7 +289,7 @@ export function Timeline() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe]);
+  }, [selectedClipId, currentTime, update, selectClip, setClipSelection, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe, isTrackEditorHovered]);
 
   // ---- Clip right-click context menu ----
   const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -618,7 +633,25 @@ export function Timeline() {
     : null;
   const ghostAsset = ghostClip ? assetById.get(ghostClip.assetId) : undefined;
   return (
-    <div className="flex h-full flex-col">
+    <div
+      ref={trackEditorRef}
+      className="flex h-full flex-col"
+      onPointerEnter={() => {
+        trackEditorHoverRef.current = true;
+      }}
+      onPointerMove={() => {
+        trackEditorHoverRef.current = true;
+      }}
+      onPointerLeave={() => {
+        trackEditorHoverRef.current = false;
+      }}
+      onMouseMove={() => {
+        trackEditorHoverRef.current = true;
+      }}
+      onMouseLeave={() => {
+        trackEditorHoverRef.current = false;
+      }}
+    >
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-1.5">
         <div className="flex items-center gap-2">
           <TrackCreateMenu
@@ -966,6 +999,7 @@ function ShortcutHints() {
       <Hint keys={['Del']} label="remove" />
       <Hint keys={[MOD, 'Z']} label="undo" />
       <Hint keys={[MOD, IS_MAC ? '⇧' : 'Shift', 'Z']} label="redo" />
+      <Hint keys={[MOD, 'A']} label="select all" />
       <Hint keys={[ALT, '↕ drag']} label="change track" />
     </div>
   );
