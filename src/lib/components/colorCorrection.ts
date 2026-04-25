@@ -207,17 +207,17 @@ export function colorCorrectionFfmpegFilters(clip: Clip, timelineTimeSec: number
   // Keep export on the portable eq filter path so color correction never
   // breaks the encoder; wheel tinting remains preview-only until we verify a
   // wasm-safe per-channel filter.
-  const filters: string[] = [];
-  filters.push(
+  return [
     [
       'eq',
-      `brightness=${roundFilter(data.brightness)}`,
-      `contrast=${roundFilter(data.contrast)}`,
-      `gamma=${roundFilter(data.gamma)}`,
-      `saturation=${roundFilter(data.saturation)}`,
-    ].join(':'),
-  );
-  return filters;
+      [
+        `brightness=${roundFilter(data.brightness)}`,
+        `contrast=${roundFilter(data.contrast)}`,
+        `gamma=${roundFilter(data.gamma)}`,
+        `saturation=${roundFilter(data.saturation)}`,
+      ].join(':'),
+    ].join('='),
+  ];
 }
 
 export function clampWheel(value: ColorWheelValue): ColorWheelValue {
