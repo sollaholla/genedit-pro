@@ -26,6 +26,12 @@ import {
 } from '@/lib/components/transform';
 
 const kindIcon = { video: Film, audio: Music, image: ImageIcon, recipe: BookOpen };
+const SPEED_SLIDER_MIN = 0.25;
+const SPEED_SLIDER_MAX = 3;
+
+function speedTickPercent(value: number): number {
+  return ((value - SPEED_SLIDER_MIN) / (SPEED_SLIDER_MAX - SPEED_SLIDER_MIN)) * 100;
+}
 
 export function ClipInspector() {
   const [applyingSpeed, setApplyingSpeed] = useState(false);
@@ -42,6 +48,7 @@ export function ClipInspector() {
   const toggleKeyframeComponent = usePlaybackStore((s) => s.toggleKeyframeComponent);
   const hideKeyframeComponent = usePlaybackStore((s) => s.hideKeyframeComponent);
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
+  const clipAudioLevel = usePlaybackStore((s) => (selectedId ? s.clipAudioLevels[selectedId] : undefined));
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
   const assets = useMediaStore((s) => s.assets);
@@ -142,14 +149,23 @@ export function ClipInspector() {
           <div className="flex items-center justify-between">
             <label className="text-xs text-slate-400">Speed</label>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-300 hover:bg-surface-600 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-35"
+                title="Reset speed"
+                disabled={applyingSpeed || Math.abs(speed - 1) < 0.001}
+                onClick={() => void setSpeedAsync(1)}
+              >
+                <RotateCcw size={11} />
+              </button>
               {applyingSpeed && <Loader2 size={12} className="animate-spin text-brand-400" />}
               <span className="font-mono text-xs text-slate-200">{speed.toFixed(2)}x</span>
             </div>
           </div>
           <input
             type="range"
-            min={0.25}
-            max={3}
+            min={SPEED_SLIDER_MIN}
+            max={SPEED_SLIDER_MAX}
             step={0.05}
             value={speed}
             disabled={applyingSpeed}
@@ -160,9 +176,11 @@ export function ClipInspector() {
             className="volume-slider w-full"
           />
           <div className="flex justify-between text-[10px] text-slate-500">
-            <span>0.25x</span>
-            <span>1.0x</span>
-            <span>3.0x</span>
+            <div className="relative h-4 w-full">
+              <span className="absolute left-0">0.25x</span>
+              <span className="absolute -translate-x-1/2" style={{ left: `${speedTickPercent(1)}%` }}>1.0x</span>
+              <span className="absolute right-0">3.0x</span>
+            </div>
           </div>
           <p className="text-[10px] text-slate-500">
             Pitch is preserved during preview/export; slower rates are smoothed asynchronously.
@@ -181,9 +199,20 @@ export function ClipInspector() {
                 <Volume2 size={12} />
                 Master Volume
               </label>
-              <span className="font-mono text-xs text-slate-300">
-                {Math.round((clip.volume ?? 1) * 100)}%
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-300 hover:bg-surface-600 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-35"
+                  title="Reset clip volume"
+                  disabled={Math.abs((clip.volume ?? 1) - 1) < 0.001}
+                  onClick={() => setVolume(1)}
+                >
+                  <RotateCcw size={11} />
+                </button>
+                <span className="font-mono text-xs text-slate-300">
+                  {Math.round((clip.volume ?? 1) * 100)}%
+                </span>
+              </div>
             </div>
             <input
               type="range"
@@ -199,6 +228,7 @@ export function ClipInspector() {
               <span>100%</span>
               <span>200%</span>
             </div>
+            <ClipStereoMeter level={clipAudioLevel} />
           </div>
           <EnvelopeControls
             clipId={selectedId}
@@ -936,6 +966,33 @@ function hasTransformKeyframes(component: TransformComponentInstance): boolean {
   return component.data.keyframes.scale.length > 0 ||
     component.data.keyframes.offsetX.length > 0 ||
     component.data.keyframes.offsetY.length > 0;
+}
+
+function ClipStereoMeter({ level }: { level?: { left: number; right: number } }) {
+  const left = Math.max(0, Math.min(1, level?.left ?? 0));
+  const right = Math.max(0, Math.min(1, level?.right ?? 0));
+  return (
+    <div className="rounded border border-surface-700 bg-surface-950/50 px-2 py-1.5">
+      <ClipMeterRow label="L" value={left} />
+      <ClipMeterRow label="R" value={right} />
+    </div>
+  );
+}
+
+function ClipMeterRow({ label, value }: { label: string; value: number }) {
+  const pct = Math.round(value * 100);
+  const color = value > 0.9 ? 'bg-red-500' : value > 0.72 ? 'bg-amber-400' : 'bg-emerald-400';
+  return (
+    <div className="grid grid-cols-[12px_1fr_28px] items-center gap-2 text-[10px] text-slate-500">
+      <span className="font-mono">{label}</span>
+      <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-700">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        <div className="absolute inset-y-0 left-[75%] w-px bg-white/20" />
+        <div className="absolute inset-y-0 left-[90%] w-px bg-white/25" />
+      </div>
+      <span className="text-right font-mono text-slate-500">{pct}%</span>
+    </div>
+  );
 }
 
 function EnvelopeControls({

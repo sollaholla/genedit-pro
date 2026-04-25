@@ -77,6 +77,14 @@ export async function createPiApiVideoTask(
   return readPiApiTaskResponse(response, 'PiAPI generation request failed');
 }
 
+export async function getPiApiVideoTask(
+  taskId: string,
+  credentials: PiApiCredentials,
+): Promise<PiApiTaskData> {
+  const response = await piApiFetch(`/api/v1/task/${encodeURIComponent(taskId)}`, credentials, { method: 'GET' });
+  return readPiApiTaskResponse(response, 'PiAPI generation poll failed');
+}
+
 export async function pollPiApiVideoTask({
   credentials,
   initialTask,
@@ -99,8 +107,7 @@ export async function pollPiApiVideoTask({
     await new Promise((resolve) => setTimeout(resolve, 5000));
     progress = Math.min(95, progress + 5);
     onProgress?.(progress);
-    const response = await piApiFetch(`/api/v1/task/${encodeURIComponent(taskId)}`, credentials, { method: 'GET' });
-    task = await readPiApiTaskResponse(response, 'PiAPI generation poll failed');
+    task = await getPiApiVideoTask(taskId, credentials);
   }
 
   throw new VideoGenerationProviderError('InternalError', 'PiAPI generation timed out before returning a video.');

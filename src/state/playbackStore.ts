@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import type { Clip } from '@/types';
 import { DEFAULT_PX_PER_SEC, clampPxPerSec } from '@/lib/timeline/geometry';
 
+export type ClipAudioLevel = {
+  left: number;
+  right: number;
+};
+
 type PlaybackState = {
   playing: boolean;
   currentTimeSec: number;
@@ -19,6 +24,7 @@ type PlaybackState = {
   visibleKeyframeComponentKeys: string[];
   /** Overall output gain (0–2). Applied at the master GainNode in PreviewPlayer. */
   masterVolume: number;
+  clipAudioLevels: Record<string, ClipAudioLevel>;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -38,6 +44,7 @@ type PlaybackState = {
   toggleKeyframeComponent: (id: string) => void;
   hideKeyframeComponent: (id: string) => void;
   setMasterVolume: (v: number) => void;
+  setClipAudioLevels: (levels: Record<string, ClipAudioLevel>) => void;
 };
 
 export const usePlaybackStore = create<PlaybackState>((set, get) => ({
@@ -50,6 +57,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   activeTransformComponentId: null,
   visibleKeyframeComponentKeys: [],
   masterVolume: 1,
+  clipAudioLevels: {},
   play: () => set({ playing: true }),
   pause: () => set({ playing: false }),
   toggle: () => set({ playing: !get().playing }),
@@ -84,4 +92,5 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     if (cur.includes(id)) set({ visibleKeyframeComponentKeys: cur.filter((candidate) => candidate !== id) });
   },
   setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(2, v)) }),
+  setClipAudioLevels: (levels) => set({ clipAudioLevels: levels }),
 }));

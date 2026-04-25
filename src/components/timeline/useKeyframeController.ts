@@ -16,6 +16,7 @@ import {
 type ProjectUpdater = (fn: (project: Project) => Project) => void;
 
 type UseKeyframeControllerArgs = {
+  clips: Clip[];
   selectedClip: Clip | null;
   currentTimeSec: number;
   fps: number;
@@ -27,6 +28,7 @@ type UseKeyframeControllerArgs = {
 };
 
 export function useKeyframeController({
+  clips,
   selectedClip,
   currentTimeSec,
   fps,
@@ -37,6 +39,9 @@ export function useKeyframeController({
   setCurrentTime,
 }: UseKeyframeControllerArgs) {
   const [selectedKeyframe, setSelectedKeyframe] = useState<KeyframeSelection | null>(null);
+  const selectedKeyframeClip = selectedKeyframe
+    ? clips.find((clip) => clip.id === selectedKeyframe.clipId) ?? null
+    : null;
 
   const visibleKeyframeProperties = useMemo(() => {
     if (!selectedClip) return [];
@@ -51,92 +56,100 @@ export function useKeyframeController({
     : 0;
 
   const selectedKeyframeData = useMemo(
-    () => findSelectedKeyframe(selectedClip, selectedKeyframe),
-    [selectedClip, selectedKeyframe],
+    () => findSelectedKeyframe(selectedKeyframeClip, selectedKeyframe),
+    [selectedKeyframeClip, selectedKeyframe],
   );
 
-  const patchSelectedClip = useCallback((writer: (clip: Clip) => Clip, silent = false) => {
-    if (!selectedClip) return;
+  const patchClip = useCallback((clipId: string, writer: (clip: Clip) => Clip, silent = false) => {
     const apply = silent ? updateSilent : update;
     apply((project) => ({
       ...project,
-      clips: project.clips.map((clip) => (clip.id === selectedClip.id ? writer(clip) : clip)),
+      clips: project.clips.map((clip) => (clip.id === clipId ? writer(clip) : clip)),
     }));
-  }, [selectedClip, update, updateSilent]);
+  }, [update, updateSilent]);
 
   const deleteSelectedKeyframe = useCallback(() => {
     if (!selectedKeyframe) return;
-    patchSelectedClip((clip) => removeTransformKeyframeGroup(clip, selectedKeyframe));
+    patchClip(selectedKeyframe.clipId, (clip) => removeTransformKeyframeGroup(clip, selectedKeyframe));
     setSelectedKeyframe(null);
-  }, [patchSelectedClip, selectedKeyframe]);
+  }, [patchClip, selectedKeyframe]);
 
   const setSelectedKeyframeValue = useCallback((value: number) => {
     if (!selectedKeyframe) return;
-    patchSelectedClip((clip) => updateTransformKeyframe(clip, selectedKeyframe, { value }));
-  }, [patchSelectedClip, selectedKeyframe]);
+    patchClip(selectedKeyframe.clipId, (clip) => updateTransformKeyframe(clip, selectedKeyframe, { value }));
+  }, [patchClip, selectedKeyframe]);
 
   const nudgeSelectedKeyframe = useCallback((property: 'time' | 'value', direction: -1 | 1) => {
-    if (!selectedKeyframeData || !selectedClip) return;
+    if (!selectedKeyframeData || !selectedKeyframeClip) return;
     const frameStep = 1 / Math.max(1, fps);
     const valueStep = selectedKeyframeData.property === 'scale' ? 0.01 : 1;
-    const durationSec = clipTimelineDurationSec(selectedClip);
+    const durationSec = clipTimelineDurationSec(selectedKeyframeClip);
     const patch = property === 'time'
       ? { timeSec: Math.max(0, Math.min(durationSec, selectedKeyframeData.timeSec + direction * frameStep)) }
       : { value: selectedKeyframeData.value + direction * valueStep };
-    patchSelectedClip((clip) => updateTransformKeyframe(clip, selectedKeyframeData, patch));
+    patchClip(selectedKeyframeClip.id, (clip) => updateTransformKeyframe(clip, selectedKeyframeData, patch));
     if (property === 'time') {
       const nextTime = patch.timeSec ?? selectedKeyframeData.timeSec;
-      setCurrentTime(selectedClip.startSec + nextTime);
+      setCurrentTime(selectedKeyframeClip.startSec + nextTime);
     }
-  }, [fps, patchSelectedClip, selectedClip, selectedKeyframeData, setCurrentTime]);
+  }, [fps, patchClip, selectedKeyframeClip, selectedKeyframeData, setCurrentTime]);
 
   const beginKeyframeDrag = useCallback(() => {
     beginTx();
   }, [beginTx]);
 
   const moveKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number; value: number }) => {
-    patchSelectedClip(
+    patchClip(
+      meta.clipId,
       (clip) => updateTransformKeyframe(clip, meta, { timeSec: meta.timeSec, value: meta.value }),
       true,
     );
     setSelectedKeyframe({
       componentIndex: meta.componentIndex,
       componentId: meta.componentId,
+      clipId: meta.clipId,
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
-    if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
-  }, [patchSelectedClip, selectedClip, setCurrentTime]);
+    const clip = clips.find((candidate) => candidate.id === meta.clipId);
+    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
+  }, [clips, patchClip, setCurrentTime]);
 
   const moveKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
     if (!first) return;
-    const durationSec = selectedClip ? clipTimelineDurationSec(selectedClip) : 0;
+    const clip = clips.find((candidate) => candidate.id === first.clipId);
+    if (!clip) return;
+    const durationSec = clipTimelineDurationSec(clip);
     const nextTimeSec = Math.max(0, Math.min(durationSec, meta.timeSec));
-    patchSelectedClip(
+    patchClip(
+      first.clipId,
       (clip) => moveTransformKeyframeGroup(clip, meta.members, nextTimeSec),
       true,
     );
     setSelectedKeyframe(first);
-    if (selectedClip) setCurrentTime(selectedClip.startSec + nextTimeSec);
-  }, [patchSelectedClip, selectedClip, setCurrentTime]);
+    setCurrentTime(clip.startSec + nextTimeSec);
+  }, [clips, patchClip, setCurrentTime]);
 
   const selectKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number }) => {
     setSelectedKeyframe({
       componentIndex: meta.componentIndex,
       componentId: meta.componentId,
+      clipId: meta.clipId,
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
-    if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
-  }, [selectedClip, setCurrentTime]);
+    const clip = clips.find((candidate) => candidate.id === meta.clipId);
+    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
+  }, [clips, setCurrentTime]);
 
   const selectKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
     if (!first) return;
     setSelectedKeyframe(first);
-    if (selectedClip) setCurrentTime(selectedClip.startSec + meta.timeSec);
-  }, [selectedClip, setCurrentTime]);
+    const clip = clips.find((candidate) => candidate.id === first.clipId);
+    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
+  }, [clips, setCurrentTime]);
 
   return {
     currentTimeSec,

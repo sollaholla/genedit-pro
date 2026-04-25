@@ -10,6 +10,7 @@ export const KEYFRAME_COMPONENT_ROW_HEIGHT_PX = 24;
 export const KEYFRAME_PROPERTY_ROW_HEIGHT_PX = 30;
 
 export type KeyframeSelection = {
+  clipId: string;
   componentIndex: number;
   componentId: string;
   property: TransformProperty;
@@ -39,6 +40,10 @@ export function laneHeightForClip(visibleRows: number, totalComponents: number):
     visibleRows * KEYFRAME_PROPERTY_ROW_HEIGHT_PX;
 }
 
+export function laneHeightForRows(rows: KeyframePropertyRow[]): number {
+  return laneHeightForClip(rows.length, new Set(rows.map((row) => row.componentId)).size);
+}
+
 export function getKeyframeProperties(clip: Clip, visibleComponentKeys?: Set<string>): KeyframePropertyRow[] {
   const transforms = getTransformComponents(clip);
   const properties: KeyframePropertyRow[] = [];
@@ -61,6 +66,7 @@ export function getKeyframeProperties(clip: Clip, visibleComponentKeys?: Set<str
 
 export function findSelectedKeyframe(clip: Clip | null, selectedKeyframe: KeyframeSelection | null): SelectedKeyframeData | null {
   if (!clip || !selectedKeyframe) return null;
+  if (clip.id !== selectedKeyframe.clipId) return null;
   const row = getKeyframeProperties(clip).find((candidate) => (
     candidate.componentId === selectedKeyframe.componentId &&
     candidate.property === selectedKeyframe.property

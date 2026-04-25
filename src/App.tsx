@@ -12,8 +12,10 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { GenerateVideoModal } from '@/components/media/GenerateVideoModal';
 import { useProjectStore } from '@/state/projectStore';
 import type { MediaAsset } from '@/types';
+import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
 export default function App() {
+  usePiApiGenerationResume();
   const importerRef = useRef<MediaImporterHandle | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -64,7 +66,10 @@ export default function App() {
       <GenerateVideoModal
         open={generateOpen}
         onClose={() => setGenerateOpen(false)}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setGenerateOpen(false);
+          setSettingsOpen(true);
+        }}
         initialRecipeAsset={recipeToOpen}
       />
     </>

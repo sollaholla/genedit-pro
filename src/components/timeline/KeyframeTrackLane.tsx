@@ -32,6 +32,7 @@ export function KeyframeTrackLane({
   onMoveKeyframeGroup,
   onSelectKeyframe,
   onSelectKeyframeGroup,
+  onEmptyMouseDown,
 }: {
   clip: Clip;
   pxPerSec: number;
@@ -44,11 +45,12 @@ export function KeyframeTrackLane({
   onMoveKeyframeGroup: (meta: { members: KeyframeSelection[]; timeSec: number }) => void;
   onSelectKeyframe: (meta: KeyframeSelection & { timeSec: number }) => void;
   onSelectKeyframeGroup: (meta: { members: KeyframeSelection[]; timeSec: number }) => void;
+  onEmptyMouseDown?: (e: React.MouseEvent) => void;
 }) {
   if (rows.length === 0) return null;
   const groupedRows = groupRows(rows);
-  const frameGroups = buildFrameGroups(rows, fps);
-  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, fps);
+  const frameGroups = buildFrameGroups(rows, fps, clip.id);
+  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, fps, clip.id);
   const durationSec = Math.max(1e-6, clipTimelineDurationSec(clip));
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(durationSec, pxPerSec));
@@ -58,13 +60,28 @@ export function KeyframeTrackLane({
       className="border-b border-surface-800 bg-surface-950/80"
       style={{ height: laneHeightForClip(rows.length, groupedRows.length) }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onDeselectKeyframe();
+        if (e.target !== e.currentTarget) return;
+        onDeselectKeyframe();
+        onEmptyMouseDown?.(e);
       }}
     >
-      <div className="relative" style={{ height: KEYFRAME_TITLE_HEIGHT_PX }}>
+      <div
+        className="relative"
+        style={{ height: KEYFRAME_TITLE_HEIGHT_PX }}
+        onMouseDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          onDeselectKeyframe();
+          onEmptyMouseDown?.(e);
+        }}
+      >
         <div
           className="absolute bottom-0"
           style={{ left: clipLeftPx, width: clipWidthPx, height: KEYFRAME_TITLE_HEIGHT_PX }}
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            onDeselectKeyframe();
+            onEmptyMouseDown?.(e);
+          }}
         >
           {frameGroups.map((group) => {
             const selected = selectedFrame === group.frame;
@@ -121,6 +138,11 @@ export function KeyframeTrackLane({
           <div
             className="border-y border-surface-800/70 bg-surface-900/30"
             style={{ height: KEYFRAME_COMPONENT_ROW_HEIGHT_PX }}
+            onMouseDown={(e) => {
+              if (e.target !== e.currentTarget) return;
+              onDeselectKeyframe();
+              onEmptyMouseDown?.(e);
+            }}
           />
           {group.rows.map((row) => (
             <div
@@ -128,7 +150,9 @@ export function KeyframeTrackLane({
               className="relative border-b border-surface-800/70 bg-[#090f1d]"
               style={{ height: KEYFRAME_PROPERTY_ROW_HEIGHT_PX }}
               onMouseDown={(e) => {
-                if (e.target === e.currentTarget) onDeselectKeyframe();
+                if (e.target !== e.currentTarget) return;
+                onDeselectKeyframe();
+                onEmptyMouseDown?.(e);
               }}
             >
               <div
@@ -139,12 +163,18 @@ export function KeyframeTrackLane({
                   top: 0,
                   bottom: 0,
                 }}
+                onMouseDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  onDeselectKeyframe();
+                  onEmptyMouseDown?.(e);
+                }}
               >
-                <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-600/45" />
+                <div className="pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-600/45" />
                 {row.points.map((keyframe) => {
                   const frame = Math.round(keyframe.timeSec * fps);
                   const selected = selectedFrame === frame ||
                     (selectedKeyframe?.keyframeId === keyframe.id &&
+                      selectedKeyframe.clipId === clip.id &&
                       selectedKeyframe.componentId === row.componentId &&
                       selectedKeyframe.property === row.property);
                   const left = Math.max(0, Math.min(clipWidthPx, timeToPx(keyframe.timeSec, pxPerSec)));
@@ -161,6 +191,7 @@ export function KeyframeTrackLane({
                         onSelectKeyframe({
                           componentIndex: row.componentIndex,
                           componentId: row.componentId,
+                          clipId: clip.id,
                           property: row.property,
                           keyframeId: keyframe.id,
                           timeSec: keyframe.timeSec,
@@ -174,6 +205,7 @@ export function KeyframeTrackLane({
                           onMoveKeyframe({
                             componentIndex: row.componentIndex,
                             componentId: row.componentId,
+                            clipId: clip.id,
                             property: row.property,
                             keyframeId: keyframe.id,
                             timeSec: Math.max(0, Math.min(durationSec, localPx / pxPerSec)),
@@ -257,7 +289,7 @@ function groupRows(rows: KeyframePropertyRow[]) {
   return groups;
 }
 
-function buildFrameGroups(rows: KeyframePropertyRow[], fps: number): KeyframeFrameGroup[] {
+function buildFrameGroups(rows: KeyframePropertyRow[], fps: number, clipId: string): KeyframeFrameGroup[] {
   const safeFps = Math.max(1, fps);
   const groups = new Map<number, KeyframeFrameGroup>();
   for (const row of rows) {
@@ -265,6 +297,7 @@ function buildFrameGroups(rows: KeyframePropertyRow[], fps: number): KeyframeFra
       const frame = Math.round(point.timeSec * safeFps);
       const existing = groups.get(frame);
       const member = {
+        clipId,
         componentIndex: row.componentIndex,
         componentId: row.componentId,
         property: row.property,
@@ -286,8 +319,9 @@ function buildFrameGroups(rows: KeyframePropertyRow[], fps: number): KeyframeFra
   return [...groups.values()].sort((a, b) => a.frame - b.frame);
 }
 
-function findSelectedFrame(rows: KeyframePropertyRow[], selected: KeyframeSelection | null, fps: number): number | null {
+function findSelectedFrame(rows: KeyframePropertyRow[], selected: KeyframeSelection | null, fps: number, clipId: string): number | null {
   if (!selected) return null;
+  if (selected.clipId !== clipId) return null;
   const row = rows.find((candidate) => (
     candidate.componentId === selected.componentId &&
     candidate.property === selected.property

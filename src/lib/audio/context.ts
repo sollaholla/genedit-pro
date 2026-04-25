@@ -60,6 +60,48 @@ export function getAnalysers(): { left: AnalyserNode; right: AnalyserNode } {
   return { left: _analyserL!, right: _analyserR! };
 }
 
+export type StereoAnalyserMeter = {
+  input: GainNode;
+  left: AnalyserNode;
+  right: AnalyserNode;
+  dispose: () => void;
+};
+
+export function createStereoAnalyserMeter(): StereoAnalyserMeter {
+  const ctx = boot();
+  const input = ctx.createGain();
+  input.channelCount = 2;
+  input.channelCountMode = 'max';
+
+  const splitter = ctx.createChannelSplitter(2);
+  const left = ctx.createAnalyser();
+  const right = ctx.createAnalyser();
+  left.fftSize = 512;
+  right.fftSize = 512;
+  left.smoothingTimeConstant = 0.65;
+  right.smoothingTimeConstant = 0.65;
+
+  input.connect(splitter);
+  splitter.connect(left, 0);
+  splitter.connect(right, 1);
+
+  const sink = ctx.createMediaStreamDestination();
+  left.connect(sink);
+  right.connect(sink);
+
+  return {
+    input,
+    left,
+    right,
+    dispose: () => {
+      input.disconnect();
+      splitter.disconnect();
+      left.disconnect();
+      right.disconnect();
+    },
+  };
+}
+
 export function resumeAudioContext(): void {
   if (_ctx?.state === 'suspended') void _ctx.resume();
 }

@@ -11,6 +11,8 @@ import {
   getMasterInput,
   getMasterGain,
   resumeAudioContext,
+  createStereoAnalyserMeter,
+  type StereoAnalyserMeter,
 } from '@/lib/audio/context';
 import { PlayerControls } from './PlayerControls';
 import { FullscreenScrubBar } from './FullscreenScrubBar';
@@ -33,6 +35,20 @@ function clipEffectiveGain(layer: ActiveLayer): number {
   const clipDur = Math.max(1e-6, layer.clip.outSec - layer.clip.inSec);
   const localT = Math.max(0, Math.min(1, (layer.sourceTimeSec - layer.clip.inSec) / clipDur));
   return master * evalEnvelopeAt(layer.clip.volumeEnvelope, localT);
+}
+
+const CLIP_METER_DB_FLOOR = -60;
+
+function rmsToNorm(rms: number): number {
+  if (rms <= 0) return 0;
+  const db = Math.max(CLIP_METER_DB_FLOOR, 20 * Math.log10(rms));
+  return Math.max(0, Math.min(1, (db - CLIP_METER_DB_FLOOR) / -CLIP_METER_DB_FLOOR));
+}
+
+function computeRms(buf: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < buf.length; i += 1) sum += buf[i]! * buf[i]!;
+  return Math.sqrt(sum / Math.max(1, buf.length));
 }
 
 type ElementPool = Map<string, HTMLMediaElement>;
@@ -155,6 +171,8 @@ export function PreviewPlayer() {
   const gainNodes = useRef<Map<string, GainNode>>(new Map());
   // clipId → MediaElementAudioSourceNode (keep ref so it isn't GC'd)
   const sourceNodes = useRef<Map<string, MediaElementAudioSourceNode>>(new Map());
+  const clipMeters = useRef<Map<string, StereoAnalyserMeter>>(new Map());
+  const clipMeterBuffers = useRef<Map<string, [Float32Array, Float32Array]>>(new Map());
 
   const urlCache = useRef<Map<string, string>>(new Map()); // assetId → object URL
   const assetsRef = useRef(assets);
@@ -169,6 +187,7 @@ export function PreviewPlayer() {
   const hotPrimedSeekRef = useRef<Set<string>>(new Set());
   const prevReadinessRef = useRef<Record<string, boolean>>({});
   const lastReadinessPublishRef = useRef(0);
+  const lastClipMeterPublishRef = useRef(0);
 
   // Smooth transitions: track which clips are fading out/in to avoid pops.
   const fadingOut = useRef<Map<string, { startTs: number; fromGain: number }>>(new Map());
@@ -336,6 +355,9 @@ export function PreviewPlayer() {
         gainNodes.current.delete(clipId);
         sourceNodes.current.get(clipId)?.disconnect();
         sourceNodes.current.delete(clipId);
+        clipMeters.current.get(clipId)?.dispose();
+        clipMeters.current.delete(clipId);
+        clipMeterBuffers.current.delete(clipId);
         fadingOut.current.delete(clipId);
         fadingIn.current.delete(clipId);
         hotPrimedSeekRef.current.delete(clipId);
@@ -351,6 +373,9 @@ export function PreviewPlayer() {
         gainNodes.current.delete(clipId);
         sourceNodes.current.get(clipId)?.disconnect();
         sourceNodes.current.delete(clipId);
+        clipMeters.current.get(clipId)?.dispose();
+        clipMeters.current.delete(clipId);
+        clipMeterBuffers.current.delete(clipId);
         fadingOut.current.delete(clipId);
         fadingIn.current.delete(clipId);
         hotPrimedSeekRef.current.delete(clipId);
@@ -401,7 +426,7 @@ export function PreviewPlayer() {
             v.playsInline = true;
             v.muted = true; // starts muted; unmuted by RAF when active for audio
             v.src = url;
-            v.className = 'absolute inset-0 h-full w-full object-cover';
+            v.className = 'absolute inset-0 h-full w-full object-contain';
             v.style.display = 'none';
             v.style.visibility = 'hidden';
             videoHostRef.current?.appendChild(v);
@@ -416,10 +441,13 @@ export function PreviewPlayer() {
             const source = ctx.createMediaElementSource(el);
             const gain = ctx.createGain();
             gain.gain.value = 0; // silent until activated
+            const meter = createStereoAnalyserMeter();
             source.connect(gain);
             gain.connect(getMasterInput());
+            gain.connect(meter.input);
             sourceNodes.current.set(clip.id, source);
             gainNodes.current.set(clip.id, gain);
+            clipMeters.current.set(clip.id, meter);
           } catch {
             // Fallback: element won't route through Web Audio; volume stays at el.volume
           }
@@ -677,6 +705,28 @@ export function PreviewPlayer() {
         }
       }
 
+      if (ts - lastClipMeterPublishRef.current > 100) {
+        lastClipMeterPublishRef.current = ts;
+        const levels: Record<string, { left: number; right: number }> = {};
+        for (const [clipId, meter] of clipMeters.current) {
+          let buffers = clipMeterBuffers.current.get(clipId);
+          if (!buffers || buffers[0].length !== meter.left.fftSize || buffers[1].length !== meter.right.fftSize) {
+            buffers = [new Float32Array(meter.left.fftSize), new Float32Array(meter.right.fftSize)];
+            clipMeterBuffers.current.set(clipId, buffers);
+          }
+          const [leftBuffer, rightBuffer] = buffers;
+          const leftData = leftBuffer as Float32Array<ArrayBuffer>;
+          const rightData = rightBuffer as Float32Array<ArrayBuffer>;
+          meter.left.getFloatTimeDomainData(leftData);
+          meter.right.getFloatTimeDomainData(rightData);
+          levels[clipId] = {
+            left: rmsToNorm(computeRms(leftData)),
+            right: rmsToNorm(computeRms(rightData)),
+          };
+        }
+        usePlaybackStore.getState().setClipAudioLevels(levels);
+      }
+
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -688,9 +738,14 @@ export function PreviewPlayer() {
     const videoEls = videoPool.current;
     const audioEls = audioPool.current;
     const urls = urlCache.current;
+    const meters = clipMeters.current;
+    const meterBuffers = clipMeterBuffers.current;
     return () => {
       for (const el of videoEls.values()) el.pause();
       for (const el of audioEls.values()) el.pause();
+      for (const meter of meters.values()) meter.dispose();
+      meters.clear();
+      meterBuffers.clear();
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
     };

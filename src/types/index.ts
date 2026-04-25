@@ -58,6 +58,10 @@ export type MediaAsset = {
     estimatedCostUsd?: number;
     actualCostUsd?: number;
     provider?: string;
+    providerTaskId?: string;
+    providerTaskEndpoint?: string;
+    providerTaskStatus?: string;
+    providerTaskCreatedAt?: number;
     providerArtifactUri?: string;
     providerArtifactExpiresAt?: number;
   };

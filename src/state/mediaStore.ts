@@ -55,6 +55,16 @@ type MediaState = {
   createFolder: (name: string) => void;
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number, recipe?: GenerateRecipe) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
+  updateGenerationTask: (
+    id: string,
+    metadata: {
+      provider?: string;
+      providerTaskId?: string;
+      providerTaskEndpoint?: string;
+      providerTaskStatus?: string;
+      providerTaskCreatedAt?: number;
+    },
+  ) => void;
   finalizeGeneratedAsset: (id: string) => void;
   finalizeGeneratedAssetWithBlob: (
     id: string,
@@ -392,6 +402,21 @@ export const useMediaStore = create<MediaState>((set, get) => ({
   updateGenerationProgress: (id, progress) => {
     const next: MediaAsset[] = get().assets.map((a) => (a.id === id
       ? { ...a, generation: { ...(a.generation ?? {}), status: 'generating' as const, progress: Math.max(0, Math.min(100, progress)) } }
+      : a));
+    saveAssets(next);
+    set({ assets: next });
+  },
+
+  updateGenerationTask: (id, metadata) => {
+    const next: MediaAsset[] = get().assets.map((a) => (a.id === id
+      ? {
+          ...a,
+          generation: {
+            ...(a.generation ?? { status: 'generating' as const }),
+            status: a.generation?.status ?? 'generating',
+            ...metadata,
+          },
+        }
       : a));
     saveAssets(next);
     set({ assets: next });

@@ -42,6 +42,7 @@ import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
 import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
 import { useKeyframeController } from './useKeyframeController';
+import { getKeyframeProperties, laneHeightForRows, type KeyframePropertyRow } from './keyframeModel';
 
 type DragOverlay = {
   clipId: string;
@@ -49,6 +50,12 @@ type DragOverlay = {
   ghostTrackIdx: number;
   /** Whether this is an audio-extraction ghost (video clip → audio track). */
   isAudioExtraction: boolean;
+};
+
+type TimelineKeyframeLane = {
+  clip: Clip;
+  rows: KeyframePropertyRow[];
+  height: number;
 };
 
 export function Timeline() {
@@ -62,6 +69,7 @@ export function Timeline() {
 
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
+  const pause = usePlaybackStore((s) => s.pause);
   const pxPerSec = usePlaybackStore((s) => s.pxPerSec);
   const setPxPerSec = usePlaybackStore((s) => s.setPxPerSec);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
@@ -104,10 +112,33 @@ export function Timeline() {
   const tracks = sortedTracks(project);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
-  const selectedTrackId = selectedClip?.trackId ?? null;
+  const visibleKeyframeKeySet = useMemo(() => new Set(visibleKeyframeComponentKeys), [visibleKeyframeComponentKeys]);
+  const keyframeLanesByTrack = useMemo(() => {
+    const lanes = new Map<string, TimelineKeyframeLane[]>();
+    for (const track of tracks) lanes.set(track.id, []);
+    for (const clip of project.clips) {
+      const rows = getKeyframeProperties(clip, visibleKeyframeKeySet);
+      if (rows.length === 0) continue;
+      lanes.get(clip.trackId)?.push({
+        clip,
+        rows,
+        height: laneHeightForRows(rows),
+      });
+    }
+    for (const trackLanes of lanes.values()) {
+      trackLanes.sort((a, b) => a.clip.startSec - b.clip.startSec);
+    }
+    return lanes;
+  }, [project.clips, tracks, visibleKeyframeKeySet]);
+  const keyframeLaneHeight = useMemo(() => {
+    let total = 0;
+    for (const lanes of keyframeLanesByTrack.values()) {
+      for (const lane of lanes) total += lane.height;
+    }
+    return total;
+  }, [keyframeLanesByTrack]);
   const {
     deleteSelectedKeyframe,
-    keyframeLaneHeight,
     selectedKeyframe,
     selectedKeyframeData,
     setSelectedKeyframe,
@@ -118,8 +149,8 @@ export function Timeline() {
     nudgeSelectedKeyframe,
     selectKeyframe,
     selectKeyframeGroup,
-    visibleKeyframeProperties,
   } = useKeyframeController({
+    clips: project.clips,
     selectedClip,
     currentTimeSec: currentTime,
     fps: project.fps,
@@ -138,6 +169,19 @@ export function Timeline() {
     }
     return [...s];
   }, [project.clips, currentTime]);
+
+  const trackIndexFromContentY = useCallback((contentY: number) => {
+    let y = RULER_HEIGHT_PX;
+    for (let index = 0; index < tracks.length; index += 1) {
+      const track = tracks[index]!;
+      if (contentY < y + TRACK_HEIGHT_PX) return index;
+      y += TRACK_HEIGHT_PX;
+      const laneHeight = (keyframeLanesByTrack.get(track.id) ?? []).reduce((sum, lane) => sum + lane.height, 0);
+      if (contentY < y + laneHeight) return index;
+      y += laneHeight;
+    }
+    return Math.max(0, tracks.length - 1);
+  }, [keyframeLanesByTrack, tracks]);
 
   // Zoom on Cmd/Ctrl+wheel
   useEffect(() => {
@@ -295,8 +339,12 @@ export function Timeline() {
 
     const origStart = clip.startSec;
     const origTrackId = clip.trackId;
+    const origDuration = clipTimelineDurationSec(clip);
     // The track the clip started on determines extraction eligibility.
     const origTrack = tracks.find((t) => t.id === origTrackId);
+    const groupBounds = isGroupDrag
+      ? selectedClipBounds(useProjectStore.getState().project.clips.filter((candidate) => priorSelection.includes(candidate.id)))
+      : null;
 
     beginTx();
 
@@ -314,12 +362,11 @@ export function Timeline() {
       const dxPx = ev.clientX - startX;
       void scrollL;
       const dt = pxToTime(dxPx, pxPerSec);
-      const candidate = snapTime(Math.max(0, origStart + dt), snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+      const candidate = snapMovedClipStartOrEnd(Math.max(0, origStart + dt), origDuration, snapTargets, pxPerSec);
 
       // Y → track index
-      const relY = ev.clientY - rect.top + scrollT - RULER_HEIGHT_PX;
-      const rawIdx = Math.floor(relY / TRACK_HEIGHT_PX);
-      const trackIdx = Math.max(0, Math.min(tracks.length - 1, rawIdx));
+      const contentY = ev.clientY - rect.top + scrollT;
+      const trackIdx = trackIndexFromContentY(contentY);
       const targetTrack = tracks[trackIdx];
       if (!targetTrack) return;
 
@@ -337,7 +384,15 @@ export function Timeline() {
         // Multi-selection drag: shift all selected clips by dt (time-only, no
         // track change). This keeps the group's relative spacing and track
         // assignment; cross-track moves for multi-select aren't supported.
-        updateSilent((p) => moveClipsBy(p, priorSelection, dt));
+        const snappedDelta = groupBounds
+          ? snapMovedClipStartOrEnd(
+              Math.max(0, groupBounds.startSec + dt),
+              groupBounds.durationSec,
+              snapTargets,
+              pxPerSec,
+            ) - groupBounds.startSec
+          : dt;
+        updateSilent((p) => moveClipsBy(p, priorSelection, snappedDelta));
         lastGhost = null;
         setDragOverlay(null);
       } else if (isAudioExtraction) {
@@ -367,9 +422,7 @@ export function Timeline() {
       if (!el) return;
       const rect = el.getBoundingClientRect();
       const scrollT = el.scrollTop;
-      const relY = ev.clientY - rect.top + scrollT - RULER_HEIGHT_PX;
-      const rawIdx = Math.floor(relY / TRACK_HEIGHT_PX);
-      const trackIdx = Math.max(0, Math.min(tracks.length - 1, rawIdx));
+      const trackIdx = trackIndexFromContentY(ev.clientY - rect.top + scrollT);
       const targetTrack = tracks[trackIdx];
 
       if (lastGhost?.isAudioExtraction && targetTrack?.kind === 'audio') {
@@ -385,13 +438,14 @@ export function Timeline() {
 
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [tracks, pxPerSec, snapTargets, assetById, selectClip, toggleClipSelection, beginTx, cancelTx, update, updateSilent]);
+  }, [tracks, pxPerSec, snapTargets, assetById, selectClip, toggleClipSelection, beginTx, cancelTx, update, updateSilent, trackIndexFromContentY]);
 
   // ---- Clip trim ----
   const handleClipTrimMouseDown = useCallback((clipId: string, side: ClipDragSide, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    pause();
     selectClip(clipId);
 
     const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
@@ -403,16 +457,31 @@ export function Timeline() {
     const startX = e.clientX;
     const origStart = clip.startSec;
     const origEnd = clip.startSec + clipTimelineDurationSec(clip);
+    setCurrentTime(trimPreviewTimeForClip(clip, side, project.fps));
 
     const move = (ev: MouseEvent) => {
       const dt = pxToTime(ev.clientX - startX, pxPerSec);
+      let previewTime = currentTime;
       if (side === 'l') {
-        const snapped = snapTime(Math.max(0, origStart + dt), snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-        updateSilent((p) => trimClipLeft(p, clipId, snapped));
+        const candidate = Math.max(0, origStart + dt);
+        const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        updateSilent((p) => {
+          const next = trimClipLeft(p, clipId, snapped);
+          const nextClip = next.clips.find((candidate) => candidate.id === clipId);
+          if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
+          return next;
+        });
       } else {
-        const snapped = snapTime(origEnd + dt, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
-        updateSilent((p) => trimClipRight(p, clipId, snapped, maxSourceSec));
+        const candidate = origEnd + dt;
+        const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        updateSilent((p) => {
+          const next = trimClipRight(p, clipId, snapped, maxSourceSec);
+          const nextClip = next.clips.find((candidate) => candidate.id === clipId);
+          if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
+          return next;
+        });
       }
+      setCurrentTime(previewTime);
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
@@ -420,7 +489,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [assetById, pxPerSec, snapTargets, selectClip, beginTx, updateSilent]);
+  }, [assetById, currentTime, pause, project.fps, pxPerSec, snapTargets, selectClip, beginTx, setCurrentTime, updateSilent]);
 
   // ---- Asset drop from media bin ----
   const handleDropAsset = useCallback((trackId: string, assetId: string, startSec: number) => {
@@ -458,8 +527,8 @@ export function Timeline() {
       const y1 = Math.max(startY, curY);
       const tStart = x0 / pxPerSec;
       const tEnd = x1 / pxPerSec;
-      const idxStart = Math.floor((y0 - RULER_HEIGHT_PX) / TRACK_HEIGHT_PX);
-      const idxEnd = Math.floor((y1 - RULER_HEIGHT_PX) / TRACK_HEIGHT_PX);
+      const idxStart = trackIndexFromContentY(y0);
+      const idxEnd = trackIndexFromContentY(y1);
       const hitIds = new Set(baseline);
       for (const clip of useProjectStore.getState().project.clips) {
         const trackIdx = tracks.findIndex((t) => t.id === clip.trackId);
@@ -477,7 +546,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [pxPerSec, tracks, selectClip, setClipSelection]);
+  }, [pxPerSec, tracks, selectClip, setClipSelection, trackIndexFromContentY]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -590,11 +659,12 @@ export function Timeline() {
                     onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
                     onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
                   />
-                  {selectedTrackId === t.id && (
+                  {(keyframeLanesByTrack.get(t.id) ?? []).map((lane) => (
                     <KeyframeSidebarLane
-                      rows={visibleKeyframeProperties}
+                      key={`h-keyframes-${lane.clip.id}`}
+                      rows={lane.rows}
                     />
-                  )}
+                  ))}
                 </div>
               ))}
             </div>
@@ -637,21 +707,29 @@ export function Timeline() {
                     onClipContextMenu={handleClipContextMenu}
                     onEmptyMouseDown={handleEmptyMouseDown}
                   />
-                  {selectedClip && selectedTrackId === track.id && (
+                  {(keyframeLanesByTrack.get(track.id) ?? []).map((lane) => (
                     <KeyframeTrackLane
-                      clip={selectedClip}
+                      key={`keyframes-${lane.clip.id}`}
+                      clip={lane.clip}
                       pxPerSec={pxPerSec}
                       fps={project.fps}
                       selectedKeyframe={selectedKeyframe}
-                      rows={visibleKeyframeProperties}
+                      rows={lane.rows}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onBeginKeyframeDrag={beginKeyframeDrag}
                       onMoveKeyframe={moveKeyframe}
                       onMoveKeyframeGroup={moveKeyframeGroup}
-                      onSelectKeyframe={selectKeyframe}
-                      onSelectKeyframeGroup={selectKeyframeGroup}
+                      onSelectKeyframe={(meta) => {
+                        selectClip(lane.clip.id);
+                        selectKeyframe(meta);
+                      }}
+                      onSelectKeyframeGroup={(meta) => {
+                        selectClip(lane.clip.id);
+                        selectKeyframeGroup(meta);
+                      }}
+                      onEmptyMouseDown={handleEmptyMouseDown}
                     />
-                  )}
+                  ))}
                 </div>
               ))}
             </div>
@@ -713,6 +791,47 @@ export function Timeline() {
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const MOD = IS_MAC ? '⌘' : 'Ctrl';
 const ALT = IS_MAC ? '⌥' : 'Alt';
+
+function trimPreviewTimeForClip(clip: Clip, side: ClipDragSide, fps: number): number {
+  if (side === 'l') return clip.startSec;
+  const frameDuration = 1 / Math.max(1, fps);
+  const lastVisibleFrame = clip.startSec + clipTimelineDurationSec(clip) - frameDuration;
+  return Math.max(clip.startSec, lastVisibleFrame);
+}
+
+function snapMovedClipStartOrEnd(
+  candidateStartSec: number,
+  durationSec: number,
+  targets: number[],
+  pxPerSec: number,
+): number {
+  const toleranceSec = pxPerSec === 0 ? 0 : SNAP_TOLERANCE_PX / pxPerSec;
+  let bestStart = candidateStartSec;
+  let bestDist = toleranceSec;
+
+  for (const target of targets) {
+    const startDist = Math.abs(candidateStartSec - target);
+    if (startDist <= bestDist) {
+      bestDist = startDist;
+      bestStart = target;
+    }
+
+    const endDist = Math.abs(candidateStartSec + durationSec - target);
+    if (endDist <= bestDist) {
+      bestDist = endDist;
+      bestStart = target - durationSec;
+    }
+  }
+
+  return Math.max(0, bestStart);
+}
+
+function selectedClipBounds(clips: Clip[]): { startSec: number; durationSec: number } | null {
+  if (clips.length === 0) return null;
+  const startSec = Math.min(...clips.map((clip) => clip.startSec));
+  const endSec = Math.max(...clips.map((clip) => clip.startSec + clipTimelineDurationSec(clip)));
+  return { startSec, durationSec: Math.max(0, endSec - startSec) };
+}
 
 function Key({ children }: { children: React.ReactNode }) {
   return (

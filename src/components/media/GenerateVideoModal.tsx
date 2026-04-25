@@ -33,6 +33,7 @@ import {
   hostLitterboxReference,
   LITTERBOX_REFERENCE_TTL_MS,
 } from '@/lib/videoGeneration/litterbox';
+import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
 import {
   buildPiApiCreateTaskRequest,
   createPiApiVideoTask,
@@ -128,6 +129,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
   const importFiles = useMediaStore((s) => s.importFiles);
   const addGeneratedAsset = useMediaStore((s) => s.addGeneratedAsset);
   const updateGenerationProgress = useMediaStore((s) => s.updateGenerationProgress);
+  const updateGenerationTask = useMediaStore((s) => s.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((s) => s.finalizeGeneratedAssetWithBlob);
   const failGeneratedAsset = useMediaStore((s) => s.failGeneratedAsset);
   const saveRecipeAsset = useMediaStore((s) => s.saveRecipeAsset);
@@ -556,10 +558,23 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         },
       });
       const initialTask = await createPiApiVideoTask(request, { apiKey });
+      updateGenerationTask(id, {
+        provider: 'piapi',
+        providerTaskId: initialTask.task_id,
+        providerTaskEndpoint: initialTask.task_id ? `/api/v1/task/${initialTask.task_id}` : '/api/v1/task',
+        providerTaskStatus: initialTask.status,
+        providerTaskCreatedAt: Date.now(),
+      });
       const finalTask = await pollPiApiVideoTask({
         credentials: { apiKey },
         initialTask,
         onProgress: (progress) => updateGenerationProgress(id, progress),
+      });
+      updateGenerationTask(id, {
+        provider: 'piapi',
+        providerTaskId: finalTask.task_id ?? initialTask.task_id,
+        providerTaskEndpoint: (finalTask.task_id ?? initialTask.task_id) ? `/api/v1/task/${finalTask.task_id ?? initialTask.task_id}` : '/api/v1/task',
+        providerTaskStatus: finalTask.status,
       });
       const generatedVideo = generatedPiApiVideoFromTask(finalTask);
       if (!generatedVideo.url) throw new VideoGenerationProviderError('InternalError', 'No generated video URL returned by PiAPI.');
@@ -850,14 +865,21 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
               {providerCredentialsAvailable ? selectedModel.label : `Connect ${providerNameForModel(selectedModel)} in Settings`}
             </div>
             {!hasConfiguredProviderModels && (
-              <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
-                Add a PiAPI key to enable generation models.
+              <div className="flex items-center gap-2 rounded-md border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
+                <span>Add a PiAPI key to enable generation models.</span>
+                <button
+                  type="button"
+                  className="rounded border border-amber-200/40 px-2 py-0.5 text-amber-50 hover:bg-amber-300/10"
+                  onClick={onOpenSettings}
+                >
+                  Settings
+                </button>
               </div>
             )}
             {generationError && (
               <div className="flex items-center gap-2 text-xs text-rose-300">
                 <span>{generationError}</span>
-                {generationError.includes('Missing PiAPI') && (
+                {(generationError.includes('Missing PiAPI') || generationError.includes('Settings')) && (
                   <button
                     className="rounded border border-rose-300/40 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/10"
                     onClick={onOpenSettings}
@@ -1324,7 +1346,25 @@ function MediaPickerAssetTile({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovered, setHovered] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const isVideo = asset.kind === 'video';
+
+  useEffect(() => {
+    if (asset.kind !== 'image') {
+      setImagePreviewUrl(null);
+      return;
+    }
+
+    let active = true;
+    setImagePreviewUrl(null);
+    void objectUrlFor(asset.id).then((url) => {
+      if (active) setImagePreviewUrl(url);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [asset.id, asset.kind, objectUrlFor]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -1374,8 +1414,15 @@ function MediaPickerAssetTile({
           preload="metadata"
           className="absolute inset-0 h-full w-full object-cover"
         />
-      ) : asset.thumbnailDataUrl ? (
-        <img src={asset.thumbnailDataUrl} alt="" className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.025]" draggable={false} />
+      ) : imagePreviewUrl || asset.thumbnailDataUrl ? (
+        <img
+          src={imagePreviewUrl ?? asset.thumbnailDataUrl}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.015]"
+          draggable={false}
+          loading="lazy"
+          decoding="async"
+        />
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-950 text-slate-500">
           {isVideo ? <Film size={26} /> : <ImageIcon size={26} />}
@@ -1529,90 +1576,4 @@ function formatGenerationError(err: unknown): string {
     return `${label}: ${err.message}`;
   }
   return err instanceof Error ? err.message : 'Generation failed.';
-}
-
-const GENERATED_VIDEO_DOWNLOAD_ATTEMPTS = 18;
-const GENERATED_VIDEO_DOWNLOAD_RETRY_MS = 5000;
-const GENERATED_VIDEO_CORS_RELAY_ATTEMPTS = 18;
-const MIN_GENERATED_VIDEO_BYTES = 1024;
-
-async function downloadGeneratedVideoFile(
-  url: string,
-  onProgress?: (progress: number) => void,
-): Promise<File> {
-  onProgress?.(96);
-  try {
-    const blob = await fetchGeneratedVideoBlobWithRetries(url, {
-      attempts: GENERATED_VIDEO_DOWNLOAD_ATTEMPTS,
-      delayMs: GENERATED_VIDEO_DOWNLOAD_RETRY_MS,
-      label: 'PiAPI video',
-      useCorsRelayAfterNetworkFailures: true,
-    });
-    onProgress?.(99);
-    return generatedVideoFileFromBlob(blob);
-  } catch (directError) {
-    if (!shouldUseCorsRelay(url, directError)) throw directError;
-  }
-
-  onProgress?.(97);
-  const relayUrl = `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`;
-  const blob = await fetchGeneratedVideoBlobWithRetries(relayUrl, {
-    attempts: GENERATED_VIDEO_CORS_RELAY_ATTEMPTS,
-    delayMs: GENERATED_VIDEO_DOWNLOAD_RETRY_MS,
-    label: 'PiAPI video through CORS relay',
-  });
-  onProgress?.(99);
-  return generatedVideoFileFromBlob(blob);
-}
-
-async function fetchGeneratedVideoBlobWithRetries(
-  url: string,
-  {
-    attempts,
-    delayMs,
-    label,
-    useCorsRelayAfterNetworkFailures = false,
-  }: {
-    attempts: number;
-    delayMs: number;
-    label: string;
-    useCorsRelayAfterNetworkFailures?: boolean;
-  },
-): Promise<Blob> {
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const response = await fetch(url, { cache: 'no-store' });
-      if (!response.ok) throw new Error(await responseErrorMessage(response, `Failed downloading ${label}`));
-      const blob = await response.blob();
-      if (blob.size < MIN_GENERATED_VIDEO_BYTES) {
-        throw new Error(`Failed downloading ${label}: received an empty or incomplete video.`);
-      }
-      return blob;
-    } catch (err) {
-      lastError = err;
-      if (useCorsRelayAfterNetworkFailures && shouldUseCorsRelay(url, err) && attempt >= 2) throw err;
-      if (attempt < attempts) await delay(delayMs);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(`Failed downloading ${label}.`);
-}
-
-function shouldUseCorsRelay(url: string, err: unknown): boolean {
-  if (!/^https:\/\/(?:storage|img)\.theapi\.app\//i.test(url)) return false;
-  if (!(err instanceof TypeError)) return false;
-  return true;
-}
-
-function generatedVideoFileFromBlob(blob: Blob): File {
-  return new File([blob], `piapi_${Date.now()}.mp4`, { type: blob.type || 'video/mp4' });
-}
-
-async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
-  const body = await response.text().catch(() => '');
-  return body ? `${fallback} (${response.status}): ${body.slice(0, 300)}` : `${fallback} (${response.status}).`;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
