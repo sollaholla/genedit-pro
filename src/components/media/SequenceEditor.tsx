@@ -1,0 +1,482 @@
+import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { nanoid } from 'nanoid';
+import { Clapperboard, Copy, Image as ImageIcon, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import {
+  DEFAULT_VIDEO_MODELS,
+  isPiApiKlingModel,
+  isPiApiSeedanceModel,
+  sortModelsByPriority,
+  type VideoModelDefinition,
+} from '@/lib/videoModels/capabilities';
+import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
+import { useMediaStore } from '@/state/mediaStore';
+import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
+
+type Props = {
+  assetId: string;
+  onClose: () => void;
+  onGenerate: () => void;
+};
+
+const SVG_WIDTH = 1000;
+const TIMELINE_Y = 42;
+
+export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
+  const assets = useMediaStore((state) => state.assets);
+  const objectUrlFor = useMediaStore((state) => state.objectUrlFor);
+  const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
+  const asset = assets.find((candidate) => candidate.id === assetId && candidate.kind === 'sequence') ?? null;
+  const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
+  const fallbackModel = sequenceModels[0];
+  const sequence = asset?.sequence ?? createDefaultSequence(fallbackModel);
+  const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
+  const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
+  const imageAssets = useMemo(() => assets.filter((candidate) => candidate.kind === 'image'), [assets]);
+  const sortedMarkers = useMemo(() => sortedSequenceMarkers(sequence), [sequence]);
+  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(sortedMarkers[0]?.id ?? null);
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const timelineRef = useRef<SVGSVGElement | null>(null);
+  const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
+  const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
+  const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
+  const composedPrompt = useMemo(() => composeSequencePrompt(sequence), [sequence]);
+
+  useEffect(() => {
+    if (!asset) onClose();
+  }, [asset, onClose]);
+
+  useEffect(() => {
+    if (selectedMarkerId && sequence.markers.some((marker) => marker.id === selectedMarkerId)) return;
+    setSelectedMarkerId(sortedMarkers[0]?.id ?? null);
+  }, [selectedMarkerId, sequence.markers, sortedMarkers]);
+
+  useEffect(() => {
+    setCurrentTimeSec((time) => clampTime(time, sequence.durationSec));
+  }, [sequence.durationSec]);
+
+  useEffect(() => {
+    let mounted = true;
+    setPreviewUrl(null);
+    if (!previewImage) return () => {
+      mounted = false;
+    };
+    void objectUrlFor(previewImage.id).then((url) => {
+      if (mounted) setPreviewUrl(url);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [objectUrlFor, previewImage?.blobKey, previewImage?.editTrail?.activeIterationId, previewImage?.id]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  if (!asset || !selectedModel) return null;
+
+  const persist = (next: SequenceAssetData) => {
+    updateSequenceAsset(asset.id, normalizeSequence(next));
+  };
+  const updateMarker = (markerId: string, patch: Partial<SequenceMarker>) => {
+    persist({
+      ...sequence,
+      markers: sequence.markers.map((marker) => (marker.id === markerId
+        ? { ...marker, ...patch, timeSec: clampTime(patch.timeSec ?? marker.timeSec, sequence.durationSec) }
+        : marker)),
+    });
+  };
+  const addMarker = (timeSec = currentTimeSec) => {
+    const marker: SequenceMarker = {
+      id: nanoid(10),
+      timeSec: clampTime(timeSec, sequence.durationSec),
+      imageAssetId: null,
+      prompt: '',
+    };
+    persist({ ...sequence, markers: [...sequence.markers, marker] });
+    setSelectedMarkerId(marker.id);
+    setCurrentTimeSec(marker.timeSec);
+  };
+  const deleteSelectedMarker = () => {
+    if (!selectedMarker) return;
+    const remaining = sequence.markers.filter((marker) => marker.id !== selectedMarker.id);
+    persist({ ...sequence, markers: remaining });
+    setSelectedMarkerId(remaining[0]?.id ?? null);
+  };
+  const clientXToTime = (clientX: number) => {
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return 0;
+    return clampTime(((clientX - rect.left) / rect.width) * sequence.durationSec, sequence.durationSec);
+  };
+  const scrubToClientX = (clientX: number) => {
+    const timeSec = clientXToTime(clientX);
+    setCurrentTimeSec(timeSec);
+    if (draggingMarkerId) updateMarker(draggingMarkerId, { timeSec });
+  };
+  const handleTimelinePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (!scrubbing && !draggingMarkerId) return;
+    scrubToClientX(event.clientX);
+  };
+  const stopTimelinePointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    setScrubbing(false);
+    setDraggingMarkerId(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const changeModel = (modelId: string) => {
+    const nextModel = sequenceModels.find((model) => model.id === modelId) ?? selectedModel;
+    const nextDurations = durationsForModel(nextModel);
+    const nextDuration = nextDurations.includes(sequence.durationSec) ? sequence.durationSec : nextDurations[0] ?? sequence.durationSec;
+    persist({
+      ...sequence,
+      model: nextModel.id,
+      durationSec: nextDuration,
+      markers: sequence.markers.map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, nextDuration) })),
+    });
+  };
+  const changeDuration = (durationSec: number) => {
+    persist({
+      ...sequence,
+      durationSec,
+      markers: sequence.markers.map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, durationSec) })),
+    });
+  };
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(composedPrompt);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="flex h-[min(880px,94vh)] w-[min(1180px,96vw)] flex-col overflow-hidden rounded-lg border border-white/15 bg-surface-950 shadow-2xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-surface-700 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Clapperboard size={17} className="shrink-0 text-brand-300" />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-slate-100">{asset.name}</div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">Sequence</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={onGenerate}>
+              <Sparkles size={12} />
+              Generate
+            </button>
+            <button className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white" onClick={onClose} title="Close sequence" aria-label="Close sequence">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] gap-0 overflow-hidden">
+          <main className="flex min-w-0 flex-col overflow-auto p-4">
+            <div className="mb-4 grid grid-cols-[minmax(0,1fr)_190px_120px] gap-3">
+              <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Overall Prompt
+                <textarea
+                  value={sequence.overallPrompt}
+                  onChange={(event) => persist({ ...sequence, overallPrompt: event.target.value })}
+                  className="min-h-[88px] resize-none rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Model
+                <select
+                  value={selectedModel.id}
+                  onChange={(event) => changeModel(event.target.value)}
+                  className="rounded-md border border-surface-700 bg-surface-900 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                >
+                  {sequenceModels.map((model) => (
+                    <option key={model.id} value={model.id}>{model.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Duration
+                <select
+                  value={sequence.durationSec}
+                  onChange={(event) => changeDuration(Number(event.target.value))}
+                  className="rounded-md border border-surface-700 bg-surface-900 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                >
+                  {durationOptions.map((duration) => (
+                    <option key={duration} value={duration}>{duration}s</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="font-mono text-xs text-slate-400">{formatTime(currentTimeSec)} / {formatTime(sequence.durationSec)}</div>
+              <button className="btn-ghost px-2 py-1 text-xs" onClick={() => addMarker()}>
+                <Plus size={12} />
+                Add Marker
+              </button>
+            </div>
+
+            <div className="rounded-md border border-surface-700 bg-surface-900 p-3">
+              <svg
+                ref={timelineRef}
+                viewBox={`0 0 ${SVG_WIDTH} 92`}
+                className="block h-28 w-full touch-none select-none overflow-visible"
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setScrubbing(true);
+                  scrubToClientX(event.clientX);
+                }}
+                onPointerMove={handleTimelinePointerMove}
+                onPointerUp={stopTimelinePointer}
+                onPointerCancel={stopTimelinePointer}
+                onDoubleClick={(event) => addMarker(clientXToTime(event.clientX))}
+              >
+                <rect x="0" y="24" width={SVG_WIDTH} height="36" rx="8" className="fill-surface-800" />
+                <line x1="0" y1={TIMELINE_Y} x2={SVG_WIDTH} y2={TIMELINE_Y} className="stroke-surface-500" strokeWidth="2" />
+                {timelineTicks(sequence.durationSec).map((tick) => {
+                  const x = timeToX(tick, sequence.durationSec);
+                  return (
+                    <g key={tick}>
+                      <line x1={x} y1="18" x2={x} y2="66" className="stroke-surface-600" strokeWidth="1" />
+                      <text x={x} y="82" textAnchor="middle" className="fill-slate-500 text-[10px]">{tick}s</text>
+                    </g>
+                  );
+                })}
+                {sortedMarkers.map((marker, index) => {
+                  const x = timeToX(marker.timeSec, sequence.durationSec);
+                  const selected = marker.id === selectedMarkerId;
+                  return (
+                    <g
+                      key={marker.id}
+                      transform={`translate(${x} 0)`}
+                      className="cursor-ew-resize"
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                        event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
+                        setSelectedMarkerId(marker.id);
+                        setDraggingMarkerId(marker.id);
+                        setCurrentTimeSec(marker.timeSec);
+                      }}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                    >
+                      <line x1="0" y1="18" x2="0" y2="66" className={selected ? 'stroke-brand-300' : 'stroke-amber-300'} strokeWidth={selected ? 3 : 2} />
+                      <circle cx="0" cy={TIMELINE_Y} r={selected ? 8 : 6} className={marker.imageAssetId ? 'fill-amber-300' : 'fill-surface-400'} />
+                      <text x="0" y="12" textAnchor="middle" className={selected ? 'fill-brand-200 text-[11px] font-semibold' : 'fill-slate-400 text-[10px]'}>{index + 1}</text>
+                    </g>
+                  );
+                })}
+                <line
+                  x1={timeToX(currentTimeSec, sequence.durationSec)}
+                  y1="14"
+                  x2={timeToX(currentTimeSec, sequence.durationSec)}
+                  y2="70"
+                  className="stroke-brand-400"
+                  strokeWidth="2"
+                />
+              </svg>
+            </div>
+
+            <div className="mt-4 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] gap-4">
+              <section className="flex min-h-0 flex-col rounded-md border border-surface-700 bg-surface-900/70 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Prompt Output</div>
+                  <button className="btn-ghost px-2 py-1 text-xs" onClick={() => void copyPrompt()} disabled={!composedPrompt.trim()}>
+                    <Copy size={12} />
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded bg-surface-950 p-3 text-xs leading-relaxed text-slate-300">{composedPrompt || ' '}</pre>
+              </section>
+
+              <MarkerInspector
+                marker={selectedMarker}
+                imageAssets={imageAssets}
+                durationSec={sequence.durationSec}
+                onUpdate={updateMarker}
+                onDelete={deleteSelectedMarker}
+              />
+            </div>
+          </main>
+
+          <aside className="flex min-w-0 flex-col border-l border-surface-700 bg-surface-900/50 p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preview</div>
+                <div className="mt-0.5 font-mono text-[11px] text-slate-500">{previewMarker ? formatTime(previewMarker.timeSec) : formatTime(currentTimeSec)}</div>
+              </div>
+            </div>
+            <div className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-md border border-surface-700 bg-black">
+              {previewUrl && previewImage ? (
+                <img src={previewUrl} alt={previewImage.name} className="h-full w-full object-contain" draggable={false} />
+              ) : (
+                <div className="flex flex-col items-center gap-2 text-slate-500">
+                  <ImageIcon size={30} />
+                  <div className="text-xs">No marker image</div>
+                </div>
+              )}
+            </div>
+            {previewMarker && (
+              <div className="mt-3 rounded-md border border-surface-700 bg-surface-950 p-3">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Current Shot</div>
+                <div className="text-sm text-slate-200">{previewMarker.prompt || 'Untitled shot'}</div>
+              </div>
+            )}
+            <div className="mt-4 min-h-0 overflow-auto">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Markers</div>
+              <div className="space-y-1.5">
+                {sortedMarkers.map((marker, index) => (
+                  <button
+                    key={marker.id}
+                    className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-xs ${
+                      marker.id === selectedMarkerId
+                        ? 'border-brand-400 bg-brand-500/15 text-slate-100'
+                        : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500'
+                    }`}
+                    onClick={() => {
+                      setSelectedMarkerId(marker.id);
+                      setCurrentTimeSec(marker.timeSec);
+                    }}
+                  >
+                    <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
+                    <span className="shrink-0 font-mono text-[11px] text-slate-500">{formatTime(marker.timeSec)}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MarkerInspector({
+  marker,
+  imageAssets,
+  durationSec,
+  onUpdate,
+  onDelete,
+}: {
+  marker: SequenceMarker | null;
+  imageAssets: MediaAsset[];
+  durationSec: number;
+  onUpdate: (markerId: string, patch: Partial<SequenceMarker>) => void;
+  onDelete: () => void;
+}) {
+  if (!marker) {
+    return (
+      <section className="flex min-h-[220px] items-center justify-center rounded-md border border-surface-700 bg-surface-900/70 p-4 text-center text-sm text-slate-500">
+        Select or add a marker.
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-md border border-surface-700 bg-surface-900/70 p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Shot Marker</div>
+        <button className="rounded p-1 text-slate-500 hover:bg-red-500/10 hover:text-red-300" onClick={onDelete} title="Delete marker" aria-label="Delete marker">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      <div className="space-y-3">
+        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Time
+          <input
+            type="number"
+            min={0}
+            max={durationSec}
+            step={0.1}
+            value={Number(marker.timeSec.toFixed(1))}
+            onChange={(event) => onUpdate(marker.id, { timeSec: Number(event.target.value) })}
+            className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Image
+          <select
+            value={marker.imageAssetId ?? ''}
+            onChange={(event) => onUpdate(marker.id, { imageAssetId: event.target.value || null })}
+            className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+          >
+            <option value="">No image</option>
+            {imageAssets.map((asset) => (
+              <option key={asset.id} value={asset.id}>{asset.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Shot Prompt
+          <textarea
+            value={marker.prompt}
+            onChange={(event) => onUpdate(marker.id, { prompt: event.target.value })}
+            className="min-h-[116px] resize-none rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function createDefaultSequence(model?: VideoModelDefinition): SequenceAssetData {
+  const duration = model ? durationsForModel(model)[0] ?? 8 : 8;
+  return {
+    model: model?.id ?? 'piapi-seedance-2',
+    durationSec: duration,
+    overallPrompt: '',
+    markers: [],
+  };
+}
+
+function normalizeSequence(sequence: SequenceAssetData): SequenceAssetData {
+  return {
+    ...sequence,
+    durationSec: Math.max(1, sequence.durationSec),
+    markers: sequence.markers
+      .map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, sequence.durationSec) }))
+      .sort((a, b) => a.timeSec - b.timeSec),
+  };
+}
+
+function durationsForModel(model: VideoModelDefinition): number[] {
+  return model.capabilities.durations.map((duration) => Number(duration.replace('s', ''))).filter((duration) => Number.isFinite(duration));
+}
+
+function clampTime(timeSec: number, durationSec: number): number {
+  if (!Number.isFinite(timeSec)) return 0;
+  return Math.max(0, Math.min(durationSec, Number(timeSec.toFixed(2))));
+}
+
+function timeToX(timeSec: number, durationSec: number): number {
+  if (durationSec <= 0) return 0;
+  return (clampTime(timeSec, durationSec) / durationSec) * SVG_WIDTH;
+}
+
+function timelineTicks(durationSec: number): number[] {
+  const step = durationSec > 10 ? 2 : 1;
+  const ticks: number[] = [];
+  for (let tick = 0; tick <= durationSec; tick += step) ticks.push(tick);
+  if (ticks[ticks.length - 1] !== durationSec) ticks.push(durationSec);
+  return ticks;
+}
+
+function formatTime(timeSec: number): string {
+  return formatSequenceTimestamp(timeSec);
+}
+
+function mostRecentImageMarker(markers: SequenceMarker[], currentTimeSec: number): SequenceMarker | null {
+  let latest: SequenceMarker | null = null;
+  for (const marker of markers) {
+    if (marker.timeSec > currentTimeSec) break;
+    if (marker.imageAssetId) latest = marker;
+  }
+  return latest;
+}

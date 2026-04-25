@@ -22,6 +22,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
+  const [sequenceToGenerate, setSequenceToGenerate] = useState<MediaAsset | null>(null);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
   const reset = useProjectStore((s) => s.reset);
 
@@ -76,10 +77,17 @@ export default function App() {
             onImportClick={openImport}
             onGenerateClick={() => {
               setRecipeToOpen(null);
+              setSequenceToGenerate(null);
               setGenerateOpen(true);
             }}
             onOpenRecipe={(asset) => {
               setRecipeToOpen(asset);
+              setSequenceToGenerate(null);
+              setGenerateOpen(true);
+            }}
+            onGenerateFromSequence={(asset) => {
+              setRecipeToOpen(null);
+              setSequenceToGenerate(asset);
               setGenerateOpen(true);
             }}
             highlightedAssetId={highlightedMediaAssetId}
@@ -102,6 +110,7 @@ export default function App() {
         }}
         onGenerationQueued={(assetId) => setHighlightedMediaAssetId(assetId)}
         initialRecipeAsset={recipeToOpen}
+        initialSequenceAsset={sequenceToGenerate}
       />
     </>
   );

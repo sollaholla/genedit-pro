@@ -1,5 +1,5 @@
 import { type DragEvent, type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { BookOpen, Clapperboard, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
 import { PIAPI_BILLING_URL } from '@/lib/videoGeneration/piapi';
@@ -9,11 +9,13 @@ import { useProjectStore } from '@/state/projectStore';
 import { addClip, sortedTracks } from '@/lib/timeline/operations';
 import type { MediaAsset } from '@/types';
 import { EditTrailDialog } from './EditTrailDialog';
+import { SequenceEditor } from './SequenceEditor';
 
 type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
   onOpenRecipe: (asset: MediaAsset) => void;
+  onGenerateFromSequence: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
 };
 
@@ -22,11 +24,12 @@ const kindIcon = {
   audio: Music,
   image: ImageIcon,
   recipe: BookOpen,
+  sequence: Clapperboard,
 };
 
 const ASSET_DRAG_MIME = 'application/x-genedit-asset';
 
-export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlightedAssetId = null }: Props) {
+export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
@@ -35,12 +38,14 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
   const removeAsset = useMediaStore((s) => s.removeAsset);
   const renameAsset = useMediaStore((s) => s.renameAsset);
   const moveAssetToFolder = useMediaStore((s) => s.moveAssetToFolder);
+  const createSequenceAsset = useMediaStore((s) => s.createSequenceAsset);
   const project = useProjectStore((s) => s.project);
   const updateProject = useProjectStore((s) => s.update);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const [dragOver, setDragOver] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const [editingSequenceAssetId, setEditingSequenceAssetId] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
@@ -75,7 +80,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
     .filter((asset) => asset.thumbnailDataUrl)
     .slice(0, 4);
   const addAssetToTimeline = (asset: MediaAsset) => {
-    if (asset.kind === 'recipe' || asset.generation?.status === 'generating') return;
+    if (asset.kind === 'recipe' || asset.kind === 'sequence' || asset.generation?.status === 'generating') return;
     const targetKind = asset.kind === 'audio' ? 'audio' : 'video';
     const track = sortedTracks(project).find((candidate) => candidate.kind === targetKind);
     if (!track) return;
@@ -97,6 +102,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
     setCreatingFolder(false);
     setFolderDraft('');
     if (name) createFolder(name);
+  };
+  const createSequence = () => {
+    const id = createSequenceAsset(activeFolderId);
+    setEditingSequenceAssetId(id);
   };
 
   useEffect(() => {
@@ -143,6 +152,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-2">
         <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
         <div className="flex items-center gap-1.5">
+          <button className="btn-ghost px-2 py-1 text-xs" onClick={createSequence}>
+            <Clapperboard size={12} />
+            Sequence
+          </button>
           <button className="btn-ghost px-2 py-1 text-xs" onClick={onGenerateClick}>
             <Sparkles size={12} />
             Generate
@@ -234,6 +247,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
                 onRename={(name) => renameAsset(asset.id, name)}
                 onOpenEdit={() => setEditingAssetId(asset.id)}
                 onOpenRecipe={() => onOpenRecipe(asset)}
+                onOpenSequence={() => setEditingSequenceAssetId(asset.id)}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
                 onOpenPreview={() => setPreviewAssetId(asset.id)}
                 isHighlighted={asset.id === highlightedAssetId}
@@ -250,6 +264,18 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
         <EditTrailDialog
           assetId={editingAssetId}
           onClose={() => setEditingAssetId(null)}
+        />
+      )}
+      {editingSequenceAssetId && (
+        <SequenceEditor
+          assetId={editingSequenceAssetId}
+          onGenerate={() => {
+            const sequenceAsset = assets.find((candidate) => candidate.id === editingSequenceAssetId && candidate.kind === 'sequence');
+            if (!sequenceAsset) return;
+            setEditingSequenceAssetId(null);
+            onGenerateFromSequence(sequenceAsset);
+          }}
+          onClose={() => setEditingSequenceAssetId(null)}
         />
       )}
       {previewAsset && (
@@ -517,8 +543,8 @@ function LightboxMedia({ asset, url }: { asset: MediaAsset; url: string }) {
   }
   return (
     <div className="flex flex-col items-center gap-3 text-slate-500">
-      <BookOpen size={32} />
-      <div className="text-sm">Recipes open in the generator.</div>
+      {asset.kind === 'sequence' ? <Clapperboard size={32} /> : <BookOpen size={32} />}
+      <div className="text-sm">{asset.kind === 'sequence' ? 'Sequences open in the sequence editor.' : 'Recipes open in the generator.'}</div>
     </div>
   );
 }
@@ -529,6 +555,7 @@ function MediaTile({
   onRename,
   onOpenEdit,
   onOpenRecipe,
+  onOpenSequence,
   onAddToTimeline,
   onOpenPreview,
   isHighlighted,
@@ -539,6 +566,7 @@ function MediaTile({
   onRename: (name: string) => void;
   onOpenEdit: () => void;
   onOpenRecipe: () => void;
+  onOpenSequence: () => void;
   onAddToTimeline: () => void;
   onOpenPreview: () => void;
   isHighlighted: boolean;
@@ -562,7 +590,7 @@ function MediaTile({
   const failureTooltipPositionRef = useRef({ x: 12, y: 12 });
   const skipRenameCommitRef = useRef(false);
   const pointerButtonRef = useRef(0);
-  const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
+  const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && asset.generation?.status !== 'generating';
   const canEdit = isEditableMedia(asset);
   const canReusePrompt = Boolean(asset.recipe) &&
     asset.kind !== 'recipe' &&
@@ -680,6 +708,10 @@ function MediaTile({
       onDoubleClick={() => {
         if (asset.kind === 'recipe') {
           onOpenRecipe();
+          return;
+        }
+        if (asset.kind === 'sequence') {
+          onOpenSequence();
           return;
         }
         if (asset.generation?.status === 'generating' || !asset.blobKey) return;
@@ -919,6 +951,7 @@ function splitFilename(name: string): { base: string; extension: string } {
 
 function assetBadgeLabel(asset: MediaAsset): string {
   if (asset.kind === 'recipe') return 'Recipe';
+  if (asset.kind === 'sequence') return 'Sequence';
   const extension = splitFilename(asset.name).extension;
   if (extension) return extension;
   const subtype = asset.mimeType.split('/')[1]?.split(';')[0];

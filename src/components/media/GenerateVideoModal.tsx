@@ -29,6 +29,7 @@ import {
   PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
+import { composeSequencePrompt, sequenceReferenceAssetIds } from '@/lib/media/sequence';
 import { isBillingErrorText, VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
@@ -71,6 +72,7 @@ type Props = {
   onOpenSettings: () => void;
   onGenerationQueued?: (assetId: string) => void;
   initialRecipeAsset?: MediaAsset | null;
+  initialSequenceAsset?: MediaAsset | null;
   folderId?: string | null;
 };
 
@@ -124,7 +126,7 @@ function persistGenerationAspect(value: Aspect) {
   }
 }
 
-export function GenerateVideoModal({ open, onClose, onOpenSettings, onGenerationQueued, initialRecipeAsset = null, folderId = null }: Props) {
+export function GenerateVideoModal({ open, onClose, onOpenSettings, onGenerationQueued, initialRecipeAsset = null, initialSequenceAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
   const addGeneratedAsset = useMediaStore((s) => s.addGeneratedAsset);
@@ -166,6 +168,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const initialRecipeLoadKeyRef = useRef<string | null>(null);
+  const initialSequenceLoadKeyRef = useRef<string | null>(null);
 
   const selectedModel = useMemo(
     () => models.find((m) => m.id === model) ?? DEFAULT_VIDEO_MODELS[0],
@@ -189,6 +192,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   );
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
+  const audioLockedOn = isAudioLockedOnModel(selectedModel);
   const referencesIgnoredByFrameMode = Boolean((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame) && references.length > 0);
   const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && references.length > 0);
   const generateDisabled = isGenerating ||
@@ -232,11 +236,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     try {
       const prioritized = sortModelsByPriority(DEFAULT_VIDEO_MODELS);
       setModels(prioritized);
-      if (!initialRecipeAsset?.recipe) setModel(prioritized[0]!.id);
+      if (!initialRecipeAsset?.recipe && !initialSequenceAsset?.sequence) setModel(prioritized[0]!.id);
     } finally {
       setLoadingModels(false);
     }
-  }, [initialRecipeAsset?.recipe]);
+  }, [initialRecipeAsset?.recipe, initialSequenceAsset?.sequence]);
 
   useEffect(() => {
     if (!open) return;
@@ -269,6 +273,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       initialRecipeLoadKeyRef.current = null;
       return;
     }
+    if (initialSequenceAsset?.sequence) return;
     if (!initialRecipeAsset?.recipe) return;
     if (initialRecipeLoadKeyRef.current === initialRecipeAsset.id) return;
     initialRecipeLoadKeyRef.current = initialRecipeAsset.id;
@@ -306,6 +311,44 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   }, [open, initialRecipeAsset, assets]);
 
   useEffect(() => {
+    if (!open) {
+      initialSequenceLoadKeyRef.current = null;
+      return;
+    }
+    if (!initialSequenceAsset?.sequence) return;
+    if (initialSequenceLoadKeyRef.current === initialSequenceAsset.id) return;
+    initialSequenceLoadKeyRef.current = initialSequenceAsset.id;
+    const sequence = initialSequenceAsset.sequence;
+    const imageAssetIds = new Set(assets.filter((asset) => asset.kind === 'image').map((asset) => asset.id));
+    const sequenceModel = models.find((candidate) => candidate.id === sequence.model) ?? DEFAULT_VIDEO_MODELS.find((candidate) => candidate.id === sequence.model);
+    const maxImages = sequenceModel?.capabilities.assetInputs.imageReferencesMax ?? 12;
+    const referenceAssetIds = sequenceReferenceAssetIds(sequence, { availableImageAssetIds: imageAssetIds, maxImages });
+    setLoadedRecipeId(null);
+    setRecipePickerOpen(false);
+    setRecipeQuery('');
+    setModel(sequence.model);
+    setPrompt(composeSequencePrompt(sequence, { availableImageAssetIds: imageAssetIds, maxImages }));
+    setPromptMode('freeform');
+    setStructuredPrompt({});
+    setDuration(`${sequence.durationSec}s`);
+    setAudioEnabled(true);
+    setStartFrame(null);
+    setEndFrame(null);
+    setSourceVideo(null);
+    setReferences(referenceAssetIds
+      .map((assetId) => assets.find((asset) => asset.id === assetId && asset.kind === 'image'))
+      .filter((asset): asset is MediaAsset => Boolean(asset))
+      .map((asset, index) => ({
+        id: `${initialSequenceAsset.id}-${asset.id}-${index}`,
+        token: `image${index + 1}`,
+        assetId: asset.id,
+        name: asset.name,
+        kind: 'image' as const,
+        thumbnail: asset.thumbnailDataUrl,
+      })));
+  }, [open, initialSequenceAsset, assets]);
+
+  useEffect(() => {
     if (!isResolutionFeatureSupported(selectedModel, resolution) || !resolutionOptions.includes(resolution)) {
       setResolution(resolutionOptions[0] ?? selectedModel.capabilities.resolutions[0] ?? '720p');
     }
@@ -321,7 +364,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     }
     if (!sourceVideoSupported || (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo))) setSourceVideo(null);
     if (imageReferenceLimit > 0 && references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
-    setAudioEnabled(isAudioFeatureSupported(selectedModel));
+    if (audioLockedOn) setAudioEnabled(true);
+    else if (!isAudioFeatureSupported(selectedModel)) setAudioEnabled(false);
     if (!selectedModel.promptGuidelines?.structuredSections.length && promptMode === 'structured') {
       setPromptMode('freeform');
     }
@@ -338,6 +382,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     sourceVideo,
     sourceVideoSupported,
     promptMode,
+    audioLockedOn,
   ]);
 
   const sourceVideoToken = useMemo<RefToken | null>(() => sourceVideo ? {
@@ -850,9 +895,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               <PillOptionGroup label="Resolution" value={resolution} options={resolutionOptions.map((v) => ({ value: v, label: v }))} onChange={setResolution} />
               <PillOptionGroup label="Duration" value={duration} options={durationOptions.map((v) => ({ value: v, label: v }))} onChange={setDuration} />
               <button
-                disabled={!isAudioFeatureSupported(selectedModel)}
+                disabled={!isAudioFeatureSupported(selectedModel) || audioLockedOn}
+                title={audioLockedOn ? 'Audio is always on for this model.' : undefined}
                 className={`inline-flex h-8 items-center rounded-full border px-3 text-xs transition ${audioEnabled ? 'border-emerald-400/60 bg-emerald-500/10 text-emerald-200' : 'border-white/15 bg-white/5 text-slate-300 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
-                onClick={() => setAudioEnabled((v) => !v)}
+                onClick={() => {
+                  if (audioLockedOn) return;
+                  setAudioEnabled((v) => !v);
+                }}
               >
                 Audio {audioEnabled ? 'On' : 'Off'}
               </button>
@@ -1504,6 +1553,10 @@ function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAs
   if (asset.kind !== 'video') return false;
   if (isPiApiSeedanceModel(model)) return asset.durationSec <= 15.4;
   return isPiApiKlingModel(model);
+}
+
+function isAudioLockedOnModel(model: VideoModelDefinition): boolean {
+  return isPiApiSeedanceModel(model);
 }
 
 function providerNameForModel(model: VideoModelDefinition): string {

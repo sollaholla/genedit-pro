@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset } from '@/types';
+import type { EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, SequenceAssetData } from '@/types';
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
@@ -88,6 +88,8 @@ type MediaState = {
     },
   ) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
+  createSequenceAsset: (folderId?: string | null) => string;
+  updateSequenceAsset: (id: string, sequence: SequenceAssetData) => void;
 };
 
 const urlCache = new Map<string, { blobKey: string; url: string }>();
@@ -541,5 +543,45 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     saveAssets(next);
     set({ assets: next });
     return id;
+  },
+
+  createSequenceAsset: (folderId = null) => {
+    const count = get().assets.filter((asset) => asset.kind === 'sequence').length + 1;
+    const id = nanoid(10);
+    const sequence: SequenceAssetData = {
+      model: 'piapi-seedance-2',
+      durationSec: 8,
+      overallPrompt: '',
+      markers: [],
+    };
+    const asset: MediaAsset = {
+      id,
+      name: `Sequence ${count}`,
+      kind: 'sequence',
+      durationSec: sequence.durationSec,
+      mimeType: 'application/x-genedit-sequence',
+      blobKey: '',
+      folderId,
+      sequence,
+      createdAt: Date.now(),
+    };
+    const next = [...get().assets, asset];
+    saveAssets(next);
+    set({ assets: next });
+    return id;
+  },
+
+  updateSequenceAsset: (id, sequence) => {
+    const next = get().assets.map((asset) => (asset.id === id
+      ? {
+          ...asset,
+          kind: 'sequence' as const,
+          durationSec: sequence.durationSec,
+          mimeType: 'application/x-genedit-sequence',
+          sequence,
+        }
+      : asset));
+    saveAssets(next);
+    set({ assets: next });
   },
 }));

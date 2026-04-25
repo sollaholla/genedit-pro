@@ -195,7 +195,7 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     },
     capabilities: {
       references: true,
-      audio: false,
+      audio: true,
       adult: false,
       durations: [...SEEDANCE_DURATIONS],
       resolutions: ['480p', '720p', '1080p'],
@@ -218,7 +218,7 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     },
     capabilities: {
       references: true,
-      audio: false,
+      audio: true,
       adult: false,
       durations: [...SEEDANCE_DURATIONS],
       resolutions: ['480p', '720p'],
