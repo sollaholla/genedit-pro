@@ -5,6 +5,8 @@ import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/ti
 import { resolveFrame } from '@/lib/playback/engine';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { colorCorrectionFfmpegFilters } from '@/lib/components/colorCorrection';
+import { resolveTransformAtTime } from '@/lib/components/transform';
+import { activeEditTransform } from '@/lib/media/editTrail';
 import { getFFmpeg, resetFFmpeg } from './client';
 
 const SOURCE_MOUNT_DIR = '/source-media';
@@ -138,14 +140,36 @@ function exportErrorMessage(error: unknown): string {
   ].join(' ');
 }
 
-function segmentVideoFilter(width: number, height: number, fps: number, clip: Clip | null, timelineTimeSec: number): string {
-  return [
-    `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease`,
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+function segmentVideoFilter(
+  width: number,
+  height: number,
+  fps: number,
+  clip: Clip | null,
+  asset: MediaAsset | null,
+  timelineTimeSec: number,
+): string {
+  const filters: string[] = [
     'setsar=1',
+  ];
+
+  if (clip) {
+    const transform = resolveTransformAtTime(clip, timelineTimeSec);
+    const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
+    const scale = Math.max(0.1, Math.min(6, (transform.scale ?? clip.scale ?? 1) * mediaTransform.scale));
+    if (Math.abs(scale - 1) > 0.001) {
+      const scaleExpr = scale.toFixed(5);
+      filters.push(`scale=w=trunc(iw*${scaleExpr}/2)*2:h=trunc(ih*${scaleExpr}/2)*2`);
+    }
+  }
+
+  filters.push(
+    `crop=w=min(iw\\,${width}):h=min(ih\\,${height}):x=(iw-ow)/2:y=(ih-oh)/2`,
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
     ...(clip ? colorCorrectionFfmpegFilters(clip, timelineTimeSec) : []),
     `fps=${fps}`,
-  ].join(',');
+  );
+
+  return filters.join(',');
 }
 
 /**
@@ -316,6 +340,7 @@ export async function exportProject(
         project.height,
         project.fps,
         seg.videoLayer?.clip ?? null,
+        seg.videoLayer ? assetById.get(seg.videoLayer.clip.assetId) ?? null : null,
         seg.startSec,
       );
       args.push('-map', `${videoInputIndex}:v:0`);

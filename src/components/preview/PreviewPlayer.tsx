@@ -3,6 +3,7 @@ import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
+import type { Clip, MediaAsset, Project } from '@/types';
 import { clipSpeed, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { activeEditTransform } from '@/lib/media/editTrail';
@@ -29,6 +30,16 @@ import {
   colorCorrectionSvgParams,
   resolveColorCorrectionAtTime,
 } from '@/lib/components/colorCorrection';
+import {
+  dimensionsForProjectFormat,
+  inferProjectAspectPreset,
+  inferProjectResolutionPreset,
+  isProjectAspectPreset,
+  isProjectResolutionPreset,
+  PROJECT_ASPECT_OPTIONS,
+  PROJECT_ASPECTS,
+  PROJECT_RESOLUTION_OPTIONS,
+} from '@/lib/project/dimensions';
 
 function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -52,56 +63,11 @@ function computeRms(buf: Float32Array): number {
 }
 
 type ElementPool = Map<string, HTMLMediaElement>;
+type ImagePool = Map<string, HTMLImageElement>;
 
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const HAVE_CURRENT_DATA = 2;
-const PREVIEW_ASPECTS = {
-  '16:9': 16 / 9,
-  '2.39:1': 2.39,
-  '4:3': 4 / 3,
-  '1:1': 1,
-  '9:16': 9 / 16,
-} as const;
-
-type PreviewAspectPreset = keyof typeof PREVIEW_ASPECTS;
-const PREVIEW_ASPECT_OPTIONS: readonly { value: PreviewAspectPreset; label: string }[] = [
-  { value: '16:9', label: '16:9' },
-  { value: '2.39:1', label: '2.39:1' },
-  { value: '4:3', label: '4:3' },
-  { value: '1:1', label: '1:1' },
-  { value: '9:16', label: '9:16' },
-];
-const PREVIEW_ASPECT_STORAGE_KEY = 'genedit-pro:preview-aspect';
-
-function isPreviewAspectPreset(value: string | null): value is PreviewAspectPreset {
-  return Boolean(value && value in PREVIEW_ASPECTS);
-}
-
-function initialPreviewAspectPreset(projectWidth: number, projectHeight: number): PreviewAspectPreset {
-  try {
-    const stored = localStorage.getItem(PREVIEW_ASPECT_STORAGE_KEY);
-    if (isPreviewAspectPreset(stored)) return stored;
-  } catch {
-    // Fall back to the project format when storage is unavailable.
-  }
-
-  const ratio = projectWidth / Math.max(1, projectHeight);
-  if (Math.abs(ratio - 16 / 9) < 0.02) return '16:9';
-  if (Math.abs(ratio - 2.39) < 0.03) return '2.39:1';
-  if (Math.abs(ratio - 4 / 3) < 0.02) return '4:3';
-  if (Math.abs(ratio - 9 / 16) < 0.02) return '9:16';
-  if (Math.abs(ratio - 1) < 0.02) return '1:1';
-  return '16:9';
-}
-
-function persistPreviewAspectPreset(value: PreviewAspectPreset) {
-  try {
-    localStorage.setItem(PREVIEW_ASPECT_STORAGE_KEY, value);
-  } catch {
-    // ignore storage failures
-  }
-}
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -145,6 +111,45 @@ function resolvedTransform(clip: ActiveLayer['clip']) {
   return { ...resolved, keyframes: [] };
 }
 
+function previewPixelScale(stage: HTMLElement | null, project: Pick<Project, 'width' | 'height'>): number {
+  if (!stage || project.width <= 0 || project.height <= 0) return 1;
+  const rect = stage.getBoundingClientRect();
+  const scaleX = rect.width / project.width;
+  const scaleY = rect.height / project.height;
+  const scale = Math.min(scaleX, scaleY);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+function applyVisualLayout(
+  el: HTMLVideoElement | HTMLImageElement,
+  asset: MediaAsset | undefined,
+  clip: Clip,
+  project: Project,
+  timelineTimeSec: number,
+  stage: HTMLElement | null,
+) {
+  const stageRect = stage?.getBoundingClientRect();
+  if (!stageRect || stageRect.width <= 0 || stageRect.height <= 0) return;
+
+  const tf = resolvedTransform(clip);
+  const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
+  const mediaWidth = Math.max(1, asset?.width ?? ('videoWidth' in el ? el.videoWidth : el.naturalWidth) ?? project.width);
+  const mediaHeight = Math.max(1, asset?.height ?? ('videoHeight' in el ? el.videoHeight : el.naturalHeight) ?? project.height);
+  const scale = previewPixelScale(stage, project);
+  const x = project.width / 2 + (tf.offsetX + mediaTransform.offsetX);
+  const y = project.height / 2 + (tf.offsetY + mediaTransform.offsetY);
+  const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
+
+  el.style.left = `${x * scale}px`;
+  el.style.top = `${y * scale}px`;
+  el.style.width = `${mediaWidth * scale}px`;
+  el.style.height = `${mediaHeight * scale}px`;
+  el.style.transform = `translate(-50%, -50%) scale(${visualScale})`;
+  el.style.transformOrigin = 'center center';
+  el.style.filter = colorCorrectionCssFilter(clip, timelineTimeSec);
+  el.style.cursor = tf ? 'move' : 'default';
+}
+
 export function PreviewPlayer() {
   const project = useProjectStore((s) => s.project);
   const assets = useMediaStore((s) => s.assets);
@@ -154,6 +159,7 @@ export function PreviewPlayer() {
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const pause = usePlaybackStore((s) => s.pause);
   const updateSilent = useProjectStore((s) => s.updateSilent);
+  const updateProject = useProjectStore((s) => s.update);
   const beginTx = useProjectStore((s) => s.beginTx);
   const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
 
@@ -164,6 +170,7 @@ export function PreviewPlayer() {
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
   const videoPool = useRef<ElementPool>(new Map());
+  const imagePool = useRef<ImagePool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
   // clipId -> asset id + active blob key that el.src is currently set to.
   const clipAssetRef = useRef<Map<string, string>>(new Map());
@@ -198,15 +205,20 @@ export function PreviewPlayer() {
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
-  const [aspectPreset, setAspectPreset] = useState<PreviewAspectPreset>(() =>
-    initialPreviewAspectPreset(project.width, project.height),
-  );
-  const previewAspectRatio = PREVIEW_ASPECTS[aspectPreset];
+  const aspectPreset = inferProjectAspectPreset(project.width, project.height);
+  const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
+  const previewAspectRatio = PROJECT_ASPECTS[aspectPreset];
 
   const updateAspectPreset = (value: string) => {
-    if (!isPreviewAspectPreset(value)) return;
-    setAspectPreset(value);
-    persistPreviewAspectPreset(value);
+    if (!isProjectAspectPreset(value)) return;
+    const next = dimensionsForProjectFormat(value, resolutionPreset);
+    updateProject((p) => ({ ...p, ...next }));
+  };
+
+  const updateResolutionPreset = (value: string) => {
+    if (!isProjectResolutionPreset(value)) return;
+    const next = dimensionsForProjectFormat(aspectPreset, value);
+    updateProject((p) => ({ ...p, ...next }));
   };
 
   useEffect(() => {
@@ -285,10 +297,11 @@ export function PreviewPlayer() {
     const selectedId = selectedClipIds[0]!;
     const frame = resolveFrame(project, currentTime);
     if (frame.video?.clip.id !== selectedId || getTransformComponents(frame.video.clip).length === 0) return;
-    const el = videoPool.current.get(selectedId) as HTMLVideoElement | undefined;
+    const el = (videoPool.current.get(selectedId) as HTMLVideoElement | undefined) ?? imagePool.current.get(selectedId);
     if (!el) return;
 
-    const onDown = (e: MouseEvent) => {
+    const onDown = (event: Event) => {
+      const e = event as MouseEvent;
       if (e.button !== 0) return;
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === selectedId);
       if (!clip) return;
@@ -301,11 +314,12 @@ export function PreviewPlayer() {
       const resolved = resolveTransformComponentAtTime(clip, active, currentTime);
       const baseX = resolved.offsetX;
       const baseY = resolved.offsetY;
+      const pixelScale = previewPixelScale(videoHostRef.current, useProjectStore.getState().project);
       beginTx();
 
       const onMove = (ev: MouseEvent) => {
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
+        const dx = (ev.clientX - startX) / pixelScale;
+        const dy = (ev.clientY - startY) / pixelScale;
         const nextX = baseX + dx;
         const nextY = baseY + dy;
         updateSilent((p) => ({
@@ -337,16 +351,20 @@ export function PreviewPlayer() {
     let cancelled = false;
     const assetsById = new Map(assets.map((a) => [a.id, a]));
 
-    const wantedClipIds = new Set<string>();
+    const wantedVideoClipIds = new Set<string>();
+    const wantedImageClipIds = new Set<string>();
+    const wantedAudioClipIds = new Set<string>();
     for (const clip of project.clips) {
       const asset = assetsById.get(clip.assetId);
-      if (!asset || asset.kind === 'image') continue;
-      wantedClipIds.add(clip.id);
+      if (!asset) continue;
+      if (asset.kind === 'image') wantedImageClipIds.add(clip.id);
+      else if (asset.kind === 'audio') wantedAudioClipIds.add(clip.id);
+      else wantedVideoClipIds.add(clip.id);
     }
 
     // Remove elements for clips that no longer exist.
     for (const [clipId, el] of videoPool.current) {
-      if (!wantedClipIds.has(clipId)) {
+      if (!wantedVideoClipIds.has(clipId)) {
         el.pause();
         (el as HTMLVideoElement).remove();
         videoPool.current.delete(clipId);
@@ -364,8 +382,15 @@ export function PreviewPlayer() {
         prerolledRef.current.delete(clipId);
       }
     }
+    for (const [clipId, el] of imagePool.current) {
+      if (!wantedImageClipIds.has(clipId)) {
+        el.remove();
+        imagePool.current.delete(clipId);
+        clipAssetRef.current.delete(clipId);
+      }
+    }
     for (const [clipId, el] of audioPool.current) {
-      if (!wantedClipIds.has(clipId)) {
+      if (!wantedAudioClipIds.has(clipId)) {
         el.pause();
         audioPool.current.delete(clipId);
         clipAssetRef.current.delete(clipId);
@@ -396,7 +421,40 @@ export function PreviewPlayer() {
       for (const clip of project.clips) {
         if (cancelled) return;
         const asset = assetsById.get(clip.assetId);
-        if (!asset || asset.kind === 'image') continue;
+        if (!asset) continue;
+        if (asset.kind === 'image') {
+          const existing = imagePool.current.get(clip.id);
+          const mediaKey = `${asset.id}:${asset.blobKey}`;
+          const previousMediaKey = clipAssetRef.current.get(clip.id);
+
+          let url = urlCache.current.get(mediaKey);
+          if (!url) {
+            const u = await objectUrlFor(asset.id);
+            if (!u) continue;
+            url = u;
+            urlCache.current.set(mediaKey, url);
+          }
+          if (cancelled) return;
+
+          if (!existing) {
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = '';
+            img.decoding = 'async';
+            img.className = 'absolute max-w-none object-contain';
+            img.style.display = 'none';
+            img.style.visibility = 'hidden';
+            videoHostRef.current?.appendChild(img);
+            imagePool.current.set(clip.id, img);
+            clipAssetRef.current.set(clip.id, mediaKey);
+          } else if (previousMediaKey !== mediaKey) {
+            existing.src = url;
+            existing.style.display = 'none';
+            existing.style.visibility = 'hidden';
+            clipAssetRef.current.set(clip.id, mediaKey);
+          }
+          continue;
+        }
         const isAudio = asset.kind === 'audio';
         const pool = isAudio ? audioPool.current : videoPool.current;
         const existing = pool.get(clip.id);
@@ -426,7 +484,7 @@ export function PreviewPlayer() {
             v.playsInline = true;
             v.muted = true; // starts muted; unmuted by RAF when active for audio
             v.src = url;
-            v.className = 'absolute inset-0 h-full w-full object-contain';
+            v.className = 'absolute max-w-none object-contain';
             v.style.display = 'none';
             v.style.visibility = 'hidden';
             videoHostRef.current?.appendChild(v);
@@ -494,26 +552,33 @@ export function PreviewPlayer() {
       // ---- VIDEO DISPLAY ----
       const activeVideoLayer = frame.video;
       const nextVideoClipId = activeVideoLayer?.clip.id ?? null;
+      const activeVisualAsset = activeVideoLayer
+        ? assetsRef.current.find((item) => item.id === activeVideoLayer.clip.assetId)
+        : undefined;
       for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
-        if (clipId === nextVideoClipId && activeVideoLayer) {
+        if (clipId === nextVideoClipId && activeVideoLayer && activeVisualAsset?.kind === 'video') {
           seekIfNeeded(videoEl, activeVideoLayer.sourceTimeSec, state.playing);
-          const tf = resolvedTransform(activeVideoLayer.clip);
-          const asset = assetsRef.current.find((item) => item.id === activeVideoLayer.clip.assetId);
-          const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
-          const s = Math.max(0.1, Math.min(6, (tf?.scale ?? activeVideoLayer.clip.scale ?? 1) * mediaTransform.scale));
-          const ox = (tf?.offsetX ?? 0) + mediaTransform.offsetX;
-          const oy = (tf?.offsetY ?? 0) + mediaTransform.offsetY;
           videoEl.style.display = '';
           videoEl.style.visibility = canPaintSyncedVideo(videoEl, activeVideoLayer.sourceTimeSec, state.playing)
             ? 'visible'
             : 'hidden';
-          videoEl.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
-          videoEl.style.transformOrigin = 'center center';
-          videoEl.style.filter = colorCorrectionCssFilter(activeVideoLayer.clip, t);
-          videoEl.style.cursor = tf ? 'move' : 'default';
+          applyVisualLayout(videoEl, activeVisualAsset, activeVideoLayer.clip, proj, t, videoHostRef.current);
         } else {
           hideVideoElement(videoEl);
+        }
+      }
+      for (const [clipId, img] of imagePool.current) {
+        if (clipId === nextVideoClipId && activeVideoLayer && activeVisualAsset?.kind === 'image') {
+          img.style.display = '';
+          img.style.visibility = 'visible';
+          applyVisualLayout(img, activeVisualAsset, activeVideoLayer.clip, proj, t, videoHostRef.current);
+        } else {
+          img.style.display = 'none';
+          img.style.visibility = 'hidden';
+          img.style.transform = '';
+          img.style.filter = '';
+          img.style.cursor = 'default';
         }
       }
       const hasVideo = nextVideoClipId !== null;
@@ -736,12 +801,14 @@ export function PreviewPlayer() {
   // Cleanup on unmount.
   useEffect(() => {
     const videoEls = videoPool.current;
+    const imageEls = imagePool.current;
     const audioEls = audioPool.current;
     const urls = urlCache.current;
     const meters = clipMeters.current;
     const meterBuffers = clipMeterBuffers.current;
     return () => {
       for (const el of videoEls.values()) el.pause();
+      for (const el of imageEls.values()) el.remove();
       for (const el of audioEls.values()) el.pause();
       for (const meter of meters.values()) meter.dispose();
       meters.clear();
@@ -812,8 +879,11 @@ export function PreviewPlayer() {
       <PlayerControls
         isFullscreen={isFullscreen}
         aspectPreset={aspectPreset}
-        aspectOptions={PREVIEW_ASPECT_OPTIONS}
+        aspectOptions={PROJECT_ASPECT_OPTIONS}
+        resolutionPreset={resolutionPreset}
+        resolutionOptions={PROJECT_RESOLUTION_OPTIONS}
         onAspectPresetChange={updateAspectPreset}
+        onResolutionPresetChange={updateResolutionPreset}
         onToggleFullscreen={toggleFullscreen}
       />
     </div>

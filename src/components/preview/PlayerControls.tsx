@@ -17,7 +17,10 @@ type Props = {
   isFullscreen: boolean;
   aspectPreset: string;
   aspectOptions: readonly { value: string; label: string }[];
+  resolutionPreset: string;
+  resolutionOptions: readonly { value: string; label: string }[];
   onAspectPresetChange: (value: string) => void;
+  onResolutionPresetChange: (value: string) => void;
   onToggleFullscreen: () => void;
 };
 
@@ -25,7 +28,10 @@ export function PlayerControls({
   isFullscreen,
   aspectPreset,
   aspectOptions,
+  resolutionPreset,
+  resolutionOptions,
   onAspectPresetChange,
+  onResolutionPresetChange,
   onToggleFullscreen,
 }: Props) {
   const playing = usePlaybackStore((s) => s.playing);
@@ -82,9 +88,19 @@ export function PlayerControls({
           className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
           value={aspectPreset}
           onChange={(e) => onAspectPresetChange(e.target.value)}
-          title="Preview aspect ratio"
+          title="Project aspect ratio"
         >
           {aspectOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          value={resolutionPreset}
+          onChange={(e) => onResolutionPresetChange(e.target.value)}
+          title="Project pixel resolution"
+        >
+          {resolutionOptions.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
