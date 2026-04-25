@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import type { Clip, ComponentInstance, TransformComponentData, KeyframePoint } from '@/types';
+import type { Clip, ComponentInstance, TransformComponentData, KeyframePoint, TransformComponentInstance } from '@/types';
 
 export type TransformProperty = 'scale' | 'offsetX' | 'offsetY';
 
@@ -14,7 +14,7 @@ export function keyframeComponentVisibilityKey(clipId: string, componentId: stri
   return `${clipId}:${componentId}`;
 }
 
-export function createDefaultTransformComponent(): ComponentInstance {
+export function createDefaultTransformComponent(): TransformComponentInstance {
   return {
     id: nanoid(8),
     type: 'transform',
@@ -31,10 +31,9 @@ export function createDefaultTransformComponent(): ComponentInstance {
   };
 }
 
-export function getTransformComponents(clip: Clip): ComponentInstance[] {
-  if (clip.components?.length) return clip.components.filter((c) => c.type === 'transform');
+function legacyTransformComponent(clip: Clip): TransformComponentInstance | null {
   if (clip.transform) {
-    return [{
+    return {
       id: 'legacy-transform',
       type: 'transform',
       data: {
@@ -47,8 +46,21 @@ export function getTransformComponents(clip: Clip): ComponentInstance[] {
           offsetY: (clip.transform.keyframes ?? []).map((k) => ({ id: k.id, timeSec: k.timeSec, value: k.offsetY })),
         },
       },
-    }];
+    };
   }
+  return null;
+}
+
+export function getClipComponents(clip: Clip): ComponentInstance[] {
+  if (clip.components?.length) return clip.components;
+  const legacy = legacyTransformComponent(clip);
+  return legacy ? [legacy] : [];
+}
+
+export function getTransformComponents(clip: Clip): TransformComponentInstance[] {
+  if (clip.components?.length) return clip.components.filter((c) => c.type === 'transform');
+  const legacy = legacyTransformComponent(clip);
+  if (legacy) return [legacy];
   return [];
 }
 
@@ -65,10 +77,42 @@ export function findTransformComponentIndex(clip: Clip, target: TransformTarget)
   return components.length - 1;
 }
 
-export function getActiveTransformComponent(clip: Clip, componentId?: string | null): ComponentInstance | null {
+function findTransformStackIndex(clip: Clip, target: TransformTarget): number {
+  const components = getClipComponents(clip);
+  const transformIndexes = components
+    .map((component, index) => (component.type === 'transform' ? index : -1))
+    .filter((index) => index >= 0);
+  if (transformIndexes.length === 0) return -1;
+  if (target.componentId) {
+    const byId = components.findIndex((component) => (
+      component.type === 'transform' && component.id === target.componentId
+    ));
+    if (byId >= 0) return byId;
+  }
+  if (typeof target.componentIndex === 'number') {
+    const clamped = Math.max(0, Math.min(transformIndexes.length - 1, target.componentIndex));
+    return transformIndexes[clamped] ?? -1;
+  }
+  return transformIndexes[transformIndexes.length - 1] ?? -1;
+}
+
+export function getActiveTransformComponent(clip: Clip, componentId?: string | null): TransformComponentInstance | null {
   const components = getTransformComponents(clip);
   if (components.length === 0) return null;
   return components.find((component) => component.id === componentId) ?? components[components.length - 1]!;
+}
+
+export function reorderComponents(clip: Clip, fromIndex: number, toIndex: number): Clip {
+  const components = getClipComponents(clip);
+  if (components.length === 0) return clip;
+  const from = Math.max(0, Math.min(components.length - 1, fromIndex));
+  const to = Math.max(0, Math.min(components.length - 1, toIndex));
+  if (from === to) return clip;
+  const next = [...components];
+  const [moved] = next.splice(from, 1);
+  if (!moved) return clip;
+  next.splice(to, 0, moved);
+  return { ...clip, components: next };
 }
 
 export function upsertKeyframeValue(
@@ -93,13 +137,13 @@ export function updateTransformKeyframe(
   target: TransformTarget & { property: TransformProperty; keyframeId: string },
   patch: Partial<Pick<KeyframePoint, 'timeSec' | 'value'>>,
 ): Clip {
-  const components = getTransformComponents(clip);
-  const componentIndex = findTransformComponentIndex(clip, target);
-  if (componentIndex < 0) return clip;
+  const components = getClipComponents(clip);
+  const stackIndex = findTransformStackIndex(clip, target);
+  if (stackIndex < 0) return clip;
   return {
     ...clip,
     components: components.map((component, idx) => {
-      if (idx !== componentIndex) return component;
+      if (idx !== stackIndex || component.type !== 'transform') return component;
       const points = component.data.keyframes[target.property].map((point) => (
         point.id === target.keyframeId ? { ...point, ...patch } : point
       ));
@@ -119,14 +163,17 @@ export function moveTransformKeyframeGroup(
   targets: Array<TransformTarget & { property: TransformProperty; keyframeId: string }>,
   timeSec: number,
 ): Clip {
-  const components = getTransformComponents(clip);
+  const components = getClipComponents(clip);
   if (targets.length === 0 || components.length === 0) return clip;
+  const transformComponents = getTransformComponents(clip);
   return {
     ...clip,
-    components: components.map((component, idx) => {
+    components: components.map((component) => {
+      if (component.type !== 'transform') return component;
+      const transformIndex = transformComponents.findIndex((candidate) => candidate.id === component.id);
       const componentTargets = targets.filter((target) => {
         if (target.componentId) return target.componentId === component.id;
-        return target.componentIndex === idx;
+        return target.componentIndex === transformIndex;
       });
       if (componentTargets.length === 0) return component;
 
@@ -158,13 +205,13 @@ export function removeTransformKeyframe(
   clip: Clip,
   target: TransformTarget & { property: TransformProperty; keyframeId: string },
 ): Clip {
-  const components = getTransformComponents(clip);
-  const componentIndex = findTransformComponentIndex(clip, target);
-  if (componentIndex < 0) return clip;
+  const components = getClipComponents(clip);
+  const stackIndex = findTransformStackIndex(clip, target);
+  if (stackIndex < 0) return clip;
   return {
     ...clip,
     components: components.map((component, idx) => {
-      if (idx !== componentIndex) return component;
+      if (idx !== stackIndex || component.type !== 'transform') return component;
       return {
         ...component,
         data: {
@@ -184,17 +231,18 @@ export function removeTransformKeyframeGroup(
   target: TransformTarget & { property: TransformProperty; keyframeId: string },
   epsSec = KEYFRAME_EPS_SEC,
 ): Clip {
-  const components = getTransformComponents(clip);
-  const componentIndex = findTransformComponentIndex(clip, target);
-  if (componentIndex < 0) return clip;
-  const component = components[componentIndex]!;
+  const components = getClipComponents(clip);
+  const stackIndex = findTransformStackIndex(clip, target);
+  if (stackIndex < 0) return clip;
+  const component = components[stackIndex];
+  if (!component || component.type !== 'transform') return clip;
   const selectedPoint = component.data.keyframes[target.property].find((point) => point.id === target.keyframeId);
   if (!selectedPoint) return removeTransformKeyframe(clip, target);
 
   return {
     ...clip,
     components: components.map((candidate, idx) => {
-      if (idx !== componentIndex) return candidate;
+      if (idx !== stackIndex || candidate.type !== 'transform') return candidate;
       return {
         ...candidate,
         data: {
@@ -217,14 +265,14 @@ export function setTransformPropertyAtTime(
   value: number,
   options: { forceKeyframe?: boolean } = {},
 ): Clip {
-  const components = getTransformComponents(clip);
-  const componentIndex = findTransformComponentIndex(clip, target);
-  if (componentIndex < 0) return clip;
+  const components = getClipComponents(clip);
+  const stackIndex = findTransformStackIndex(clip, target);
+  if (stackIndex < 0) return clip;
   const localTimeSec = Math.max(0, timeSec - clip.startSec);
   return {
     ...clip,
     components: components.map((component, idx) => {
-      if (idx !== componentIndex) return component;
+      if (idx !== stackIndex || component.type !== 'transform') return component;
       const existing = component.data.keyframes[target.property];
       const shouldWriteKeyframe = options.forceKeyframe || existing.length > 0;
       return {
@@ -258,16 +306,14 @@ export function addTransformKeyframeAtTime(
 }
 
 export function reorderTransformComponents(clip: Clip, fromIndex: number, toIndex: number): Clip {
-  const components = getTransformComponents(clip);
-  if (components.length === 0) return clip;
-  const from = Math.max(0, Math.min(components.length - 1, fromIndex));
-  const to = Math.max(0, Math.min(components.length - 1, toIndex));
-  if (from === to) return clip;
-  const next = [...components];
-  const [moved] = next.splice(from, 1);
-  if (!moved) return clip;
-  next.splice(to, 0, moved);
-  return { ...clip, components: next };
+  const components = getClipComponents(clip);
+  const transformIndexes = components
+    .map((component, index) => (component.type === 'transform' ? index : -1))
+    .filter((index) => index >= 0);
+  const from = transformIndexes[Math.max(0, Math.min(transformIndexes.length - 1, fromIndex))];
+  const to = transformIndexes[Math.max(0, Math.min(transformIndexes.length - 1, toIndex))];
+  if (from === undefined || to === undefined) return clip;
+  return reorderComponents(clip, from, to);
 }
 
 function evalKeyframes(track: KeyframePoint[], t: number, fallback: number): number {
@@ -286,7 +332,7 @@ function evalKeyframes(track: KeyframePoint[], t: number, fallback: number): num
 
 export function resolveTransformComponentAtTime(
   clip: Clip,
-  component: ComponentInstance,
+  component: TransformComponentInstance,
   timelineTimeSec: number,
 ) {
   const data: TransformComponentData = component.data;

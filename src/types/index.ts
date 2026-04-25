@@ -141,11 +141,41 @@ export type TransformComponentData = {
   };
 };
 
-export type ComponentInstance = {
+export type ColorWheelValue = {
+  /** Horizontal chroma offset, -1..1. */
+  x: number;
+  /** Vertical chroma offset, -1..1. */
+  y: number;
+};
+
+export type ColorCorrectionComponentData = {
+  lift: ColorWheelValue;
+  gammaWheel: ColorWheelValue;
+  gain: ColorWheelValue;
+  /** -1..1, default 0. */
+  brightness: number;
+  /** 0.25..3, default 1. */
+  gamma: number;
+  /** 0..2, default 1. */
+  saturation: number;
+  /** 0..2, default 1. */
+  contrast: number;
+  presetId?: string;
+};
+
+export type TransformComponentInstance = {
   id: string;
   type: 'transform';
   data: TransformComponentData;
 };
+
+export type ColorCorrectionComponentInstance = {
+  id: string;
+  type: 'colorCorrection';
+  data: ColorCorrectionComponentData;
+};
+
+export type ComponentInstance = TransformComponentInstance | ColorCorrectionComponentInstance;
 
 export type Project = {
   id: string;

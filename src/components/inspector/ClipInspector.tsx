@@ -1,18 +1,25 @@
-import { useState } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Loader2, Music, Plus, RotateCcw, Search, Trash2, Volume2, X } from 'lucide-react';
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { ArrowDown, ArrowUp, BookOpen, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Loader2, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
 import { clipSpeed, clipTimelineDurationSec, setClipProp } from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
-import type { ComponentInstance } from '@/types';
+import type { Clip, ColorCorrectionComponentData, ColorCorrectionComponentInstance, ColorWheelValue, ComponentInstance, TransformComponentInstance } from '@/types';
+import {
+  COLOR_CORRECTION_PRESETS,
+  clampWheel,
+  createDefaultColorCorrectionComponent,
+  normalizeColorCorrectionData,
+} from '@/lib/components/colorCorrection';
 import {
   addTransformKeyframeAtTime,
   createDefaultTransformComponent,
+  getClipComponents,
   getTransformComponents,
   keyframeComponentVisibilityKey,
-  reorderTransformComponents,
+  reorderComponents,
   resolveTransformComponentAtTime,
   setTransformPropertyAtTime,
   type TransformProperty,
@@ -25,6 +32,7 @@ export function ClipInspector() {
   const [componentPickerOpen, setComponentPickerOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState('');
   const [draggingComponentId, setDraggingComponentId] = useState<string | null>(null);
+  const [focusedComponentId, setFocusedComponentId] = useState<string | null>(null);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
@@ -37,6 +45,10 @@ export function ClipInspector() {
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
   const assets = useMediaStore((s) => s.assets);
+
+  useEffect(() => {
+    setFocusedComponentId(null);
+  }, [selectedId]);
 
   if (selectedClipIds.length === 0) {
     return (
@@ -60,6 +72,8 @@ export function ClipInspector() {
   if (!clip) return null;
 
   const asset = assets.find((a) => a.id === clip.assetId);
+  const track = project.tracks.find((candidate) => candidate.id === clip.trackId);
+  const isVisualClip = track?.kind === 'video';
   const fps = project.fps;
   const timelineDuration = clipTimelineDurationSec(clip);
   const speed = clipSpeed(clip);
@@ -79,9 +93,11 @@ export function ClipInspector() {
     !!clip.volumeEnvelope &&
     (clip.volumeEnvelope.points.length !== 2 ||
       clip.volumeEnvelope.points.some((p) => p.v !== 1 || p.curvature !== 0));
+  const components = getClipComponents(clip);
   const transformComponents = getTransformComponents(clip);
   const componentOptions = [
     { id: 'transform', label: 'Transform', description: 'Position/scale offsets and keyframes.' },
+    { id: 'colorCorrection', label: 'Color Correction', description: 'Lift, gamma, gain, and image tone controls.' },
   ];
   const filteredComponentOptions = componentOptions.filter((option) => (
     `${option.label} ${option.description}`.toLowerCase().includes(componentSearch.trim().toLowerCase())
@@ -208,11 +224,11 @@ export function ClipInspector() {
       <Section label="Components">
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-[11px] text-slate-500">{transformComponents.length} active</div>
+            <div className="text-[11px] text-slate-500">{components.length} active</div>
             <button
               type="button"
               className="inline-flex items-center gap-1 rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
-              disabled={asset?.kind !== 'video'}
+              disabled={!isVisualClip}
               onClick={() => setComponentPickerOpen(true)}
             >
               <Plus size={12} />
@@ -242,191 +258,145 @@ export function ClipInspector() {
                 </button>
               </div>
               {filteredComponentOptions.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className="mb-1 block w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700"
-                    onClick={() => {
-                      if (option.id === 'transform') {
-                        const nextComponent = createDefaultTransformComponent();
-                        update((p) => setClipProp(p, selectedId, 'components', [...getTransformComponents(clip), nextComponent]));
-                        setActiveTransformComponentId(nextComponent.id);
-                      }
-                      setComponentPickerOpen(false);
-                      setComponentSearch('');
-                    }}
-                  >
-                    <div className="font-medium">{option.label}</div>
-                    <div className="text-[10px] text-slate-400">{option.description}</div>
-                  </button>
-                ))}
+                <button
+                  key={option.id}
+                  type="button"
+                  className="mb-1 block w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700"
+                  onClick={() => {
+                    if (option.id === 'transform') {
+                      const nextComponent = createDefaultTransformComponent();
+                      update((p) => setClipProp(p, selectedId, 'components', [...components, nextComponent]));
+                      setActiveTransformComponentId(nextComponent.id);
+                      setFocusedComponentId(nextComponent.id);
+                    } else if (option.id === 'colorCorrection') {
+                      const nextComponent = createDefaultColorCorrectionComponent();
+                      update((p) => setClipProp(p, selectedId, 'components', [...components, nextComponent]));
+                      setActiveTransformComponentId(null);
+                      setFocusedComponentId(nextComponent.id);
+                    }
+                    setComponentPickerOpen(false);
+                    setComponentSearch('');
+                  }}
+                >
+                  <div className="font-medium">{option.label}</div>
+                  <div className="text-[10px] text-slate-400">{option.description}</div>
+                </button>
+              ))}
               {filteredComponentOptions.length === 0 && (
                 <div className="rounded border border-dashed border-surface-700 px-2 py-2 text-[11px] text-slate-500">No matching components.</div>
               )}
             </div>
           )}
-          {transformComponents.length === 0 && (
+          {components.length === 0 && (
             <div className="rounded border border-dashed border-surface-600 bg-surface-900/30 p-2.5 text-[11px] text-slate-500">
               No components on this clip yet.
             </div>
           )}
-          {transformComponents.map((component, idx) => {
-            const setComponents = (next: typeof transformComponents) => update((p) => setClipProp(p, selectedId, 'components', next));
-            const setPropertyAtPlayhead = (property: TransformProperty, value: number) => {
-              update((p) => ({
-                ...p,
-                clips: p.clips.map((candidate) => (
-                  candidate.id === selectedId
-                    ? setTransformPropertyAtTime(candidate, { componentId: component.id, property }, currentTime, value)
-                    : candidate
-                )),
-              }));
-              setActiveTransformComponentId(component.id);
-            };
-            const addPropertyKeyframe = (property: TransformProperty) => {
-              update((p) => ({
-                ...p,
-                clips: p.clips.map((candidate) => (
-                  candidate.id === selectedId
-                    ? addTransformKeyframeAtTime(candidate, { componentId: component.id, property }, currentTime)
-                    : candidate
-                )),
-              }));
-              setActiveTransformComponentId(component.id);
-              showKeyframeComponent(keyframeComponentVisibilityKey(selectedId, component.id));
-            };
+          {components.map((component, idx) => {
+            const setComponents = (next: ComponentInstance[]) => update((p) => setClipProp(p, selectedId, 'components', next));
             const moveComponent = (toIndex: number) => {
               update((p) => ({
                 ...p,
                 clips: p.clips.map((candidate) => (
-                  candidate.id === selectedId ? reorderTransformComponents(candidate, idx, toIndex) : candidate
+                  candidate.id === selectedId ? reorderComponents(candidate, idx, toIndex) : candidate
                 )),
               }));
-              setActiveTransformComponentId(component.id);
+              setFocusedComponentId(component.id);
+              if (component.type === 'transform') setActiveTransformComponentId(component.id);
             };
-            const isActive = activeTransformComponentId === component.id || (!activeTransformComponentId && idx === transformComponents.length - 1);
-            const hasKeyframes = hasTransformKeyframes(component);
-            const visibilityKey = keyframeComponentVisibilityKey(selectedId, component.id);
-            const keyframesVisible = visibleKeyframeComponentKeys.includes(visibilityKey);
-            const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
-            return (
-              <div
-                key={component.id}
-                className={`space-y-3 rounded border p-2.5 ${isActive ? 'border-brand-400 bg-brand-500/10' : 'border-surface-700 bg-surface-900/50'}`}
-                onClick={() => setActiveTransformComponentId(component.id)}
-                onDragOver={(e) => {
-                  if (!draggingComponentId || draggingComponentId === component.id) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const fromIndex = transformComponents.findIndex((candidate) => candidate.id === draggingComponentId);
-                  if (fromIndex >= 0 && fromIndex !== idx) {
+            const removeComponent = () => {
+              const next = components.filter((candidate) => candidate.id !== component.id);
+              setComponents(next);
+              if (component.type === 'transform') {
+                const nextTransform = next.filter((candidate) => candidate.type === 'transform').at(-1);
+                if (activeTransformComponentId === component.id) setActiveTransformComponentId(nextTransform?.id ?? null);
+                hideKeyframeComponent(keyframeComponentVisibilityKey(selectedId, component.id));
+              }
+              if (focusedComponentId === component.id) setFocusedComponentId(next.at(-1)?.id ?? null);
+            };
+            const dragProps = {
+              onDragOver: (e: DragEvent<HTMLDivElement>) => {
+                if (!draggingComponentId || draggingComponentId === component.id) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+              },
+              onDrop: (e: DragEvent<HTMLDivElement>) => {
+                e.preventDefault();
+                const fromIndex = components.findIndex((candidate) => candidate.id === draggingComponentId);
+                if (fromIndex >= 0 && fromIndex !== idx) {
+                  update((p) => ({
+                    ...p,
+                    clips: p.clips.map((candidate) => (
+                      candidate.id === selectedId ? reorderComponents(candidate, fromIndex, idx) : candidate
+                    )),
+                  }));
+                }
+                setDraggingComponentId(null);
+              },
+              onDragEnd: () => setDraggingComponentId(null),
+            };
+
+            if (component.type === 'colorCorrection') {
+              return (
+                <ColorCorrectionCard
+                  key={component.id}
+                  component={component}
+                  index={idx}
+                  total={components.length}
+                  active={focusedComponentId === component.id}
+                  dragProps={dragProps}
+                  onFocus={() => {
+                    setFocusedComponentId(component.id);
+                    setActiveTransformComponentId(null);
+                  }}
+                  onStartDrag={() => setDraggingComponentId(component.id)}
+                  onMove={moveComponent}
+                  onRemove={removeComponent}
+                  onChange={(data) => {
+                    setFocusedComponentId(component.id);
                     update((p) => ({
                       ...p,
                       clips: p.clips.map((candidate) => (
-                        candidate.id === selectedId ? reorderTransformComponents(candidate, fromIndex, idx) : candidate
+                        candidate.id === selectedId
+                          ? {
+                            ...candidate,
+                            components: getClipComponents(candidate).map((item) => (
+                              item.id === component.id && item.type === 'colorCorrection'
+                                ? { ...item, data }
+                                : item
+                            )),
+                          }
+                          : candidate
                       )),
                     }));
-                  }
-                  setDraggingComponentId(null);
+                  }}
+                />
+              );
+            }
+
+            return (
+              <TransformComponentCard
+                key={component.id}
+                component={component}
+                index={idx}
+                transformIndex={transformComponents.findIndex((candidate) => candidate.id === component.id)}
+                total={components.length}
+                clip={clip}
+                clipId={selectedId}
+                currentTime={currentTime}
+                active={focusedComponentId === component.id || activeTransformComponentId === component.id || (!activeTransformComponentId && transformComponents.at(-1)?.id === component.id)}
+                keyframesVisible={visibleKeyframeComponentKeys.includes(keyframeComponentVisibilityKey(selectedId, component.id))}
+                dragProps={dragProps}
+                onFocus={() => {
+                  setFocusedComponentId(component.id);
+                  setActiveTransformComponentId(component.id);
                 }}
-                onDragEnd={() => setDraggingComponentId(null)}
-              >
-                <div className="space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <button
-                        type="button"
-                        draggable
-                        className="inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-300 active:cursor-grabbing"
-                        title="Drag to reorder"
-                        onDragStart={(e) => {
-                          setDraggingComponentId(component.id);
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <GripVertical size={13} />
-                      </button>
-                      <div className="flex min-w-0 items-center gap-1">
-                        <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wider text-slate-300">Transform</span>
-                        <span className="rounded bg-surface-800 px-1 font-mono text-[9px] leading-4 text-slate-400">#{idx + 1}</span>
-                      </div>
-                    </div>
-                    <button type="button" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600" title="Remove" onClick={(e) => {
-                      e.stopPropagation();
-                      const next = transformComponents.filter((candidate) => candidate.id !== component.id);
-                      setComponents(next);
-                      if (activeTransformComponentId === component.id) setActiveTransformComponentId(next.at(-1)?.id ?? null);
-                      hideKeyframeComponent(visibilityKey);
-                    }}>
-                      <Trash2 size={11} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-[10px] text-slate-500">{isActive ? 'Active target' : 'Click to target'}</div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <button
-                        type="button"
-                        className={`inline-flex h-6 w-6 items-center justify-center rounded ${
-                          keyframesVisible
-                            ? 'bg-brand-500 text-white hover:bg-brand-400'
-                            : 'bg-surface-700 text-slate-200 hover:bg-surface-600'
-                        } disabled:cursor-not-allowed disabled:opacity-40`}
-                        title={hasKeyframes ? (keyframesVisible ? 'Hide keyframes in timeline' : 'Show keyframes in timeline') : 'Add keyframes first'}
-                        disabled={!hasKeyframes}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleKeyframeComponent(visibilityKey);
-                        }}
-                      >
-                        {keyframesVisible ? <Eye size={11} /> : <EyeOff size={11} />}
-                      </button>
-                      <button
-                        type="button"
-                        className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
-                        title="Add transform keyframes and show them"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty));
-                        }}
-                      >
-                        <Diamond size={10} />
-                      </button>
-                      <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === 0} title="Move up" onClick={(e) => {
-                        e.stopPropagation();
-                        moveComponent(idx - 1);
-                      }}>
-                        <ArrowUp size={11} />
-                      </button>
-                      <button type="button" className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40" disabled={idx === transformComponents.length - 1} title="Move down" onClick={(e) => {
-                        e.stopPropagation();
-                        moveComponent(idx + 1);
-                      }}>
-                        <ArrowDown size={11} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <label className="space-y-1"><span className="text-slate-400">Offset X</span><input type="number" value={Math.round(resolvedTransform.offsetX)} onChange={(e) => setPropertyAtPlayhead('offsetX', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
-                  <label className="space-y-1"><span className="text-slate-400">Offset Y</span><input type="number" value={Math.round(resolvedTransform.offsetY)} onChange={(e) => setPropertyAtPlayhead('offsetY', Number(e.target.value) || 0)} className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200" /></label>
-                </div>
-                <div className="flex items-center justify-between text-xs"><span className="text-slate-400">Scale</span><span className="font-mono text-slate-200">{Math.round(resolvedTransform.scale * 100)}%</span></div>
-                <input type="range" min={25} max={200} step={1} value={Math.round(resolvedTransform.scale * 100)} onChange={(e) => {
-                  const next = Number(e.target.value) / 100;
-                  setPropertyAtPlayhead('scale', next);
-                }} className="volume-slider w-full" />
-                <div className="flex items-center gap-2">
-                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => setPropertyAtPlayhead('scale', 1)}>Reset Scale</button>
-                  <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => {
-                    setPropertyAtPlayhead('offsetX', 0);
-                    setPropertyAtPlayhead('offsetY', 0);
-                  }}>Reset Position</button>
-                </div>
-              </div>
+                onStartDrag={() => setDraggingComponentId(component.id)}
+                onMove={moveComponent}
+                onRemove={removeComponent}
+                onToggleKeyframes={() => toggleKeyframeComponent(keyframeComponentVisibilityKey(selectedId, component.id))}
+                onShowKeyframes={() => showKeyframeComponent(keyframeComponentVisibilityKey(selectedId, component.id))}
+              />
             );
           })}
         </div>
@@ -435,7 +405,512 @@ export function ClipInspector() {
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+type ComponentDragProps = {
+  onDragOver: (e: DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+};
+
+function TransformComponentCard({
+  component,
+  index,
+  transformIndex,
+  total,
+  clip,
+  clipId,
+  currentTime,
+  active,
+  keyframesVisible,
+  dragProps,
+  onFocus,
+  onStartDrag,
+  onMove,
+  onRemove,
+  onToggleKeyframes,
+  onShowKeyframes,
+}: {
+  component: TransformComponentInstance;
+  index: number;
+  transformIndex: number;
+  total: number;
+  clip: Clip;
+  clipId: string;
+  currentTime: number;
+  active: boolean;
+  keyframesVisible: boolean;
+  dragProps: ComponentDragProps;
+  onFocus: () => void;
+  onStartDrag: () => void;
+  onMove: (toIndex: number) => void;
+  onRemove: () => void;
+  onToggleKeyframes: () => void;
+  onShowKeyframes: () => void;
+}) {
+  const update = useProjectStore((s) => s.update);
+  const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
+  const hasKeyframes = hasTransformKeyframes(component);
+
+  const setPropertyAtPlayhead = (property: TransformProperty, value: number) => {
+    update((p) => ({
+      ...p,
+      clips: p.clips.map((candidate) => (
+        candidate.id === clipId
+          ? setTransformPropertyAtTime(candidate, { componentId: component.id, property }, currentTime, value)
+          : candidate
+      )),
+    }));
+    onFocus();
+  };
+
+  const addPropertyKeyframe = (property: TransformProperty) => {
+    update((p) => ({
+      ...p,
+      clips: p.clips.map((candidate) => (
+        candidate.id === clipId
+          ? addTransformKeyframeAtTime(candidate, { componentId: component.id, property }, currentTime)
+          : candidate
+      )),
+    }));
+    onFocus();
+    onShowKeyframes();
+  };
+
+  return (
+    <div
+      className={`space-y-3 rounded border p-2.5 ${active ? 'border-brand-400 bg-brand-500/10' : 'border-surface-700 bg-surface-900/50'}`}
+      onClick={onFocus}
+      {...dragProps}
+    >
+      <ComponentHeader
+        title="Transform"
+        icon={<SlidersHorizontal size={12} />}
+        index={transformIndex >= 0 ? transformIndex + 1 : index + 1}
+        activeLabel={active ? 'Active target' : 'Click to target'}
+        active={active}
+        onStartDrag={onStartDrag}
+        onRemove={onRemove}
+        onMove={onMove}
+        indexInStack={index}
+        total={total}
+      >
+        <button
+          type="button"
+          className={`inline-flex h-6 w-6 items-center justify-center rounded ${
+            keyframesVisible
+              ? 'bg-brand-500 text-white hover:bg-brand-400'
+              : 'bg-surface-700 text-slate-200 hover:bg-surface-600'
+          } disabled:cursor-not-allowed disabled:opacity-40`}
+          title={hasKeyframes ? (keyframesVisible ? 'Hide keyframes in timeline' : 'Show keyframes in timeline') : 'Add keyframes first'}
+          disabled={!hasKeyframes}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleKeyframes();
+          }}
+        >
+          {keyframesVisible ? <Eye size={11} /> : <EyeOff size={11} />}
+        </button>
+        <button
+          type="button"
+          className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600"
+          title="Add transform keyframes and show them"
+          onClick={(e) => {
+            e.stopPropagation();
+            ['scale', 'offsetX', 'offsetY'].forEach((property) => addPropertyKeyframe(property as TransformProperty));
+          }}
+        >
+          <Diamond size={10} />
+        </button>
+      </ComponentHeader>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <label className="space-y-1">
+          <span className="text-slate-400">Offset X</span>
+          <input
+            type="number"
+            value={Math.round(resolvedTransform.offsetX)}
+            onChange={(e) => setPropertyAtPlayhead('offsetX', Number(e.target.value) || 0)}
+            className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-400">Offset Y</span>
+          <input
+            type="number"
+            value={Math.round(resolvedTransform.offsetY)}
+            onChange={(e) => setPropertyAtPlayhead('offsetY', Number(e.target.value) || 0)}
+            className="w-full rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-200"
+          />
+        </label>
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-slate-400">Scale</span>
+        <span className="font-mono text-slate-200">{Math.round(resolvedTransform.scale * 100)}%</span>
+      </div>
+      <input
+        type="range"
+        min={25}
+        max={200}
+        step={1}
+        value={Math.round(resolvedTransform.scale * 100)}
+        onChange={(e) => setPropertyAtPlayhead('scale', Number(e.target.value) / 100)}
+        className="volume-slider w-full"
+      />
+      <div className="flex items-center gap-2">
+        <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => setPropertyAtPlayhead('scale', 1)}>Reset Scale</button>
+        <button type="button" className="rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600" onClick={() => {
+          setPropertyAtPlayhead('offsetX', 0);
+          setPropertyAtPlayhead('offsetY', 0);
+        }}>Reset Position</button>
+      </div>
+    </div>
+  );
+}
+
+function ColorCorrectionCard({
+  component,
+  index,
+  total,
+  active,
+  dragProps,
+  onFocus,
+  onStartDrag,
+  onMove,
+  onRemove,
+  onChange,
+}: {
+  component: ColorCorrectionComponentInstance;
+  index: number;
+  total: number;
+  active: boolean;
+  dragProps: ComponentDragProps;
+  onFocus: () => void;
+  onStartDrag: () => void;
+  onMove: (toIndex: number) => void;
+  onRemove: () => void;
+  onChange: (data: ColorCorrectionComponentData) => void;
+}) {
+  const data = normalizeColorCorrectionData(component.data);
+  const updateData = (patch: Partial<ColorCorrectionComponentData>) => {
+    onFocus();
+    onChange(normalizeColorCorrectionData({
+      ...data,
+      ...patch,
+      presetId: patch.presetId ?? undefined,
+    }));
+  };
+
+  return (
+    <div
+      className={`space-y-3 rounded border p-2.5 ${active ? 'border-emerald-400 bg-emerald-500/10' : 'border-surface-700 bg-surface-900/50'}`}
+      onClick={onFocus}
+      {...dragProps}
+    >
+      <ComponentHeader
+        title="Color Correction"
+        icon={<Palette size={12} />}
+        index={index + 1}
+        activeLabel={active ? 'Active grade' : 'Click to grade'}
+        active={active}
+        onStartDrag={onStartDrag}
+        onRemove={onRemove}
+        onMove={onMove}
+        indexInStack={index}
+        total={total}
+      />
+
+      <div className="flex flex-wrap gap-1.5">
+        {COLOR_CORRECTION_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            className={`rounded-full border px-2 py-1 text-[10px] font-medium ${
+              data.presetId === preset.id
+                ? 'border-emerald-400 bg-emerald-500/20 text-emerald-100'
+                : 'border-surface-600 bg-surface-800 text-slate-300 hover:border-surface-500'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFocus();
+              onChange(normalizeColorCorrectionData(preset.data));
+            }}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <ColorWheelControl label="Lift" value={data.lift} onChange={(lift) => updateData({ lift })} />
+        <ColorWheelControl label="Gamma" value={data.gammaWheel} onChange={(gammaWheel) => updateData({ gammaWheel })} />
+        <ColorWheelControl label="Gain" value={data.gain} onChange={(gain) => updateData({ gain })} />
+      </div>
+
+      <div className="space-y-2">
+        <ToneSlider
+          icon={<SunIcon />}
+          label="Brightness"
+          value={Math.round(data.brightness * 100)}
+          min={-100}
+          max={100}
+          step={1}
+          suffix="%"
+          onChange={(value) => updateData({ brightness: value / 100 })}
+        />
+        <ToneSlider
+          icon={<Contrast size={12} />}
+          label="Contrast"
+          value={Math.round(data.contrast * 100)}
+          min={0}
+          max={200}
+          step={1}
+          suffix="%"
+          onChange={(value) => updateData({ contrast: value / 100 })}
+        />
+        <ToneSlider
+          icon={<Palette size={12} />}
+          label="Saturation"
+          value={Math.round(data.saturation * 100)}
+          min={0}
+          max={200}
+          step={1}
+          suffix="%"
+          onChange={(value) => updateData({ saturation: value / 100 })}
+        />
+        <ToneSlider
+          icon={<SlidersHorizontal size={12} />}
+          label="Gamma"
+          value={Math.round(data.gamma * 100)}
+          min={25}
+          max={300}
+          step={1}
+          suffix="%"
+          onChange={(value) => updateData({ gamma: value / 100 })}
+        />
+      </div>
+
+      <button
+        type="button"
+        className="inline-flex items-center gap-1.5 rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(normalizeColorCorrectionData(COLOR_CORRECTION_PRESETS[0]!.data));
+        }}
+      >
+        <RotateCcw size={11} />
+        Reset grade
+      </button>
+    </div>
+  );
+}
+
+function ComponentHeader({
+  title,
+  icon,
+  index,
+  activeLabel,
+  active,
+  children,
+  onStartDrag,
+  onRemove,
+  onMove,
+  indexInStack,
+  total,
+}: {
+  title: string;
+  icon: ReactNode;
+  index: number;
+  activeLabel: string;
+  active: boolean;
+  children?: ReactNode;
+  onStartDrag: () => void;
+  onRemove: () => void;
+  onMove: (toIndex: number) => void;
+  indexInStack: number;
+  total: number;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            draggable
+            className="inline-flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-300 active:cursor-grabbing"
+            title="Drag to reorder"
+            onDragStart={(e) => {
+              onStartDrag();
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical size={13} />
+          </button>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={active ? 'text-brand-300' : 'text-slate-400'}>{icon}</span>
+            <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wider text-slate-300">{title}</span>
+            <span className="rounded bg-surface-800 px-1 font-mono text-[9px] leading-4 text-slate-400">#{index}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-surface-700 text-red-300 hover:bg-surface-600"
+          title="Remove"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+        >
+          <Trash2 size={11} />
+        </button>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="truncate text-[10px] text-slate-500">{activeLabel}</div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {children}
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40"
+            disabled={indexInStack === 0}
+            title="Move up"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(indexInStack - 1);
+            }}
+          >
+            <ArrowUp size={11} />
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-200 hover:bg-surface-600 disabled:opacity-40"
+            disabled={indexInStack === total - 1}
+            title="Move down"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(indexInStack + 1);
+            }}
+          >
+            <ArrowDown size={11} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ColorWheelControl({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: ColorWheelValue;
+  onChange: (value: ColorWheelValue) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const normalized = clampWheel(value);
+
+  const commitFromPointer = (clientX: number, clientY: number) => {
+    const node = ref.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const radius = rect.width / 2;
+    const x = (clientX - (rect.left + radius)) / radius;
+    const y = (clientY - (rect.top + radius)) / radius;
+    onChange(clampWheel({ x, y }));
+  };
+
+  return (
+    <div className="space-y-1 text-center">
+      <div
+        ref={ref}
+        role="slider"
+        aria-label={`${label} color balance`}
+        aria-valuetext={`${Math.round(normalized.x * 100)}, ${Math.round(normalized.y * 100)}`}
+        tabIndex={0}
+        className="relative aspect-square w-full cursor-crosshair rounded-full border border-surface-600 p-1 shadow-inner shadow-black/60"
+        style={{
+          background: 'conic-gradient(from 0deg, #f43f5e, #f59e0b, #84cc16, #22c55e, #06b6d4, #3b82f6, #a855f7, #f43f5e)',
+        }}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          commitFromPointer(e.clientX, e.clientY);
+          const onMove = (event: PointerEvent) => commitFromPointer(event.clientX, event.clientY);
+          const onUp = () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+          };
+          window.addEventListener('pointermove', onMove);
+          window.addEventListener('pointerup', onUp);
+        }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          onChange({ x: 0, y: 0 });
+        }}
+      >
+        <div className="absolute inset-[7px] rounded-full bg-surface-950/90 ring-1 ring-white/10" />
+        <div className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-slate-400/80" />
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/80 bg-slate-200 shadow"
+          style={{
+            left: `${50 + normalized.x * 42}%`,
+            top: `${50 + normalized.y * 42}%`,
+          }}
+        />
+      </div>
+      <div className="text-[10px] font-medium text-slate-300">{label}</div>
+    </div>
+  );
+}
+
+function ToneSlider({
+  icon,
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  onChange,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <label className="flex items-center gap-1.5 text-slate-400">
+          {icon}
+          {label}
+        </label>
+        <span className="font-mono text-slate-200">{value}{suffix}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="volume-slider w-full"
+      />
+    </div>
+  );
+}
+
+function SunIcon() {
+  return (
+    <span className="inline-block h-3 w-3 rounded-full border border-current" />
+  );
+}
+
+function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
       <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</div>
@@ -444,7 +919,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between text-xs">
       <span className="text-slate-400">{label}</span>
@@ -457,7 +932,7 @@ function Divider() {
   return <div className="h-px bg-surface-700" />;
 }
 
-function hasTransformKeyframes(component: ComponentInstance): boolean {
+function hasTransformKeyframes(component: TransformComponentInstance): boolean {
   return component.data.keyframes.scale.length > 0 ||
     component.data.keyframes.offsetX.length > 0 ||
     component.data.keyframes.offsetY.length > 0;

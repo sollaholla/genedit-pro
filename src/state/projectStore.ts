@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ComponentInstance, Project } from '@/types';
 import * as ops from '@/lib/timeline/operations';
 import { createInitialProject } from '@/lib/timeline/operations';
+import { normalizeColorCorrectionData } from '@/lib/components/colorCorrection';
 
 const STORAGE_KEY = 'genedit-pro:project';
 const MAX_HISTORY = 500;
@@ -56,19 +57,7 @@ function loadProject(): Project {
       components: (() => {
         const existing = (c as { components?: ComponentInstance[] }).components;
         if (existing?.length) {
-          return existing.map((component) => ({
-            ...component,
-            data: {
-              scale: component.data?.scale ?? 1,
-              offsetX: component.data?.offsetX ?? 0,
-              offsetY: component.data?.offsetY ?? 0,
-              keyframes: {
-                scale: component.data?.keyframes?.scale ?? [],
-                offsetX: component.data?.keyframes?.offsetX ?? [],
-                offsetY: component.data?.keyframes?.offsetY ?? [],
-              },
-            },
-          }));
+          return existing.map((component) => normalizeComponent(component)).filter(Boolean) as ComponentInstance[];
         }
         const legacy = (c as {
           transform?: {
@@ -99,6 +88,33 @@ function loadProject(): Project {
   } catch {
     return createInitialProject();
   }
+}
+
+function normalizeComponent(component: ComponentInstance): ComponentInstance | null {
+  if (component.type === 'colorCorrection') {
+    return {
+      ...component,
+      data: normalizeColorCorrectionData(component.data),
+    };
+  }
+
+  if (component.type === 'transform') {
+    return {
+      ...component,
+      data: {
+        scale: component.data?.scale ?? 1,
+        offsetX: component.data?.offsetX ?? 0,
+        offsetY: component.data?.offsetY ?? 0,
+        keyframes: {
+          scale: component.data?.keyframes?.scale ?? [],
+          offsetX: component.data?.keyframes?.offsetX ?? [],
+          offsetY: component.data?.keyframes?.offsetY ?? [],
+        },
+      },
+    };
+  }
+
+  return null;
 }
 
 type ProjectState = {

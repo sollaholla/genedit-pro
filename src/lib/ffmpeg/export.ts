@@ -4,6 +4,7 @@ import { getBlob } from '@/lib/media/storage';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { resolveFrame } from '@/lib/playback/engine';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
+import { colorCorrectionFfmpegFilters } from '@/lib/components/colorCorrection';
 import { getFFmpeg } from './client';
 
 type Segment = {
@@ -72,11 +73,14 @@ function vfsNameForAsset(asset: MediaAsset): string {
   return `asset_${asset.id}.${ext.toLowerCase()}`;
 }
 
-function segmentVideoFilter(width: number, height: number, fps: number): string {
-  return (
-    `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,` +
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`
-  );
+function segmentVideoFilter(width: number, height: number, fps: number, clip: Clip | null, timelineTimeSec: number): string {
+  return [
+    `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease`,
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+    'setsar=1',
+    ...(clip ? colorCorrectionFfmpegFilters(clip, timelineTimeSec) : []),
+    `fps=${fps}`,
+  ].join(',');
 }
 
 /**
@@ -225,7 +229,13 @@ export async function exportProject(
         }
       }
 
-      const vFilter = segmentVideoFilter(project.width, project.height, project.fps);
+      const vFilter = segmentVideoFilter(
+        project.width,
+        project.height,
+        project.fps,
+        seg.videoLayer?.clip ?? null,
+        seg.startSec,
+      );
       args.push('-map', `${videoInputIndex}:v:0`);
       args.push('-map', `${audioInputIndex}:a:0?`);
       args.push('-vf', vFilter);

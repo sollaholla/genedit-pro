@@ -21,6 +21,12 @@ import {
   resolveTransformComponentAtTime,
   setTransformPropertyAtTime,
 } from '@/lib/components/transform';
+import {
+  colorCorrectionCssFilter,
+  colorCorrectionFilterId,
+  colorCorrectionSvgParams,
+  resolveColorCorrectionAtTime,
+} from '@/lib/components/colorCorrection';
 
 function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
@@ -99,6 +105,7 @@ function hideVideoElement(el: HTMLVideoElement) {
   el.style.display = 'none';
   el.style.visibility = 'hidden';
   el.style.transform = '';
+  el.style.filter = '';
   el.style.cursor = 'default';
 }
 
@@ -475,6 +482,7 @@ export function PreviewPlayer() {
             : 'hidden';
           videoEl.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
           videoEl.style.transformOrigin = 'center center';
+          videoEl.style.filter = colorCorrectionCssFilter(activeVideoLayer.clip, t);
           videoEl.style.cursor = tf ? 'move' : 'default';
         } else {
           hideVideoElement(videoEl);
@@ -722,6 +730,17 @@ export function PreviewPlayer() {
           style={previewStageStyle}
           onDoubleClick={toggleFullscreen}
         >
+          <svg aria-hidden className="pointer-events-none absolute h-0 w-0" focusable="false">
+            <defs>
+              {project.clips.map((clip) => (
+                <ColorCorrectionFilterDef
+                  key={clip.id}
+                  clip={clip}
+                  currentTime={currentTime}
+                />
+              ))}
+            </defs>
+          </svg>
           <div ref={videoHostRef} className="absolute inset-0" />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
@@ -743,5 +762,31 @@ export function PreviewPlayer() {
         onToggleFullscreen={toggleFullscreen}
       />
     </div>
+  );
+}
+
+function ColorCorrectionFilterDef({
+  clip,
+  currentTime,
+}: {
+  clip: ActiveLayer['clip'];
+  currentTime: number;
+}) {
+  const params = colorCorrectionSvgParams(resolveColorCorrectionAtTime(clip, currentTime));
+  return (
+    <filter
+      id={colorCorrectionFilterId(clip.id)}
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      colorInterpolationFilters="sRGB"
+    >
+      <feComponentTransfer>
+        <feFuncR type="gamma" amplitude={params.gain.r} exponent={params.exponent.r} offset={params.lift.r} />
+        <feFuncG type="gamma" amplitude={params.gain.g} exponent={params.exponent.g} offset={params.lift.g} />
+        <feFuncB type="gamma" amplitude={params.gain.b} exponent={params.exponent.b} offset={params.lift.b} />
+      </feComponentTransfer>
+    </filter>
   );
 }
