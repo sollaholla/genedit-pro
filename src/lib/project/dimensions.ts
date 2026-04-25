@@ -36,12 +36,37 @@ export const PROJECT_RESOLUTION_OPTIONS: readonly { value: ProjectResolutionPres
   { value: '8K', label: '8K' },
 ];
 
+export const PROJECT_FRAME_RATE_OPTIONS: readonly { value: string; label: string; fps: number }[] = [
+  { value: '23.976', label: '23.976 fps', fps: 23.976 },
+  { value: '24', label: '24 fps', fps: 24 },
+  { value: '25', label: '25 fps', fps: 25 },
+  { value: '29.97', label: '29.97 fps', fps: 29.97 },
+  { value: '30', label: '30 fps', fps: 30 },
+  { value: '50', label: '50 fps', fps: 50 },
+  { value: '59.94', label: '59.94 fps', fps: 59.94 },
+  { value: '60', label: '60 fps', fps: 60 },
+];
+
 export function isProjectAspectPreset(value: string | null): value is ProjectAspectPreset {
   return Boolean(value && value in PROJECT_ASPECTS);
 }
 
 export function isProjectResolutionPreset(value: string | null): value is ProjectResolutionPreset {
   return Boolean(value && value in PROJECT_RESOLUTIONS);
+}
+
+export function frameRateOptionForFps(fps: number): string {
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
+  const exact = PROJECT_FRAME_RATE_OPTIONS.find((option) => Math.abs(option.fps - safeFps) < 0.001);
+  if (exact) return exact.value;
+  return String(Number(safeFps.toFixed(3)));
+}
+
+export function fpsForFrameRateOption(value: string): number | null {
+  const option = PROJECT_FRAME_RATE_OPTIONS.find((candidate) => candidate.value === value);
+  if (option) return option.fps;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 export function inferProjectAspectPreset(width: number, height: number): ProjectAspectPreset {

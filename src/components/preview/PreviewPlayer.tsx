@@ -32,12 +32,15 @@ import {
 } from '@/lib/components/colorCorrection';
 import {
   dimensionsForProjectFormat,
+  fpsForFrameRateOption,
+  frameRateOptionForFps,
   inferProjectAspectPreset,
   inferProjectResolutionPreset,
   isProjectAspectPreset,
   isProjectResolutionPreset,
   PROJECT_ASPECT_OPTIONS,
   PROJECT_ASPECTS,
+  PROJECT_FRAME_RATE_OPTIONS,
   PROJECT_RESOLUTION_OPTIONS,
 } from '@/lib/project/dimensions';
 
@@ -166,6 +169,7 @@ export function PreviewPlayer() {
   const videoHostRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
+  const previewStageRef = useRef<HTMLDivElement | null>(null);
 
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
@@ -207,6 +211,7 @@ export function PreviewPlayer() {
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
+  const frameRatePreset = frameRateOptionForFps(project.fps);
   const previewAspectRatio = PROJECT_ASPECTS[aspectPreset];
 
   const updateAspectPreset = (value: string) => {
@@ -219,6 +224,12 @@ export function PreviewPlayer() {
     if (!isProjectResolutionPreset(value)) return;
     const next = dimensionsForProjectFormat(aspectPreset, value);
     updateProject((p) => ({ ...p, ...next }));
+  };
+
+  const updateFrameRatePreset = (value: string) => {
+    const fps = fpsForFrameRateOption(value);
+    if (!fps) return;
+    updateProject((p) => ({ ...p, fps }));
   };
 
   useEffect(() => {
@@ -244,6 +255,18 @@ export function PreviewPlayer() {
       height: `${Math.round(previewFrameSize.width / previewAspectRatio)}px`,
     };
   }, [previewAspectRatio, previewFrameSize]);
+
+  useEffect(() => {
+    const node = previewStageRef.current;
+    if (!node) return;
+    node.style.aspectRatio = String(previewStageStyle.aspectRatio);
+    node.style.width = previewStageStyle.width;
+    if ('height' in previewStageStyle && previewStageStyle.height) {
+      node.style.height = previewStageStyle.height;
+    } else {
+      node.style.removeProperty('height');
+    }
+  }, [previewStageStyle]);
 
   const toggleFullscreen = () => {
     if (document.fullscreenElement) {
@@ -841,15 +864,15 @@ export function PreviewPlayer() {
     >
       <div
         ref={previewFrameRef}
-        className={`flex min-h-0 flex-1 items-center justify-center bg-black ${
+        className={`flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-black ${
           isFullscreen ? '' : 'p-4'
         }`}
       >
         <div
+          ref={previewStageRef}
           className={`relative max-h-full max-w-full overflow-hidden bg-black ${
             isFullscreen ? '' : 'rounded-md ring-1 ring-surface-700'
           }`}
-          style={previewStageStyle}
           onDoubleClick={toggleFullscreen}
         >
           <svg aria-hidden className="pointer-events-none absolute h-0 w-0" focusable="false">
@@ -882,8 +905,11 @@ export function PreviewPlayer() {
         aspectOptions={PROJECT_ASPECT_OPTIONS}
         resolutionPreset={resolutionPreset}
         resolutionOptions={PROJECT_RESOLUTION_OPTIONS}
+        frameRatePreset={frameRatePreset}
+        frameRateOptions={PROJECT_FRAME_RATE_OPTIONS}
         onAspectPresetChange={updateAspectPreset}
         onResolutionPresetChange={updateResolutionPreset}
+        onFrameRatePresetChange={updateFrameRatePreset}
         onToggleFullscreen={toggleFullscreen}
       />
     </div>

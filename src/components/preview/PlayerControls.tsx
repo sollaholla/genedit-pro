@@ -19,19 +19,25 @@ type Props = {
   aspectOptions: readonly { value: string; label: string }[];
   resolutionPreset: string;
   resolutionOptions: readonly { value: string; label: string }[];
+  frameRatePreset: string;
+  frameRateOptions: readonly { value: string; label: string }[];
   onAspectPresetChange: (value: string) => void;
   onResolutionPresetChange: (value: string) => void;
+  onFrameRatePresetChange: (value: string) => void;
   onToggleFullscreen: () => void;
 };
 
 export function PlayerControls({
   isFullscreen,
   aspectPreset,
-  aspectOptions,
+  aspectOptions = [],
   resolutionPreset,
-  resolutionOptions,
+  resolutionOptions = [],
+  frameRatePreset,
+  frameRateOptions = [],
   onAspectPresetChange,
   onResolutionPresetChange,
+  onFrameRatePresetChange,
   onToggleFullscreen,
 }: Props) {
   const playing = usePlaybackStore((s) => s.playing);
@@ -101,6 +107,16 @@ export function PlayerControls({
           title="Project pixel resolution"
         >
           {resolutionOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          value={frameRatePreset}
+          onChange={(e) => onFrameRatePresetChange(e.target.value)}
+          title="Project framerate"
+        >
+          {frameRateOptions.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>

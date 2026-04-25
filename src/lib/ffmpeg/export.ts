@@ -16,8 +16,14 @@ type Segment = {
   index: number;
   startSec: number;
   endSec: number;
-  videoLayer: { clip: Clip; track: Track } | null;
-  audioLayer: { clip: Clip; track: Track } | null;
+  videoLayers: { clip: Clip; track: Track }[];
+  audioLayers: { clip: Clip; track: Track }[];
+};
+
+type SegmentInput = {
+  inputIndex: number;
+  layer: { clip: Clip; track: Track };
+  asset: MediaAsset;
 };
 
 export type ExportCallbacks = {
@@ -56,8 +62,8 @@ export function planSegments(project: Project): Segment[] {
       index: segments.length,
       startSec: start,
       endSec: end,
-      videoLayer: frame.video ? { clip: frame.video.clip, track: frame.video.track } : null,
-      audioLayer: frame.audios[0] ? { clip: frame.audios[0].clip, track: frame.audios[0].track } : null,
+      videoLayers: frame.videos.map((layer) => ({ clip: layer.clip, track: layer.track })),
+      audioLayers: frame.audios.map((layer) => ({ clip: layer.clip, track: layer.track })),
     });
   }
   return segments;
@@ -140,36 +146,46 @@ function exportErrorMessage(error: unknown): string {
   ].join(' ');
 }
 
-function segmentVideoFilter(
-  width: number,
-  height: number,
+function segmentVisualFilters(
   fps: number,
-  clip: Clip | null,
-  asset: MediaAsset | null,
+  clip: Clip,
+  asset: MediaAsset,
   timelineTimeSec: number,
-): string {
+  segDuration: number,
+): { filters: string; overlayX: string; overlayY: string } {
+  const transform = resolveTransformAtTime(clip, timelineTimeSec);
+  const mediaTransform = activeEditTransform(asset);
+  const scale = Math.max(0.1, Math.min(6, (transform.scale ?? clip.scale ?? 1) * mediaTransform.scale));
+  const offsetX = transform.offsetX + mediaTransform.offsetX;
+  const offsetY = transform.offsetY + mediaTransform.offsetY;
   const filters: string[] = [
     'setsar=1',
   ];
 
-  if (clip) {
-    const transform = resolveTransformAtTime(clip, timelineTimeSec);
-    const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
-    const scale = Math.max(0.1, Math.min(6, (transform.scale ?? clip.scale ?? 1) * mediaTransform.scale));
-    if (Math.abs(scale - 1) > 0.001) {
-      const scaleExpr = scale.toFixed(5);
-      filters.push(`scale=w=trunc(iw*${scaleExpr}/2)*2:h=trunc(ih*${scaleExpr}/2)*2`);
-    }
+  if (asset.kind !== 'image') {
+    const speed = clipSpeed(clip);
+    const setpts = Math.abs(speed - 1) > 0.001 ? `setpts=(PTS-STARTPTS)/${speed.toFixed(5)}` : 'setpts=PTS-STARTPTS';
+    filters.push(setpts);
+  }
+
+  if (Math.abs(scale - 1) > 0.001) {
+    const scaleExpr = scale.toFixed(5);
+    filters.push(`scale=w=trunc(iw*${scaleExpr}/2)*2:h=trunc(ih*${scaleExpr}/2)*2`);
   }
 
   filters.push(
-    `crop=w=min(iw\\,${width}):h=min(ih\\,${height}):x=(iw-ow)/2:y=(ih-oh)/2`,
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
-    ...(clip ? colorCorrectionFfmpegFilters(clip, timelineTimeSec) : []),
+    ...colorCorrectionFfmpegFilters(clip, timelineTimeSec),
     `fps=${fps}`,
+    `trim=duration=${segDuration.toFixed(3)}`,
+    'setpts=PTS-STARTPTS',
+    'format=rgba',
   );
 
-  return filters.join(',');
+  return {
+    filters: filters.join(','),
+    overlayX: `(W-w)/2${offsetX >= 0 ? '+' : ''}${offsetX.toFixed(2)}`,
+    overlayY: `(H-h)/2${offsetY >= 0 ? '+' : ''}${offsetY.toFixed(2)}`,
+  };
 }
 
 /**
@@ -219,6 +235,91 @@ function segmentAudioFilter(clip: Clip, segStartSec: number, segEndSec: number):
   return `volume=eval=frame:volume='${expr}'`;
 }
 
+function atempoFilters(speed: number): string[] {
+  const filters: string[] = [];
+  let remaining = Math.max(0.25, Math.min(4, speed));
+  while (remaining > 2) {
+    filters.push('atempo=2');
+    remaining /= 2;
+  }
+  while (remaining < 0.5) {
+    filters.push('atempo=0.5');
+    remaining /= 0.5;
+  }
+  if (Math.abs(remaining - 1) > 0.001) filters.push(`atempo=${remaining.toFixed(5)}`);
+  return filters;
+}
+
+function buildSegmentFilterGraph(
+  project: Project,
+  seg: Segment,
+  videoInputs: SegmentInput[],
+  audioInputs: SegmentInput[],
+  backgroundInputIndex: number,
+  silenceInputIndex: number | null,
+): string {
+  const segDuration = seg.endSec - seg.startSec;
+  const parts: string[] = [
+    `[${backgroundInputIndex}:v]trim=duration=${segDuration.toFixed(3)},setpts=PTS-STARTPTS,format=rgba[base0]`,
+  ];
+
+  const visualStack = [...videoInputs].sort((a, b) => b.layer.track.index - a.layer.track.index);
+  let baseLabel = 'base0';
+  visualStack.forEach((input, index) => {
+    const visual = segmentVisualFilters(
+      project.fps,
+      input.layer.clip,
+      input.asset,
+      seg.startSec,
+      segDuration,
+    );
+    const layerLabel = `v${index}`;
+    const nextBaseLabel = `base${index + 1}`;
+    parts.push(`[${input.inputIndex}:v:0]${visual.filters}[${layerLabel}]`);
+    parts.push(
+      `[${baseLabel}][${layerLabel}]overlay=x='${visual.overlayX}':y='${visual.overlayY}':eof_action=pass:shortest=0[${nextBaseLabel}]`,
+    );
+    baseLabel = nextBaseLabel;
+  });
+  parts.push(`[${baseLabel}]format=yuv420p[vout]`);
+
+  const audioLabels: string[] = [];
+  audioInputs.forEach((input, index) => {
+    const clip = input.layer.clip;
+    const filters = [
+      'aresample=48000',
+      'asetpts=PTS-STARTPTS',
+      ...atempoFilters(clipSpeed(clip)),
+      `atrim=duration=${segDuration.toFixed(3)}`,
+    ];
+    const volumeFilter = segmentAudioFilter(clip, seg.startSec, seg.endSec);
+    if (volumeFilter) filters.push(volumeFilter);
+    filters.push('aformat=sample_rates=48000:channel_layouts=stereo');
+    filters.push('apad');
+    filters.push(`atrim=duration=${segDuration.toFixed(3)}`);
+    const label = `a${index}`;
+    parts.push(`[${input.inputIndex}:a:0]${filters.join(',')}[${label}]`);
+    audioLabels.push(label);
+  });
+
+  if (audioLabels.length === 0 && silenceInputIndex !== null) {
+    parts.push(
+      `[${silenceInputIndex}:a]atrim=duration=${segDuration.toFixed(3)},asetpts=PTS-STARTPTS,` +
+      'aformat=sample_rates=48000:channel_layouts=stereo[aout]',
+    );
+  } else if (audioLabels.length === 1) {
+    parts.push(`[${audioLabels[0]}]anull[aout]`);
+  } else {
+    parts.push(
+      `${audioLabels.map((label) => `[${label}]`).join('')}` +
+      `amix=inputs=${audioLabels.length}:duration=longest:normalize=0,` +
+      'alimiter=limit=0.98,aformat=sample_rates=48000:channel_layouts=stereo[aout]',
+    );
+  }
+
+  return parts.join(';');
+}
+
 export async function exportProject(
   project: Project,
   assets: MediaAsset[],
@@ -239,8 +340,8 @@ export async function exportProject(
   onStatus?.('Preparing source media…');
   const uniqueAssetIds = new Set<string>();
   for (const seg of segments) {
-    if (seg.videoLayer) uniqueAssetIds.add(seg.videoLayer.clip.assetId);
-    if (seg.audioLayer) uniqueAssetIds.add(seg.audioLayer.clip.assetId);
+    for (const layer of seg.videoLayers) uniqueAssetIds.add(layer.clip.assetId);
+    for (const layer of seg.audioLayers) uniqueAssetIds.add(layer.clip.assetId);
   }
   const sourceAssets = [...uniqueAssetIds]
     .map((assetId) => assetById.get(assetId))
@@ -278,81 +379,65 @@ export async function exportProject(
       onStatus?.(`Encoding segment ${i + 1}/${segments.length}`);
 
       const args: string[] = [];
-      let videoInputIndex: number | null = null;
-      let audioInputIndex: number | null = null;
+      const inputByClipId = new Map<string, SegmentInput>();
+      const videoInputs: SegmentInput[] = [];
+      const audioInputs: SegmentInput[] = [];
       let nextIndex = 0;
 
-      if (seg.videoLayer) {
-        const asset = assetById.get(seg.videoLayer.clip.assetId);
-        if (asset) {
-          const startInSource = seg.videoLayer.clip.inSec
-            + (seg.startSec - seg.videoLayer.clip.startSec) * clipSpeed(seg.videoLayer.clip);
-          if (asset.kind === 'image') {
-            args.push('-loop', '1');
-            args.push('-framerate', String(project.fps));
-            args.push('-t', segDuration.toFixed(3));
-          } else {
-            args.push('-ss', startInSource.toFixed(3));
-            args.push('-t', segDuration.toFixed(3));
-          }
-          args.push('-i', vfsNameForAsset(asset));
-          videoInputIndex = nextIndex++;
-        }
-      }
-      if (seg.audioLayer && (!seg.videoLayer || seg.audioLayer.clip.assetId !== seg.videoLayer.clip.assetId)) {
-        const asset = assetById.get(seg.audioLayer.clip.assetId);
-        if (asset) {
-          const startInSource = seg.audioLayer.clip.inSec
-            + (seg.startSec - seg.audioLayer.clip.startSec) * clipSpeed(seg.audioLayer.clip);
-          args.push('-ss', startInSource.toFixed(3));
+      const addClipInput = (layer: { clip: Clip; track: Track }): SegmentInput | null => {
+        const existing = inputByClipId.get(layer.clip.id);
+        if (existing) return existing;
+        const asset = assetById.get(layer.clip.assetId);
+        if (!asset) return null;
+        const speed = clipSpeed(layer.clip);
+        const startInSource = layer.clip.inSec + (seg.startSec - layer.clip.startSec) * speed;
+        if (asset.kind === 'image') {
+          args.push('-loop', '1');
+          args.push('-framerate', String(project.fps));
           args.push('-t', segDuration.toFixed(3));
-          args.push('-i', vfsNameForAsset(asset));
-          audioInputIndex = nextIndex++;
+        } else {
+          args.push('-ss', startInSource.toFixed(3));
+          args.push('-t', (segDuration * speed).toFixed(3));
         }
-      } else if (seg.audioLayer && seg.videoLayer && seg.audioLayer.clip.assetId === seg.videoLayer.clip.assetId) {
-        // Audio comes from the same input as the video.
-        audioInputIndex = videoInputIndex;
+        args.push('-i', vfsNameForAsset(asset));
+        const input = { inputIndex: nextIndex++, layer, asset };
+        inputByClipId.set(layer.clip.id, input);
+        return input;
+      };
+
+      for (const layer of seg.videoLayers) {
+        const input = addClipInput(layer);
+        if (input && input.asset.kind !== 'audio') videoInputs.push(input);
+      }
+      for (const layer of seg.audioLayers) {
+        const input = addClipInput(layer);
+        if (input && input.asset.kind !== 'image') audioInputs.push(input);
       }
 
-      // If nothing is active, generate black + silence for this segment.
-      if (videoInputIndex === null && audioInputIndex === null) {
-        args.push('-f', 'lavfi', '-t', segDuration.toFixed(3),
-          '-i', `color=c=black:s=${project.width}x${project.height}:r=${project.fps}`);
+      args.push('-f', 'lavfi', '-t', segDuration.toFixed(3),
+        '-i', `color=c=black:s=${project.width}x${project.height}:r=${project.fps}`);
+      const backgroundInputIndex = nextIndex++;
+
+      let silenceInputIndex: number | null = null;
+      if (audioInputs.length === 0) {
         args.push('-f', 'lavfi', '-t', segDuration.toFixed(3),
           '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
-        videoInputIndex = 0;
-        audioInputIndex = 1;
-      } else {
-        if (videoInputIndex === null) {
-          args.push('-f', 'lavfi', '-t', segDuration.toFixed(3),
-            '-i', `color=c=black:s=${project.width}x${project.height}:r=${project.fps}`);
-          videoInputIndex = nextIndex++;
-        }
-        if (audioInputIndex === null) {
-          args.push('-f', 'lavfi', '-t', segDuration.toFixed(3),
-            '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
-          audioInputIndex = nextIndex++;
-        }
+        silenceInputIndex = nextIndex++;
       }
 
-      const vFilter = segmentVideoFilter(
-        project.width,
-        project.height,
-        project.fps,
-        seg.videoLayer?.clip ?? null,
-        seg.videoLayer ? assetById.get(seg.videoLayer.clip.assetId) ?? null : null,
-        seg.startSec,
-      );
-      args.push('-map', `${videoInputIndex}:v:0`);
-      args.push('-map', `${audioInputIndex}:a:0?`);
-      args.push('-vf', vFilter);
-      // Apply master volume + envelope to the mapped audio stream, if any.
-      if (seg.audioLayer) {
-        const aFilter = segmentAudioFilter(seg.audioLayer.clip, seg.startSec, seg.endSec);
-        if (aFilter) args.push('-af', aFilter);
-      }
+      args.push('-filter_complex', buildSegmentFilterGraph(
+        project,
+        seg,
+        videoInputs,
+        audioInputs,
+        backgroundInputIndex,
+        silenceInputIndex,
+      ));
+      args.push('-map', '[vout]');
+      args.push('-map', '[aout]');
       args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p');
       args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
+      args.push('-t', segDuration.toFixed(3));
       args.push('-video_track_timescale', '90000');
       args.push('-muxdelay', '0', '-muxpreload', '0');
       args.push('-f', 'mpegts');

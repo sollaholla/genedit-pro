@@ -9,6 +9,8 @@ export type ActiveLayer = {
 
 export type ResolvedFrame = {
   video: ActiveLayer | null;
+  /** All active visible video/image sources, ordered from top track to bottom track. */
+  videos: ActiveLayer[];
   /** All active audio sources across all non-muted/non-hidden tracks. */
   audios: ActiveLayer[];
 };
@@ -16,6 +18,7 @@ export type ResolvedFrame = {
 export function resolveFrame(project: Project, t: number): ResolvedFrame {
   const sorted = [...project.tracks].sort((a, b) => a.index - b.index);
   let video: ActiveLayer | null = null;
+  const videos: ActiveLayer[] = [];
   const audios: ActiveLayer[] = [];
 
   for (const track of sorted) {
@@ -29,6 +32,7 @@ export function resolveFrame(project: Project, t: number): ResolvedFrame {
 
     if (track.kind === 'video' && !track.hidden) {
       if (!video) video = layer;
+      videos.push(layer);
       // Video tracks contribute their embedded audio to the mix.
       audios.push(layer);
     } else if (track.kind === 'audio' && !track.muted) {
@@ -36,7 +40,7 @@ export function resolveFrame(project: Project, t: number): ResolvedFrame {
     }
   }
 
-  return { video, audios };
+  return { video, videos, audios };
 }
 
 function activeClipOnTrack(clips: Clip[], trackId: string, t: number): Clip | null {
