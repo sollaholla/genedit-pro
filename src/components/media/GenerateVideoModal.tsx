@@ -29,16 +29,12 @@ import {
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
-import {
-  hostLitterboxReference,
-  LITTERBOX_REFERENCE_TTL_MS,
-} from '@/lib/videoGeneration/litterbox';
+import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
 import {
   buildPiApiCreateTaskRequest,
   createPiApiVideoTask,
   generatedPiApiVideoFromTask,
-  isPiApiReferenceAsset,
   PIAPI_ARTIFACT_TTL_MS,
   pollPiApiVideoTask,
 } from '@/lib/videoGeneration/piapi';
@@ -222,16 +218,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
     .filter((asset) => asset.kind === 'image'), [assets, references]);
   const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
     !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
-  const temporarilyHostedAssets = useMemo(() => {
-    const candidates = [
-      ...(startFrame ? [startFrame] : []),
-      ...(endFrame ? [endFrame] : []),
-      ...(sourceVideo ? [sourceVideo] : []),
-      ...(shouldSendImageReferences ? referenceImageAssets : []),
-    ];
-    return candidates.filter((asset) => !isPiApiReferenceAsset(asset));
-  }, [endFrame, referenceImageAssets, shouldSendImageReferences, sourceVideo, startFrame]);
-
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
     try {
@@ -838,12 +824,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
             </div>
           </div>
 
-          {temporarilyHostedAssets.length > 0 && (
-            <div className="rounded-xl border border-sky-400/25 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100">
-              {temporarilyHostedAssets.length === 1 ? 'This local reference' : `${temporarilyHostedAssets.length} local references`} will be uploaded to Litterbox for temporary hosting when you generate. Links expire after {Math.round(LITTERBOX_REFERENCE_TTL_MS / 60 / 60 / 1000)} hours.
-            </div>
-          )}
-
           <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.04] p-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <PillSelect label="Model" value={model} onChange={setModel} options={selectableModels.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
@@ -1258,9 +1238,6 @@ function MediaPicker({
     : pickerMode === 'source-video'
       ? assets.filter((a) => a.kind === 'video' && isSourceVideoReferenceValid(selectedModel, a))
       : assets.filter((a) => a.kind === 'image');
-  const temporaryHostedSourceCount = pickerMode === 'source-video'
-    ? visibleAssets.filter((a) => !isPiApiReferenceAsset(a)).length
-    : 0;
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
     return [...visibleAssets]
@@ -1282,9 +1259,7 @@ function MediaPicker({
   const helperText = pickerMode === 'reference'
     ? 'Choose image references supported by the selected model.'
     : pickerMode === 'source-video'
-      ? (isKlingModel(selectedModel)
-        ? 'Choose one video reference. Local videos are temporarily hosted through Litterbox when you generate.'
-        : 'Choose one video reference.')
+      ? 'Choose one video reference.'
       : 'Only image assets are valid for frame slots.';
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
@@ -1324,11 +1299,6 @@ function MediaPicker({
           ))}
           {filteredAssets.length === 0 && <div className="col-span-full rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
           </div>
-          {temporaryHostedSourceCount > 0 && (
-            <div className="mt-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-[11px] text-sky-100/80">
-              {temporaryHostedSourceCount} local video {temporaryHostedSourceCount === 1 ? 'reference will' : 'references will'} be uploaded to Litterbox only when you generate.
-            </div>
-          )}
         </div>
       </div>
     </div>
