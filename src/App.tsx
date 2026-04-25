@@ -21,9 +21,16 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
+  const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
   const reset = useProjectStore((s) => s.reset);
   const undo = useProjectStore((s) => s.undo);
   const redo = useProjectStore((s) => s.redo);
+
+  useEffect(() => {
+    if (!highlightedMediaAssetId) return undefined;
+    const timeout = window.setTimeout(() => setHighlightedMediaAssetId(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [highlightedMediaAssetId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -76,6 +83,7 @@ export default function App() {
               setRecipeToOpen(asset);
               setGenerateOpen(true);
             }}
+            highlightedAssetId={highlightedMediaAssetId}
           />
         }
         preview={<PreviewPlayer />}
@@ -93,6 +101,7 @@ export default function App() {
           setGenerateOpen(false);
           setSettingsOpen(true);
         }}
+        onGenerationQueued={(assetId) => setHighlightedMediaAssetId(assetId)}
         initialRecipeAsset={recipeToOpen}
       />
     </>

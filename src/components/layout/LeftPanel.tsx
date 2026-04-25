@@ -8,11 +8,12 @@ type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
   onOpenRecipe: (asset: MediaAsset) => void;
+  highlightedAssetId?: string | null;
 };
 
 type Tab = 'media' | 'inspector';
 
-export function LeftPanel({ onImportClick, onGenerateClick, onOpenRecipe }: Props) {
+export function LeftPanel({ onImportClick, onGenerateClick, onOpenRecipe, highlightedAssetId = null }: Props) {
   const [tab, setTab] = useState<Tab>('media');
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const hasSelection = selectedClipIds.length > 0;
@@ -21,6 +22,10 @@ export function LeftPanel({ onImportClick, onGenerateClick, onOpenRecipe }: Prop
   useEffect(() => {
     if (hasSelection) setTab('inspector');
   }, [hasSelection]);
+
+  useEffect(() => {
+    if (highlightedAssetId) setTab('media');
+  }, [highlightedAssetId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -32,7 +37,12 @@ export function LeftPanel({ onImportClick, onGenerateClick, onOpenRecipe }: Prop
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === 'media' ? (
-          <MediaBin onImportClick={onImportClick} onGenerateClick={onGenerateClick} onOpenRecipe={onOpenRecipe} />
+          <MediaBin
+            onImportClick={onImportClick}
+            onGenerateClick={onGenerateClick}
+            onOpenRecipe={onOpenRecipe}
+            highlightedAssetId={highlightedAssetId}
+          />
         ) : (
           <ClipInspector />
         )}

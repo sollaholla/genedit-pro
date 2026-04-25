@@ -1,3 +1,5 @@
+import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
+
 export type MediaKind = 'video' | 'audio' | 'image' | 'recipe';
 
 export type EditTrailTransform = {
@@ -64,6 +66,9 @@ export type MediaAsset = {
     providerTaskCreatedAt?: number;
     providerArtifactUri?: string;
     providerArtifactExpiresAt?: number;
+    errorType?: GenerationErrorType;
+    errorMessage?: string;
+    failedAt?: number;
   };
   recipe?: GenerateRecipe;
   createdAt: number;

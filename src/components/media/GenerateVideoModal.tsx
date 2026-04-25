@@ -28,7 +28,7 @@ import {
   PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
-import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
+import { VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
 import {
@@ -66,6 +66,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onOpenSettings: () => void;
+  onGenerationQueued?: (assetId: string) => void;
   initialRecipeAsset?: MediaAsset | null;
   folderId?: string | null;
 };
@@ -120,7 +121,7 @@ function persistGenerationAspect(value: Aspect) {
   }
 }
 
-export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecipeAsset = null, folderId = null }: Props) {
+export function GenerateVideoModal({ open, onClose, onOpenSettings, onGenerationQueued, initialRecipeAsset = null, folderId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
   const addGeneratedAsset = useMediaStore((s) => s.addGeneratedAsset);
@@ -517,6 +518,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
       generationCostUsd,
       generationRecipe,
     );
+    let taskAccepted = false;
     try {
       const mutation = buildVideoGenerationMutation({
         prompt: promptForGeneration,
@@ -544,6 +546,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         },
       });
       const initialTask = await createPiApiVideoTask(request, { apiKey });
+      if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return a task id.');
+      taskAccepted = true;
       updateGenerationTask(id, {
         provider: 'piapi',
         providerTaskId: initialTask.task_id,
@@ -551,6 +555,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         providerTaskStatus: initialTask.status,
         providerTaskCreatedAt: Date.now(),
       });
+      setIsGenerating(false);
+      onGenerationQueued?.(id);
+      onClose();
       const finalTask = await pollPiApiVideoTask({
         credentials: { apiKey },
         initialTask,
@@ -572,10 +579,14 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, initialRecip
         providerArtifactUri: generatedVideo.url,
         providerArtifactExpiresAt: Date.now() + PIAPI_ARTIFACT_TTL_MS,
       });
-      onClose();
     } catch (err) {
-      failGeneratedAsset(id, generationCostUsd);
-      setGenerationError(formatGenerationError(err));
+      const message = formatGenerationError(err);
+      failGeneratedAsset(id, {
+        actualCostUsd: generationCostUsd,
+        errorMessage: message,
+        errorType: generationErrorType(err),
+      });
+      if (!taskAccepted) setGenerationError(message);
     } finally {
       setIsGenerating(false);
     }
@@ -1546,4 +1557,8 @@ function formatGenerationError(err: unknown): string {
     return `${label}: ${err.message}`;
   }
   return err instanceof Error ? err.message : 'Generation failed.';
+}
+
+function generationErrorType(err: unknown): GenerationErrorType {
+  return err instanceof VideoGenerationProviderError ? err.type : 'InternalError';
 }

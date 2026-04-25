@@ -12,6 +12,7 @@ type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
   onOpenRecipe: (asset: MediaAsset) => void;
+  highlightedAssetId?: string | null;
 };
 
 const kindIcon = {
@@ -21,7 +22,7 @@ const kindIcon = {
   recipe: BookOpen,
 };
 
-export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props) {
+export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
@@ -36,6 +37,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  const tileRefs = useRef(new Map<string, HTMLLIElement>());
   const visibleAssets = useMemo(
     () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
     [assets, activeFolderId],
@@ -51,6 +53,22 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
     if (!track) return;
     updateProject((nextProject) => addClip(nextProject, asset, track.id, currentTime));
   };
+
+  useEffect(() => {
+    if (!highlightedAssetId) return;
+    const highlightedAsset = assets.find((asset) => asset.id === highlightedAssetId);
+    if (!highlightedAsset) return;
+    if (activeFolderId && highlightedAsset.folderId !== activeFolderId) {
+      setActiveFolderId(null);
+      return;
+    }
+    requestAnimationFrame(() => {
+      tileRefs.current.get(highlightedAssetId)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    });
+  }, [activeFolderId, assets, highlightedAssetId]);
 
   return (
     <div
@@ -123,6 +141,11 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe }: Props
                 onOpenRecipe={() => onOpenRecipe(asset)}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
                 onOpenPreview={() => setPreviewAssetId(asset.id)}
+                isHighlighted={asset.id === highlightedAssetId}
+                tileRef={(node) => {
+                  if (node) tileRefs.current.set(asset.id, node);
+                  else tileRefs.current.delete(asset.id);
+                }}
               />
             ))}
           </ul>
@@ -272,6 +295,8 @@ function MediaTile({
   onOpenRecipe,
   onAddToTimeline,
   onOpenPreview,
+  isHighlighted,
+  tileRef,
 }: {
   asset: MediaAsset;
   onDelete: () => void;
@@ -280,6 +305,8 @@ function MediaTile({
   onOpenRecipe: () => void;
   onAddToTimeline: () => void;
   onOpenPreview: () => void;
+  isHighlighted: boolean;
+  tileRef: (node: HTMLLIElement | null) => void;
 }) {
   const Icon = kindIcon[asset.kind];
   const nameParts = splitFilename(asset.name);
@@ -302,6 +329,7 @@ function MediaTile({
     asset.kind !== 'recipe' &&
     (asset.kind === 'video' || asset.kind === 'image') &&
     asset.generation?.status !== 'generating';
+  const failureMessage = generationFailureMessage(asset);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -353,7 +381,13 @@ function MediaTile({
 
   return (
     <li
-      className={`group relative overflow-hidden rounded-md border border-surface-700 bg-surface-800 hover:border-surface-500 ${
+      ref={tileRef}
+      data-asset-id={asset.id}
+      className={`group relative overflow-hidden rounded-md border bg-surface-800 transition ${
+        isHighlighted
+          ? 'border-brand-300 ring-2 ring-brand-400/80 shadow-[0_0_0_3px_rgba(99,102,241,0.22)]'
+          : 'border-surface-700 hover:border-surface-500'
+      } ${
         renaming ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
       }`}
       draggable={!renaming}
@@ -386,7 +420,7 @@ function MediaTile({
         setMenuPos({ x: e.clientX, y: e.clientY });
         setMenuOpen(true);
       }}
-      title={asset.name}
+      title={failureMessage ?? asset.name}
     >
       <div className="relative aspect-video bg-surface-900">
         {asset.thumbnailDataUrl ? (
@@ -417,7 +451,12 @@ function MediaTile({
           </div>
         )}
         {asset.generation?.status === 'error' && (
-          <div className="absolute inset-0 flex items-center justify-center bg-red-900/30 text-xs text-white">
+          <div className="absolute inset-0 flex items-center justify-center bg-red-900/30 text-xs text-white" title={failureMessage ?? 'Generation failed.'}>
+            {failureMessage && (
+              <div className="pointer-events-none absolute left-2 right-2 top-2 z-10 hidden rounded border border-red-300/30 bg-red-950/95 px-2 py-1.5 text-left text-[10px] leading-snug text-red-50 shadow-xl group-hover:block">
+                {failureMessage}
+              </div>
+            )}
             <div className="rounded bg-red-900/70 px-2 py-1">Generation failed</div>
           </div>
         )}
@@ -582,4 +621,9 @@ function assetBadgeLabel(asset: MediaAsset): string {
   if (subtype === 'mpeg') return 'mp3';
   if (subtype === 'jpeg') return 'jpg';
   return subtype;
+}
+
+function generationFailureMessage(asset: MediaAsset): string | null {
+  if (asset.generation?.status !== 'error') return null;
+  return asset.generation.errorMessage || 'Generation failed. No provider error was returned.';
 }

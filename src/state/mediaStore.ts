@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
 import type { EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset } from '@/types';
+import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
@@ -76,7 +77,14 @@ type MediaState = {
       providerArtifactExpiresAt?: number;
     },
   ) => Promise<void>;
-  failGeneratedAsset: (id: string, actualCostUsd?: number) => void;
+  failGeneratedAsset: (
+    id: string,
+    failure?: {
+      actualCostUsd?: number;
+      errorMessage?: string;
+      errorType?: GenerationErrorType;
+    },
+  ) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
 };
 
@@ -463,7 +471,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     set({ assets: next });
   },
 
-  failGeneratedAsset: (id, actualCostUsd) => {
+  failGeneratedAsset: (id, failure = {}) => {
     const next: MediaAsset[] = get().assets.map((a) => (a.id === id
       ? {
           ...a,
@@ -472,7 +480,10 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             status: 'error' as const,
             progress: 0,
             estimatedCostUsd: a.generation?.estimatedCostUsd,
-            actualCostUsd: actualCostUsd ?? a.generation?.estimatedCostUsd,
+            actualCostUsd: failure.actualCostUsd ?? a.generation?.estimatedCostUsd,
+            errorType: failure.errorType ?? a.generation?.errorType ?? 'InternalError',
+            errorMessage: failure.errorMessage ?? a.generation?.errorMessage ?? 'Generation failed.',
+            failedAt: Date.now(),
           },
         }
       : a));

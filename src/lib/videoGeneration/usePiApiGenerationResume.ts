@@ -33,7 +33,11 @@ export function usePiApiGenerationResume() {
         void resumePiApiGeneration(asset, apiKey)
           .catch((error) => {
             if (error instanceof VideoGenerationProviderError) {
-              useMediaStore.getState().failGeneratedAsset(asset.id, asset.generation?.actualCostUsd);
+              useMediaStore.getState().failGeneratedAsset(asset.id, {
+                actualCostUsd: asset.generation?.actualCostUsd,
+                errorMessage: formatProviderError(error),
+                errorType: error.type,
+              });
             } else {
               console.warn('PiAPI generation resume skipped:', error);
             }
@@ -49,6 +53,15 @@ export function usePiApiGenerationResume() {
       window.clearInterval(intervalId);
     };
   }, []);
+}
+
+function formatProviderError(error: VideoGenerationProviderError): string {
+  const label = {
+    NSFW: 'NSFW',
+    GuidelinesViolation: 'Guidelines violation',
+    InternalError: 'Internal error',
+  }[error.type];
+  return `${label}: ${error.message}`;
 }
 
 async function resumePiApiGeneration(asset: MediaAsset, apiKey: string): Promise<void> {
