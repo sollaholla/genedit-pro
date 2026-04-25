@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
 import { Check, Clapperboard, Copy, Image as ImageIcon, Plus, Search, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import {
@@ -42,6 +42,8 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   const [imagePickerMarkerId, setImagePickerMarkerId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const timelineRef = useRef<SVGSVGElement | null>(null);
+  const timelineGestureRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; target: 'timeline' | 'marker' } | null>(null);
+  const suppressTimelineDoubleClickUntilRef = useRef(0);
   const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
   const selectedMarkerImage = selectedMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
   const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
@@ -126,14 +128,31 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
     setCurrentTimeSec(timeSec);
     if (draggingMarkerId) updateMarker(draggingMarkerId, { timeSec });
   };
+  const trackPointerMovement = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const gesture = timelineGestureRef.current;
+    if (!gesture || gesture.pointerId !== event.pointerId || gesture.moved) return;
+    const distance = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+    if (distance > 4) gesture.moved = true;
+  };
   const handleTimelinePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!scrubbing && !draggingMarkerId) return;
+    trackPointerMovement(event);
     scrubToClientX(event.clientX);
   };
   const stopTimelinePointer = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const gesture = timelineGestureRef.current;
+    if (gesture?.pointerId === event.pointerId) {
+      if (gesture.target === 'marker' || gesture.moved) suppressTimelineDoubleClickUntilRef.current = Date.now() + 450;
+      timelineGestureRef.current = null;
+    }
     setScrubbing(false);
     setDraggingMarkerId(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const addMarkerFromEmptyTrackDoubleClick = (event: ReactMouseEvent<SVGRectElement>) => {
+    event.stopPropagation();
+    if (Date.now() < suppressTimelineDoubleClickUntilRef.current) return;
+    addMarker(clientXToTime(event.clientX));
   };
   const changeModel = (modelId: string) => {
     const nextModel = sequenceModels.find((model) => model.id === modelId) ?? selectedModel;
@@ -253,20 +272,26 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
                 className="block h-28 w-full touch-none select-none overflow-visible"
                 onPointerDown={(event) => {
                   event.currentTarget.setPointerCapture(event.pointerId);
+                  timelineGestureRef.current = {
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    moved: false,
+                    target: 'timeline',
+                  };
                   setScrubbing(true);
                   scrubToClientX(event.clientX);
                 }}
                 onPointerMove={handleTimelinePointerMove}
                 onPointerUp={stopTimelinePointer}
                 onPointerCancel={stopTimelinePointer}
-                onDoubleClick={(event) => addMarker(clientXToTime(event.clientX))}
               >
-                <rect x="0" y="24" width={SVG_WIDTH} height="36" rx="8" className="fill-surface-800" />
-                <line x1="0" y1={TIMELINE_Y} x2={SVG_WIDTH} y2={TIMELINE_Y} className="stroke-surface-500" strokeWidth="2" />
+                <rect x="0" y="24" width={SVG_WIDTH} height="36" rx="8" className="fill-surface-800" onDoubleClick={addMarkerFromEmptyTrackDoubleClick} />
+                <line x1="0" y1={TIMELINE_Y} x2={SVG_WIDTH} y2={TIMELINE_Y} className="stroke-surface-500" strokeWidth="2" pointerEvents="none" />
                 {timelineTicks(sequence.durationSec).map((tick) => {
                   const x = timeToX(tick, sequence.durationSec);
                   return (
-                    <g key={tick}>
+                    <g key={tick} pointerEvents="none">
                       <line x1={x} y1="18" x2={x} y2="66" className="stroke-surface-600" strokeWidth="1" />
                       <text x={x} y="82" textAnchor="middle" className="fill-slate-500 text-[10px]">{tick}s</text>
                     </g>
@@ -283,6 +308,13 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
                       onPointerDown={(event) => {
                         event.stopPropagation();
                         event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
+                        timelineGestureRef.current = {
+                          pointerId: event.pointerId,
+                          startX: event.clientX,
+                          startY: event.clientY,
+                          moved: false,
+                          target: 'marker',
+                        };
                         setSelectedMarkerId(marker.id);
                         setDraggingMarkerId(marker.id);
                         setCurrentTimeSec(marker.timeSec);
@@ -302,6 +334,7 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
                   y2="70"
                   className="stroke-brand-400"
                   strokeWidth="2"
+                  pointerEvents="none"
                 />
               </svg>
             </div>
@@ -358,21 +391,40 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Markers</div>
               <div className="space-y-1.5">
                 {sortedMarkers.map((marker, index) => (
-                  <button
+                  <div
                     key={marker.id}
-                    className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-xs ${
+                    className={`group flex w-full items-center gap-2 rounded border px-2 py-1.5 text-xs ${
                       marker.id === selectedMarkerId
                         ? 'border-brand-400 bg-brand-500/15 text-slate-100'
                         : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500'
                     }`}
-                    onClick={() => {
-                      setSelectedMarkerId(marker.id);
-                      setCurrentTimeSec(marker.timeSec);
-                    }}
                   >
-                    <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
-                    <span className="shrink-0 font-mono text-[11px] text-slate-500">{formatTime(marker.timeSec)}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+                      onClick={() => {
+                        setSelectedMarkerId(marker.id);
+                        setCurrentTimeSec(marker.timeSec);
+                      }}
+                    >
+                      <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
+                      <span className="shrink-0 font-mono text-[11px] text-slate-500">{formatTime(marker.timeSec)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/60"
+                      title="Delete marker"
+                      aria-label="Delete marker"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const remaining = sequence.markers.filter((candidate) => candidate.id !== marker.id);
+                        persist({ ...sequence, markers: remaining });
+                        if (selectedMarkerId === marker.id) setSelectedMarkerId(remaining[0]?.id ?? null);
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
