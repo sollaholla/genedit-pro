@@ -1,4 +1,5 @@
 import type { Clip } from '@/types';
+import { EyeOff } from 'lucide-react';
 import { clipTimelineDurationSec } from '@/lib/timeline/operations';
 import { timeToPx } from '@/lib/timeline/geometry';
 import type { KeyframePropertyRow, KeyframeSelection } from './keyframeModel';
@@ -239,7 +240,15 @@ export function KeyframeTrackLane({
   );
 }
 
-export function KeyframeSidebarLane({ rows }: { rows: KeyframePropertyRow[] }) {
+export function KeyframeSidebarLane({
+  rows,
+  showTitle = true,
+  onHideTrackKeyframes,
+}: {
+  rows: KeyframePropertyRow[];
+  showTitle?: boolean;
+  onHideTrackKeyframes?: () => void;
+}) {
   if (rows.length === 0) return null;
   const groupedRows = groupRows(rows);
   return (
@@ -248,10 +257,24 @@ export function KeyframeSidebarLane({ rows }: { rows: KeyframePropertyRow[] }) {
       style={{ height: laneHeightForClip(rows.length, groupedRows.length) }}
     >
       <div
-        className="flex items-center text-[10px] font-semibold uppercase tracking-wider text-slate-500"
+        className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-500"
         style={{ height: KEYFRAME_TITLE_HEIGHT_PX }}
       >
-        Keyframes
+        {showTitle ? (
+          <>
+            <span>Keyframes</span>
+            {onHideTrackKeyframes && (
+              <button
+                type="button"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-slate-500 hover:bg-surface-800 hover:text-slate-200"
+                title="Hide keyframe lanes for this track"
+                onClick={onHideTrackKeyframes}
+              >
+                <EyeOff size={12} />
+              </button>
+            )}
+          </>
+        ) : null}
       </div>
       {groupedRows.map((group) => (
         <div key={`side-group-${group.componentId}`}>

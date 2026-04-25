@@ -43,6 +43,7 @@ import { ReplaceClipDialog } from './ReplaceClipDialog';
 import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
 import { useKeyframeController } from './useKeyframeController';
 import { getKeyframeProperties, laneHeightForRows, type KeyframePropertyRow } from './keyframeModel';
+import { keyframeComponentVisibilityKey } from '@/lib/components/transform';
 
 type DragOverlay = {
   clipId: string;
@@ -77,6 +78,7 @@ export function Timeline() {
   const toggleClipSelection = usePlaybackStore((s) => s.toggleClipSelection);
   const setClipSelection = usePlaybackStore((s) => s.setClipSelection);
   const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
+  const hideKeyframeComponents = usePlaybackStore((s) => s.hideKeyframeComponents);
   // Convenience: the single-selected clip ID (when exactly one is selected).
   const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
 
@@ -580,6 +582,20 @@ export function Timeline() {
     setTrackDropTarget(null);
   }, [dragTrackId, trackDropTarget, update]);
 
+  const hideTrackKeyframes = useCallback((trackId: string) => {
+    const lanes = keyframeLanesByTrack.get(trackId) ?? [];
+    const keys = new Set<string>();
+    for (const lane of lanes) {
+      for (const row of lane.rows) {
+        keys.add(keyframeComponentVisibilityKey(lane.clip.id, row.componentId));
+      }
+    }
+    hideKeyframeComponents([...keys]);
+    if (selectedKeyframe && lanes.some((lane) => lane.clip.id === selectedKeyframe.clipId)) {
+      setSelectedKeyframe(null);
+    }
+  }, [hideKeyframeComponents, keyframeLanesByTrack, selectedKeyframe, setSelectedKeyframe]);
+
   // Ghost clip for audio extraction preview
   const ghostClip = dragOverlay?.isAudioExtraction
     ? project.clips.find((c) => c.id === dragOverlay.clipId)
@@ -659,10 +675,12 @@ export function Timeline() {
                     onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
                     onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
                   />
-                  {(keyframeLanesByTrack.get(t.id) ?? []).map((lane) => (
+                  {(keyframeLanesByTrack.get(t.id) ?? []).map((lane, index) => (
                     <KeyframeSidebarLane
                       key={`h-keyframes-${lane.clip.id}`}
                       rows={lane.rows}
+                      showTitle={index === 0}
+                      onHideTrackKeyframes={() => hideTrackKeyframes(t.id)}
                     />
                   ))}
                 </div>

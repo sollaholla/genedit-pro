@@ -43,6 +43,7 @@ type PlaybackState = {
   showKeyframeComponent: (id: string) => void;
   toggleKeyframeComponent: (id: string) => void;
   hideKeyframeComponent: (id: string) => void;
+  hideKeyframeComponents: (ids: string[]) => void;
   setMasterVolume: (v: number) => void;
   setClipAudioLevels: (levels: Record<string, ClipAudioLevel>) => void;
 };
@@ -90,6 +91,13 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   hideKeyframeComponent: (id) => {
     const cur = get().visibleKeyframeComponentKeys;
     if (cur.includes(id)) set({ visibleKeyframeComponentKeys: cur.filter((candidate) => candidate !== id) });
+  },
+  hideKeyframeComponents: (ids) => {
+    if (ids.length === 0) return;
+    const hidden = new Set(ids);
+    const cur = get().visibleKeyframeComponentKeys;
+    const next = cur.filter((candidate) => !hidden.has(candidate));
+    if (next.length !== cur.length) set({ visibleKeyframeComponentKeys: next });
   },
   setMasterVolume: (v) => set({ masterVolume: Math.max(0, Math.min(2, v)) }),
   setClipAudioLevels: (levels) => set({ clipAudioLevels: levels }),
