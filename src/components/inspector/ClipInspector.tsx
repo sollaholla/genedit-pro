@@ -285,8 +285,7 @@ export function ClipInspector() {
 
       <Section label="Components">
         <div className="space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[11px] text-slate-500">{components.length} active</div>
+          <div className="flex items-center justify-end gap-2">
             <button
               type="button"
               className="inline-flex items-center gap-1 rounded bg-surface-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-surface-600 disabled:opacity-40"
@@ -405,7 +404,6 @@ export function ClipInspector() {
                   component={component}
                   index={idx}
                   total={components.length}
-                  active={focusedComponentId === component.id}
                   dragProps={dragProps}
                   onFocus={() => {
                     setFocusedComponentId(component.id);
@@ -447,7 +445,6 @@ export function ClipInspector() {
                 clip={clip}
                 clipId={selectedId}
                 currentTime={currentTime}
-                active={focusedComponentId === component.id || activeTransformComponentId === component.id || (!activeTransformComponentId && transformComponents.at(-1)?.id === component.id)}
                 keyframesVisible={visibleKeyframeComponentKeys.includes(keyframeComponentVisibilityKey(selectedId, component.id))}
                 dragProps={dragProps}
                 onFocus={() => {
@@ -482,7 +479,6 @@ function TransformComponentCard({
   clip,
   clipId,
   currentTime,
-  active,
   keyframesVisible,
   dragProps,
   onFocus,
@@ -499,7 +495,6 @@ function TransformComponentCard({
   clip: Clip;
   clipId: string;
   currentTime: number;
-  active: boolean;
   keyframesVisible: boolean;
   dragProps: ComponentDragProps;
   onFocus: () => void;
@@ -543,7 +538,7 @@ function TransformComponentCard({
 
   return (
     <div
-      className={`space-y-3 rounded border p-2.5 ${active ? 'border-brand-400 bg-brand-500/10' : 'border-surface-700 bg-surface-900/50'}`}
+      className="space-y-3 rounded border border-surface-700 bg-surface-900/50 p-2.5"
       onClick={onFocus}
       {...dragProps}
     >
@@ -551,8 +546,6 @@ function TransformComponentCard({
         title="Transform"
         icon={<SlidersHorizontal size={12} />}
         index={transformIndex >= 0 ? transformIndex + 1 : index + 1}
-        activeLabel={active ? 'Active target' : 'Click to target'}
-        active={active}
         onStartDrag={onStartDrag}
         onRemove={onRemove}
         onMove={onMove}
@@ -640,7 +633,6 @@ function ColorCorrectionCard({
   component,
   index,
   total,
-  active,
   dragProps,
   onFocus,
   onStartDrag,
@@ -651,7 +643,6 @@ function ColorCorrectionCard({
   component: ColorCorrectionComponentInstance;
   index: number;
   total: number;
-  active: boolean;
   dragProps: ComponentDragProps;
   onFocus: () => void;
   onStartDrag: () => void;
@@ -671,7 +662,7 @@ function ColorCorrectionCard({
 
   return (
     <div
-      className={`space-y-3 rounded border p-2.5 ${active ? 'border-emerald-400 bg-emerald-500/10' : 'border-surface-700 bg-surface-900/50'}`}
+      className="space-y-3 rounded border border-surface-700 bg-surface-900/50 p-2.5"
       onClick={onFocus}
       {...dragProps}
     >
@@ -679,8 +670,6 @@ function ColorCorrectionCard({
         title="Color Correction"
         icon={<Palette size={12} />}
         index={index + 1}
-        activeLabel={active ? 'Active grade' : 'Click to grade'}
-        active={active}
         onStartDrag={onStartDrag}
         onRemove={onRemove}
         onMove={onMove}
@@ -777,8 +766,6 @@ function ComponentHeader({
   title,
   icon,
   index,
-  activeLabel,
-  active,
   children,
   onStartDrag,
   onRemove,
@@ -789,8 +776,6 @@ function ComponentHeader({
   title: string;
   icon: ReactNode;
   index: number;
-  activeLabel: string;
-  active: boolean;
   children?: ReactNode;
   onStartDrag: () => void;
   onRemove: () => void;
@@ -816,7 +801,7 @@ function ComponentHeader({
             <GripVertical size={13} />
           </button>
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className={active ? 'text-brand-300' : 'text-slate-400'}>{icon}</span>
+            <span className="text-slate-400">{icon}</span>
             <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-wider text-slate-300">{title}</span>
             <span className="rounded bg-surface-800 px-1 font-mono text-[9px] leading-4 text-slate-400">#{index}</span>
           </div>
@@ -833,8 +818,7 @@ function ComponentHeader({
           <Trash2 size={11} />
         </button>
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <div className="truncate text-[10px] text-slate-500">{activeLabel}</div>
+      <div className="flex items-center justify-end gap-1.5">
         <div className="flex shrink-0 items-center gap-1.5">
           {children}
           <button
