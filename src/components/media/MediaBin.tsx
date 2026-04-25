@@ -149,20 +149,20 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
         if (files.length > 0) await importFiles(files, activeFolderId);
       }}
     >
-      <div className="flex items-center justify-between border-b border-surface-700 px-3 py-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
-        <div className="flex items-center gap-1.5">
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={createSequence}>
+      <div className="border-b border-surface-700 px-3 py-2">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
+        <div className="grid grid-cols-3 gap-1.5">
+          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={createSequence} title="New sequence">
             <Clapperboard size={12} />
-            Sequence
+            <span className="min-w-0 truncate">Sequence</span>
           </button>
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={onGenerateClick}>
+          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={onGenerateClick} title="Generate video">
             <Sparkles size={12} />
-            Generate
+            <span className="min-w-0 truncate">Generate</span>
           </button>
-          <button className="btn-ghost px-2 py-1 text-xs" onClick={onImportClick} disabled={importing}>
+          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={onImportClick} disabled={importing} title="Import media">
             <Upload size={12} />
-            {importing ? 'Importing…' : 'Import'}
+            <span className="min-w-0 truncate">{importing ? 'Importing…' : 'Import'}</span>
           </button>
         </div>
       </div>

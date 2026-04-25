@@ -1,6 +1,6 @@
 import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
-import { Clapperboard, Copy, Image as ImageIcon, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Check, Clapperboard, Copy, Image as ImageIcon, Plus, Search, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import {
   DEFAULT_VIDEO_MODELS,
   isPiApiKlingModel,
@@ -23,6 +23,7 @@ const TIMELINE_Y = 42;
 
 export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   const assets = useMediaStore((state) => state.assets);
+  const importFiles = useMediaStore((state) => state.importFiles);
   const objectUrlFor = useMediaStore((state) => state.objectUrlFor);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
   const asset = assets.find((candidate) => candidate.id === assetId && candidate.kind === 'sequence') ?? null;
@@ -38,9 +39,12 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [imagePickerMarkerId, setImagePickerMarkerId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const timelineRef = useRef<SVGSVGElement | null>(null);
   const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
+  const selectedMarkerImage = selectedMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
+  const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
   const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence), [sequence]);
@@ -74,11 +78,13 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      if (imagePickerMarkerId) setImagePickerMarkerId(null);
+      else onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [imagePickerMarkerId, onClose]);
 
   if (!asset || !selectedModel) return null;
 
@@ -155,6 +161,22 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
     } catch {
       setCopied(false);
     }
+  };
+  const importMarkerImage = async () => {
+    if (!imagePickerMarker) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const imported = await importFiles([file]);
+      const image = imported.find((candidate) => candidate.kind === 'image');
+      if (!image) return;
+      updateMarker(imagePickerMarker.id, { imageAssetId: image.id });
+      setImagePickerMarkerId(null);
+    };
+    input.click();
   };
 
   return (
@@ -298,10 +320,13 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
 
               <MarkerInspector
                 marker={selectedMarker}
-                imageAssets={imageAssets}
+                selectedImage={selectedMarkerImage}
                 durationSec={sequence.durationSec}
                 onUpdate={updateMarker}
                 onDelete={deleteSelectedMarker}
+                onChooseImage={() => {
+                  if (selectedMarker) setImagePickerMarkerId(selectedMarker.id);
+                }}
               />
             </div>
           </main>
@@ -354,22 +379,36 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
           </aside>
         </div>
       </div>
+      {imagePickerMarker && (
+        <SequenceImagePicker
+          assets={imageAssets}
+          selectedId={imagePickerMarker.imageAssetId ?? null}
+          onPick={(image) => {
+            updateMarker(imagePickerMarker.id, { imageAssetId: image.id });
+            setImagePickerMarkerId(null);
+          }}
+          onImport={() => void importMarkerImage()}
+          onClose={() => setImagePickerMarkerId(null)}
+        />
+      )}
     </div>
   );
 }
 
 function MarkerInspector({
   marker,
-  imageAssets,
+  selectedImage,
   durationSec,
   onUpdate,
   onDelete,
+  onChooseImage,
 }: {
   marker: SequenceMarker | null;
-  imageAssets: MediaAsset[];
+  selectedImage: MediaAsset | null;
   durationSec: number;
   onUpdate: (markerId: string, patch: Partial<SequenceMarker>) => void;
   onDelete: () => void;
+  onChooseImage: () => void;
 }) {
   if (!marker) {
     return (
@@ -400,19 +439,28 @@ function MarkerInspector({
             className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
           />
         </label>
-        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           Image
-          <select
-            value={marker.imageAssetId ?? ''}
-            onChange={(event) => onUpdate(marker.id, { imageAssetId: event.target.value || null })}
-            className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+          <button
+            type="button"
+            className="flex min-h-14 w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-left text-sm font-normal normal-case tracking-normal text-slate-100 outline-none hover:border-surface-500 focus-visible:border-brand-400"
+            onClick={onChooseImage}
           >
-            <option value="">No image</option>
-            {imageAssets.map((asset) => (
-              <option key={asset.id} value={asset.id}>{asset.name}</option>
-            ))}
-          </select>
-        </label>
+            {selectedImage?.thumbnailDataUrl ? (
+              <img src={selectedImage.thumbnailDataUrl} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
+            ) : (
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-surface-800 text-slate-500">
+                <ImageIcon size={16} />
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate">{selectedImage ? selectedImage.name : 'Choose from media or import'}</span>
+          </button>
+          {selectedImage && (
+            <button type="button" className="self-start text-[11px] font-normal normal-case tracking-normal text-slate-400 hover:text-slate-100" onClick={() => onUpdate(marker.id, { imageAssetId: null })}>
+              Clear image
+            </button>
+          )}
+        </div>
         <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           Shot Prompt
           <textarea
@@ -423,6 +471,130 @@ function MarkerInspector({
         </label>
       </div>
     </section>
+  );
+}
+
+function SequenceImagePicker({
+  assets,
+  selectedId,
+  onPick,
+  onImport,
+  onClose,
+}: {
+  assets: MediaAsset[];
+  selectedId: string | null;
+  onPick: (asset: MediaAsset) => void;
+  onImport: () => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [sortKey, setSortKey] = useState<'recent' | 'name' | 'size'>('recent');
+  const filteredAssets = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return [...assets]
+      .filter((asset) => {
+        if (!normalizedQuery) return true;
+        return [
+          asset.name,
+          asset.mimeType,
+          `${asset.width ?? ''}x${asset.height ?? ''}`,
+        ].join(' ').toLowerCase().includes(normalizedQuery);
+      })
+      .sort((a, b) => {
+        if (sortKey === 'name') return a.name.localeCompare(b.name);
+        if (sortKey === 'size') return (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0) || a.name.localeCompare(b.name);
+        return b.createdAt - a.createdAt || a.name.localeCompare(b.name);
+      });
+  }, [assets, query, sortKey]);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/55 p-4">
+      <div className="w-[min(960px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
+        <div className="border-b border-white/10 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Pick marker image</div>
+              <div className="text-xs text-slate-400">Choose an image from media or import a new one.</div>
+            </div>
+            <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex h-9 min-w-[260px] flex-1 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 text-xs text-slate-300">
+              <Search size={14} className="text-slate-500" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search images by name, type, or size"
+                className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
+                autoFocus
+              />
+            </label>
+            <div className="inline-flex h-9 items-center rounded-full border border-white/10 bg-black/20 p-0.5">
+              {(['recent', 'name', 'size'] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`h-7 rounded-full px-2.5 text-xs capitalize transition ${sortKey === key ? 'bg-white text-slate-950' : 'text-slate-300 hover:bg-white/10'}`}
+                  onClick={() => setSortKey(key)}
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+            <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/20" onClick={onImport}>
+              <Upload size={12} />
+              Import
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[520px] overflow-auto p-3">
+          <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
+            <span>{filteredAssets.length} of {assets.length} images</span>
+            <span>{sortKey === 'recent' ? 'Recent first' : sortKey === 'size' ? 'Largest first' : 'A-Z'}</span>
+          </div>
+          {filteredAssets.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 p-8 text-center text-xs text-slate-500">
+              No images match this search.
+            </div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2">
+              {filteredAssets.map((asset) => {
+                const selected = asset.id === selectedId;
+                return (
+                  <button
+                    key={asset.id}
+                    type="button"
+                    className={`group overflow-hidden rounded-lg border bg-white/[0.03] text-left transition ${selected ? 'border-brand-300 ring-1 ring-brand-300/70' : 'border-white/10 hover:border-white/25 hover:bg-white/[0.06]'}`}
+                    onClick={() => onPick(asset)}
+                  >
+                    <div className="relative aspect-video bg-black/45">
+                      {asset.thumbnailDataUrl ? (
+                        <img src={asset.thumbnailDataUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-slate-500">
+                          <ImageIcon size={22} />
+                        </div>
+                      )}
+                      {selected && (
+                        <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-brand-400 text-slate-950">
+                          <Check size={12} />
+                        </span>
+                      )}
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <div className="truncate text-xs font-medium text-slate-100">{asset.name}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">{asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.mimeType}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
