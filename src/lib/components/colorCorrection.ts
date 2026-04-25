@@ -200,24 +200,30 @@ export function colorCorrectionSvgParams(data: ColorCorrectionComponentData): Sv
 }
 
 export function colorCorrectionFfmpegFilters(clip: Clip, timelineTimeSec: number): string[] {
+  return colorCorrectionFfmpegFiltersWithOptions(clip, timelineTimeSec);
+}
+
+export function colorCorrectionFfmpegFiltersWithOptions(
+  clip: Clip,
+  timelineTimeSec: number,
+  options: { perChannel?: boolean } = {},
+): string[] {
   const data = resolveColorCorrectionAtTime(clip, timelineTimeSec);
   if (isNeutralColorCorrection(data)) return [];
 
-  // @ffmpeg/core's browser build does not include colorbalance/colorlevels.
-  // Keep export on the portable eq filter path so color correction never
-  // breaks the encoder; wheel tinting remains preview-only until we verify a
-  // wasm-safe per-channel filter.
-  return [
-    [
-      'eq',
-      [
-        `brightness=${roundFilter(data.brightness)}`,
-        `contrast=${roundFilter(data.contrast)}`,
-        `gamma=${roundFilter(data.gamma)}`,
-        `saturation=${roundFilter(data.saturation)}`,
-      ].join(':'),
-    ].join('='),
+  const filters: string[] = [];
+  if (options.perChannel !== false) {
+    filters.push(svgTransferFfmpegFilter(colorCorrectionSvgParams(data)));
+  }
+
+  const eqOptions = [
+    `brightness=${roundFilter(data.brightness)}`,
+    `contrast=${roundFilter(data.contrast)}`,
+    `saturation=${roundFilter(data.saturation)}`,
   ];
+  if (options.perChannel === false) eqOptions.splice(2, 0, `gamma=${roundFilter(data.gamma)}`);
+  filters.push(`eq=${eqOptions.join(':')}`);
+  return filters;
 }
 
 export function clampWheel(value: ColorWheelValue): ColorWheelValue {
@@ -282,6 +288,16 @@ function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: n
 function inferPresetId(data?: Partial<ColorCorrectionComponentData> | null): string | undefined {
   if (!data) return 'neutral';
   return undefined;
+}
+
+function svgTransferFfmpegFilter(params: SvgColorCorrectionParams): string {
+  const expr = (channel: keyof SvgColorCorrectionParams['lift']) => {
+    const lift = roundFilter(params.lift[channel]);
+    const gain = roundFilter(params.gain[channel]);
+    const exponent = roundFilter(params.exponent[channel]);
+    return `'clip((${gain}*pow(val/maxval,${exponent})+${lift})*maxval,0,maxval)'`;
+  };
+  return `lutrgb=r=${expr('r')}:g=${expr('g')}:b=${expr('b')}`;
 }
 
 function roundCss(value: number): string {

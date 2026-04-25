@@ -3,8 +3,8 @@ import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { getBlob } from '@/lib/media/storage';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
-import { colorCorrectionFfmpegFilters } from '@/lib/components/colorCorrection';
-import { resolveTransformAtTime } from '@/lib/components/transform';
+import { colorCorrectionFfmpegFiltersWithOptions } from '@/lib/components/colorCorrection';
+import { getTransformComponents } from '@/lib/components/transform';
 import { activeEditTransform } from '@/lib/media/editTrail';
 import { getFFmpeg, resetFFmpeg } from './client';
 
@@ -32,6 +32,11 @@ function preciseSeconds(value: number): string {
   return Math.max(0, value).toFixed(5);
 }
 
+function filterNumber(value: number): string {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return safeValue.toFixed(5);
+}
+
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
 }
@@ -45,7 +50,45 @@ function rangesOverlap(startA: number, endA: number, startB: number, endB: numbe
 }
 
 function betweenExpression(startSec: number, endSec: number): string {
-  return `between(t,${preciseSeconds(startSec)},${preciseSeconds(endSec)})`;
+  return `gte(t,${preciseSeconds(startSec)})*lt(t,${preciseSeconds(endSec)})`;
+}
+
+function keyframeExpression(
+  points: Array<{ timeSec: number; value: number }>,
+  fallback: number,
+  localTimeExpr: string,
+): string {
+  if (points.length === 0) return filterNumber(fallback);
+  const sorted = [...points].sort((first, second) => first.timeSec - second.timeSec);
+  if (sorted.length === 1) return filterNumber(sorted[0]!.value);
+
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  let expr = filterNumber(last.value);
+  for (let index = sorted.length - 2; index >= 0; index -= 1) {
+    const current = sorted[index]!;
+    const next = sorted[index + 1]!;
+    const duration = Math.max(1e-5, next.timeSec - current.timeSec);
+    const segmentExpr = `${filterNumber(current.value)}+(${filterNumber(next.value - current.value)})*` +
+      `(${localTimeExpr}-${filterNumber(current.timeSec)})/${filterNumber(duration)}`;
+    expr = `if(lte(${localTimeExpr},${filterNumber(next.timeSec)}),${segmentExpr},${expr})`;
+  }
+
+  return `if(lte(${localTimeExpr},${filterNumber(first.timeSec)}),${filterNumber(first.value)},${expr})`;
+}
+
+function transformExpression(clip: Clip, property: 'scale' | 'offsetX' | 'offsetY', localTimeExpr: string): string {
+  const components = getTransformComponents(clip);
+  if (components.length === 0) return property === 'scale' ? '1.00000' : '0.00000';
+
+  const expressions = components.map((component) => keyframeExpression(
+    component.data.keyframes[property],
+    component.data[property],
+    localTimeExpr,
+  ));
+
+  if (property === 'scale') return expressions.map((expr) => `(${expr})`).join('*');
+  return expressions.map((expr) => `(${expr})`).join('+');
 }
 
 function vfsNameForAsset(asset: MediaAsset): string {
@@ -148,17 +191,38 @@ async function detectAssetAudioStreams(
   return hasAudioByAssetId;
 }
 
+async function detectFfmpegFilterSupport(
+  ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
+  filterName: string,
+): Promise<boolean> {
+  const filterLines: string[] = [];
+  const filterLogHandler = ({ message }: { message: string }) => {
+    filterLines.push(message);
+  };
+
+  ffmpeg.on('log', filterLogHandler);
+  try {
+    const code = await ffmpeg.exec(['-hide_banner', '-filters']);
+    if (code !== 0) return false;
+    return filterLines.some((line) => new RegExp(`\\b${filterName}\\b`).test(line));
+  } finally {
+    ffmpeg.off('log', filterLogHandler);
+  }
+}
+
 function timelineVisualFilters(
   input: TimelineInput,
   project: Project,
+  supportsPerChannelColor: boolean,
 ): { filters: string; overlayX: string; overlayY: string } {
   const { clip, asset } = input;
-  const transform = resolveTransformAtTime(clip, clip.startSec);
   const mediaTransform = activeEditTransform(asset);
-  const scale = Math.max(0.1, Math.min(6, (transform.scale ?? clip.scale ?? 1) * mediaTransform.scale));
-  const offsetX = transform.offsetX + mediaTransform.offsetX;
-  const offsetY = transform.offsetY + mediaTransform.offsetY;
-  const filters: string[] = ['setsar=1'];
+  const localOverlayTimeExpr = `(t-${preciseSeconds(clip.startSec)})`;
+  const rawScaleExpr = transformExpression(clip, 'scale', 't');
+  const visualScaleExpr = `min(6,max(0.1,(${rawScaleExpr})*${filterNumber(mediaTransform.scale)}))`;
+  const offsetXExpr = `(${transformExpression(clip, 'offsetX', localOverlayTimeExpr)})+${filterNumber(mediaTransform.offsetX)}`;
+  const offsetYExpr = `(${transformExpression(clip, 'offsetY', localOverlayTimeExpr)})+${filterNumber(mediaTransform.offsetY)}`;
+  const filters: string[] = ['setsar=1', 'settb=AVTB'];
 
   if (asset.kind !== 'image') {
     const speed = clipSpeed(clip);
@@ -167,13 +231,12 @@ function timelineVisualFilters(
       : 'setpts=PTS-STARTPTS');
   }
 
-  if (Math.abs(scale - 1) > 0.001) {
-    const scaleExpr = scale.toFixed(5);
-    filters.push(`scale=w=trunc(iw*${scaleExpr}/2)*2:h=trunc(ih*${scaleExpr}/2)*2`);
-  }
+  filters.push(
+    `scale=eval=frame:w='trunc(iw*${visualScaleExpr}/2)*2':h='trunc(ih*${visualScaleExpr}/2)*2'`,
+  );
 
   filters.push(
-    ...colorCorrectionFfmpegFilters(clip, clip.startSec),
+    ...colorCorrectionFfmpegFiltersWithOptions(clip, clip.startSec, { perChannel: supportsPerChannelColor }),
     `fps=${project.fps}`,
     `trim=duration=${seconds(input.timelineDurationSec)}`,
     `setpts=PTS-STARTPTS+${preciseSeconds(clip.startSec)}/TB`,
@@ -182,8 +245,8 @@ function timelineVisualFilters(
 
   return {
     filters: filters.join(','),
-    overlayX: `(W-w)/2${offsetX >= 0 ? '+' : ''}${offsetX.toFixed(2)}`,
-    overlayY: `(H-h)/2${offsetY >= 0 ? '+' : ''}${offsetY.toFixed(2)}`,
+    overlayX: `(W-w)/2+${offsetXExpr}`,
+    overlayY: `(H-h)/2+${offsetYExpr}`,
   };
 }
 
@@ -261,22 +324,23 @@ function buildTimelineFilterGraph(
   audioInputs: TimelineInput[],
   backgroundInputIndex: number,
   silenceInputIndex: number | null,
+  supportsPerChannelColor: boolean,
 ): string {
   const parts: string[] = [
-    `[${backgroundInputIndex}:v]trim=duration=${seconds(totalDurationSec)},setpts=PTS-STARTPTS,format=rgba[base0]`,
+    `[${backgroundInputIndex}:v]trim=duration=${seconds(totalDurationSec)},settb=AVTB,setpts=PTS-STARTPTS,format=rgba[base0]`,
   ];
 
   const visualStack = [...visualInputs].sort((first, second) => second.track.index - first.track.index);
   let baseLabel = 'base0';
   visualStack.forEach((input, index) => {
-    const visual = timelineVisualFilters(input, project);
+    const visual = timelineVisualFilters(input, project, supportsPerChannelColor);
     const layerLabel = `v${index}`;
     const nextBaseLabel = `base${index + 1}`;
     const enable = visualEnableExpression(input, visualInputs);
     parts.push(`[${input.inputIndex}:v:0]${visual.filters}[${layerLabel}]`);
     parts.push(
       `[${baseLabel}][${layerLabel}]overlay=x='${visual.overlayX}':y='${visual.overlayY}':` +
-      `enable='${enable}':eof_action=pass:shortest=0[${nextBaseLabel}]`,
+      `enable='${enable}':eof_action=pass:repeatlast=0:shortest=0[${nextBaseLabel}]`,
     );
     baseLabel = nextBaseLabel;
   });
@@ -378,6 +442,7 @@ export async function exportProject(
 
     onStatus?.('Inspecting audio streams...');
     const hasAudioByAssetId = await detectAssetAudioStreams(ffmpeg, sourceAssets);
+    const supportsPerChannelColor = await detectFfmpegFilterSupport(ffmpeg, 'lutrgb');
 
     const args: string[] = [];
     const timelineInputs: TimelineInput[] = [];
@@ -431,6 +496,7 @@ export async function exportProject(
       audioInputs,
       backgroundInputIndex,
       silenceInputIndex,
+      supportsPerChannelColor,
     ));
     args.push('-map', '[vout]', '-map', '[aout]');
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', String(project.fps));
