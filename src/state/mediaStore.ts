@@ -35,9 +35,10 @@ type MediaState = {
   assets: MediaAsset[];
   folders: MediaFolder[];
   importing: boolean;
-  importFiles: (files: File[]) => Promise<MediaAsset[]>;
+  importFiles: (files: File[], folderId?: string | null) => Promise<MediaAsset[]>;
   removeAsset: (id: string) => Promise<void>;
   renameAsset: (id: string, name: string) => void;
+  moveAssetToFolder: (id: string, folderId: string | null) => void;
   objectUrlFor: (assetId: string) => Promise<string | null>;
   ensureEditTrail: (assetId: string) => void;
   addEditTrailIteration: (
@@ -195,7 +196,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
   })(),
   importing: false,
 
-  importFiles: async (files: File[]) => {
+  importFiles: async (files: File[], folderId = null) => {
     set({ importing: true });
     const added: MediaAsset[] = [];
     for (const file of files) {
@@ -212,7 +213,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
           mimeType: file.type || 'application/octet-stream',
           blobKey: `blob_${nanoid(12)}`,
           thumbnailDataUrl: thumbnail || undefined,
-          folderId: null,
+          folderId,
           createdAt: Date.now(),
         };
         await putBlob(asset.blobKey, file, file.name);
@@ -245,6 +246,12 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     const trimmed = name.trim();
     if (!trimmed) return;
     const next = get().assets.map((a) => (a.id === id ? { ...a, name: trimmed } : a));
+    saveAssets(next);
+    set({ assets: next });
+  },
+
+  moveAssetToFolder: (id, folderId) => {
+    const next = get().assets.map((a) => (a.id === id ? { ...a, folderId } : a));
     saveAssets(next);
     set({ assets: next });
   },

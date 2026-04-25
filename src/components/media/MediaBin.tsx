@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Film, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
-import { useMediaStore } from '@/state/mediaStore';
+import { type MediaFolder, useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { addClip, sortedTracks } from '@/lib/timeline/operations';
@@ -22,6 +22,8 @@ const kindIcon = {
   recipe: BookOpen,
 };
 
+const ASSET_DRAG_MIME = 'application/x-genedit-asset';
+
 export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
@@ -30,6 +32,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
   const importFiles = useMediaStore((s) => s.importFiles);
   const removeAsset = useMediaStore((s) => s.removeAsset);
   const renameAsset = useMediaStore((s) => s.renameAsset);
+  const moveAssetToFolder = useMediaStore((s) => s.moveAssetToFolder);
   const project = useProjectStore((s) => s.project);
   const updateProject = useProjectStore((s) => s.update);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
@@ -37,21 +40,61 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [folderDraft, setFolderDraft] = useState('');
   const tileRefs = useRef(new Map<string, HTMLLIElement>());
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const activeFolder = useMemo(
+    () => (activeFolderId ? folders.find((folder) => folder.id === activeFolderId) ?? null : null),
+    [activeFolderId, folders],
+  );
   const visibleAssets = useMemo(
     () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
     [assets, activeFolderId],
   );
+  const folderTiles = activeFolderId ? [] : folders;
+  const hasGridItems = folderTiles.length > 0 || visibleAssets.length > 0;
   const previewAsset = useMemo(
     () => (previewAssetId ? assets.find((asset) => asset.id === previewAssetId) ?? null : null),
     [assets, previewAssetId],
   );
+  const assetsByFolder = useMemo(() => {
+    const map = new Map<string | null, MediaAsset[]>();
+    for (const asset of assets) {
+      const key = asset.folderId ?? null;
+      const bucket = map.get(key) ?? [];
+      bucket.push(asset);
+      map.set(key, bucket);
+    }
+    return map;
+  }, [assets]);
+  const assetCountForFolder = (folderId: string | null) => assetsByFolder.get(folderId)?.length ?? 0;
+  const previewsForFolder = (folderId: string) => (assetsByFolder.get(folderId) ?? [])
+    .filter((asset) => asset.thumbnailDataUrl)
+    .slice(0, 4);
   const addAssetToTimeline = (asset: MediaAsset) => {
     if (asset.kind === 'recipe' || asset.generation?.status === 'generating') return;
     const targetKind = asset.kind === 'audio' ? 'audio' : 'video';
     const track = sortedTracks(project).find((candidate) => candidate.kind === targetKind);
     if (!track) return;
     updateProject((nextProject) => addClip(nextProject, asset, track.id, currentTime));
+  };
+  const moveDroppedMediaToFolder = async (event: DragEvent<HTMLElement>, folderId: string | null) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const assetId = event.dataTransfer.getData(ASSET_DRAG_MIME) || event.dataTransfer.getData('text/plain');
+    if (assetId) {
+      moveAssetToFolder(assetId, folderId);
+      return;
+    }
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) await importFiles(files, folderId);
+  };
+  const commitFolderDraft = () => {
+    const name = folderDraft.trim();
+    setCreatingFolder(false);
+    setFolderDraft('');
+    if (name) createFolder(name);
   };
 
   useEffect(() => {
@@ -70,6 +113,14 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
     });
   }, [activeFolderId, assets, highlightedAssetId]);
 
+  useEffect(() => {
+    if (!creatingFolder) return;
+    requestAnimationFrame(() => {
+      folderInputRef.current?.focus();
+      folderInputRef.current?.select();
+    });
+  }, [creatingFolder]);
+
   return (
     <div
       className="flex h-full flex-col"
@@ -84,7 +135,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
         e.preventDefault();
         setDragOver(false);
         const files = Array.from(e.dataTransfer.files);
-        if (files.length > 0) await importFiles(files);
+        if (files.length > 0) await importFiles(files, activeFolderId);
       }}
     >
       <div className="flex items-center justify-between border-b border-surface-700 px-3 py-2">
@@ -106,20 +157,52 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
           <button
             className="rounded p-1 text-slate-400 hover:bg-surface-800 hover:text-slate-200"
             onClick={() => {
-              const name = window.prompt('Folder name');
-              if (name?.trim()) createFolder(name.trim());
+              setFolderDraft('');
+              setCreatingFolder(true);
             }}
+            title="New folder"
           >
             <FolderPlus size={12} />
           </button>
         </div>
         <div className="flex flex-wrap gap-1">
-          <button className={`rounded px-2 py-0.5 text-[11px] ${activeFolderId === null ? 'bg-surface-700 text-slate-200' : 'bg-surface-800 text-slate-400'}`} onClick={() => setActiveFolderId(null)}>All</button>
+          <FolderFilterButton
+            label="All"
+            count={assets.length}
+            active={activeFolderId === null}
+            onClick={() => setActiveFolderId(null)}
+            onDropToFolder={(event) => moveDroppedMediaToFolder(event, null)}
+          />
           {folders.map((f) => (
-            <button key={f.id} className={`rounded px-2 py-0.5 text-[11px] ${activeFolderId === f.id ? 'bg-surface-700 text-slate-200' : 'bg-surface-800 text-slate-400'}`} onClick={() => setActiveFolderId(f.id)}>
-              {f.name}
-            </button>
+            <FolderFilterButton
+              key={f.id}
+              label={f.name}
+              count={assetCountForFolder(f.id)}
+              active={activeFolderId === f.id}
+              onClick={() => setActiveFolderId(f.id)}
+              onDropToFolder={(event) => moveDroppedMediaToFolder(event, f.id)}
+            />
           ))}
+          {creatingFolder && (
+            <input
+              ref={folderInputRef}
+              value={folderDraft}
+              onChange={(event) => setFolderDraft(event.target.value)}
+              onBlur={commitFolderDraft}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  commitFolderDraft();
+                } else if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setCreatingFolder(false);
+                  setFolderDraft('');
+                }
+              }}
+              className="min-w-0 rounded border border-brand-400/60 bg-surface-950 px-2 py-0.5 text-[11px] text-slate-100 outline-none"
+              placeholder="Folder name"
+            />
+          )}
         </div>
       </div>
       <div
@@ -127,10 +210,20 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
           dragOver ? 'outline outline-2 -outline-offset-4 outline-brand-500/70' : ''
         }`}
       >
-        {visibleAssets.length === 0 ? (
-          <EmptyState onImportClick={onImportClick} />
+        {!hasGridItems ? (
+          <EmptyState onImportClick={onImportClick} folderName={activeFolder?.name} />
         ) : (
           <ul className="grid grid-cols-2 gap-2">
+            {folderTiles.map((folder) => (
+              <FolderTile
+                key={folder.id}
+                folder={folder}
+                assetCount={assetCountForFolder(folder.id)}
+                previews={previewsForFolder(folder.id)}
+                onOpen={() => setActiveFolderId(folder.id)}
+                onDropToFolder={(event) => moveDroppedMediaToFolder(event, folder.id)}
+              />
+            ))}
             {visibleAssets.map((asset) => (
               <MediaTile
                 key={asset.id}
@@ -167,18 +260,159 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, highlig
   );
 }
 
-function EmptyState({ onImportClick }: { onImportClick: () => void }) {
+function FolderFilterButton({
+  label,
+  count,
+  active,
+  onClick,
+  onDropToFolder,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  onDropToFolder: (event: DragEvent<HTMLButtonElement>) => void | Promise<void>;
+}) {
+  const [dropOver, setDropOver] = useState(false);
+
+  return (
+    <button
+      className={`rounded px-2 py-0.5 text-[11px] transition ${
+        active ? 'bg-surface-700 text-slate-200' : 'bg-surface-800 text-slate-400'
+      } ${dropOver ? 'ring-1 ring-brand-400 bg-brand-500/20 text-slate-100' : ''}`}
+      onClick={onClick}
+      onDragOver={(event) => {
+        if (!canAcceptMediaDrop(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = dragHasAsset(event) ? 'move' : 'copy';
+        setDropOver(true);
+      }}
+      onDragLeave={() => setDropOver(false)}
+      onDrop={(event) => {
+        setDropOver(false);
+        void onDropToFolder(event);
+      }}
+      title={`Drop media here to move it to ${label}`}
+    >
+      {label}
+      <span className="ml-1 text-slate-500">{count}</span>
+    </button>
+  );
+}
+
+function FolderTile({
+  folder,
+  assetCount,
+  previews,
+  onOpen,
+  onDropToFolder,
+}: {
+  folder: MediaFolder;
+  assetCount: number;
+  previews: MediaAsset[];
+  onOpen: () => void;
+  onDropToFolder: (event: DragEvent<HTMLLIElement>) => void | Promise<void>;
+}) {
+  const [dropOver, setDropOver] = useState(false);
+
+  return (
+    <li
+      data-folder-id={folder.id}
+      className={`group relative overflow-hidden rounded-md border bg-surface-800 transition ${
+        dropOver ? 'border-brand-300 ring-2 ring-brand-400/60' : 'border-surface-700 hover:border-surface-500'
+      }`}
+      onDragOver={(event) => {
+        if (!canAcceptMediaDrop(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = dragHasAsset(event) ? 'move' : 'copy';
+        setDropOver(true);
+      }}
+      onDragLeave={() => setDropOver(false)}
+      onDrop={(event) => {
+        setDropOver(false);
+        void onDropToFolder(event);
+      }}
+    >
+      <button
+        type="button"
+        className="flex w-full flex-col text-left"
+        onClick={onOpen}
+        title={`Open ${folder.name}`}
+      >
+        <div className="relative aspect-video overflow-hidden bg-surface-900">
+          {previews.length > 0 ? (
+            <div className="grid h-full w-full grid-cols-2 gap-px opacity-70">
+              {previews.map((asset) => (
+                <img
+                  key={asset.id}
+                  src={asset.thumbnailDataUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                />
+              ))}
+              {Array.from({ length: Math.max(0, 4 - previews.length) }).map((_, index) => (
+                <div key={index} className="bg-surface-950" />
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-slate-500">
+              <Folder size={28} />
+            </div>
+          )}
+          <div className="absolute inset-0 flex items-center justify-center bg-black/25">
+            <div className="rounded-full bg-surface-950/75 p-2 text-slate-200 shadow-lg">
+              <Folder size={22} />
+            </div>
+          </div>
+          {dropOver && (
+            <div className="absolute inset-0 flex items-center justify-center bg-brand-500/20 text-xs font-semibold text-white">
+              Move here
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-100">
+            <Folder size={12} className="shrink-0 text-slate-400" />
+            <span className="truncate">{folder.name}</span>
+          </div>
+          <span className="shrink-0 rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-400">
+            {assetCount}
+          </span>
+        </div>
+      </button>
+    </li>
+  );
+}
+
+function EmptyState({ onImportClick, folderName }: { onImportClick: () => void; folderName?: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-slate-400">
       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-800">
         <Upload size={18} />
       </div>
-      <div>Drag video, audio, or image files here to add them to your project.</div>
+      <div>
+        {folderName
+          ? `Drop media here to add it to ${folderName}.`
+          : 'Drag video, audio, or image files here to add them to your project.'}
+      </div>
       <button className="btn-ghost text-xs" onClick={onImportClick}>
         Browse files…
       </button>
     </div>
   );
+}
+
+function canAcceptMediaDrop(event: DragEvent<HTMLElement>): boolean {
+  const types = Array.from(event.dataTransfer.types);
+  return types.includes(ASSET_DRAG_MIME) || types.includes('text/plain') || types.includes('Files');
+}
+
+function dragHasAsset(event: DragEvent<HTMLElement>): boolean {
+  const types = Array.from(event.dataTransfer.types);
+  return types.includes(ASSET_DRAG_MIME) || types.includes('text/plain');
 }
 
 function MediaLightbox({ asset, onClose }: { asset: MediaAsset; onClose: () => void }) {
@@ -400,8 +634,9 @@ function MediaTile({
           e.preventDefault();
           return;
         }
-        e.dataTransfer.setData('application/x-genedit-asset', asset.id);
-        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData(ASSET_DRAG_MIME, asset.id);
+        e.dataTransfer.setData('text/plain', asset.id);
+        e.dataTransfer.effectAllowed = 'copyMove';
       }}
       onClick={() => {
         setMenuOpen(false);
