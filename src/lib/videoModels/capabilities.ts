@@ -1,4 +1,4 @@
-export type Aspect = '16:9' | '9:16' | '1:1';
+export type Aspect = '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
 
 export type StructuredPromptSectionIcon =
   | 'subject'
@@ -47,13 +47,17 @@ export type VideoModelDefinition = {
 };
 
 export const DEFAULT_ASPECTS: Aspect[] = ['16:9', '9:16', '1:1'];
+export const SEEDANCE_ASPECTS: Aspect[] = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 export const DEFAULT_RESOLUTIONS = ['720p', '1080p'] as const;
 export const DEFAULT_DURATIONS = ['4s', '6s', '8s'] as const;
 export const KLING_DURATIONS = ['3s', '4s', '5s', '6s', '7s', '8s', '9s', '10s', '11s', '12s', '13s', '14s', '15s'] as const;
+export const SEEDANCE_DURATIONS = ['4s', '5s', '6s', '7s', '8s', '9s', '10s', '11s', '12s', '13s', '14s', '15s'] as const;
 export const KLING_OMNI_IMAGE_REFERENCE_LIMIT = 7;
 export const PIAPI_VEO_STANDARD_MODEL_ID = 'piapi-veo-3.1';
 export const PIAPI_VEO_FAST_MODEL_ID = 'piapi-veo-3.1-fast';
 export const PIAPI_KLING_3_OMNI_MODEL_ID = 'piapi-kling-3-omni';
+export const PIAPI_SEEDANCE_2_MODEL_ID = 'piapi-seedance-2';
+export const PIAPI_SEEDANCE_2_FAST_MODEL_ID = 'piapi-seedance-2-fast';
 
 export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[] = [
   {
@@ -181,6 +185,52 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
       },
     },
   },
+  {
+    id: PIAPI_SEEDANCE_2_MODEL_ID,
+    label: 'Seedance 2.0',
+    provider: 'piapi',
+    priority: 90,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
+    capabilities: {
+      references: true,
+      audio: false,
+      adult: false,
+      durations: [...SEEDANCE_DURATIONS],
+      resolutions: ['480p', '720p', '1080p'],
+      aspects: [...SEEDANCE_ASPECTS],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 12,
+        videoExtension: true,
+      },
+    },
+  },
+  {
+    id: PIAPI_SEEDANCE_2_FAST_MODEL_ID,
+    label: 'Seedance 2.0 Fast',
+    provider: 'piapi',
+    priority: 85,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
+    capabilities: {
+      references: true,
+      audio: false,
+      adult: false,
+      durations: [...SEEDANCE_DURATIONS],
+      resolutions: ['480p', '720p'],
+      aspects: [...SEEDANCE_ASPECTS],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 12,
+        videoExtension: true,
+      },
+    },
+  },
 ];
 
 export const GOOGLE_ALLOWED_VIDEO_MODEL_IDS = new Set(DEFAULT_VIDEO_MODELS.filter((m) => m.provider === 'veo').map((m) => m.id));
@@ -193,6 +243,10 @@ export function isKlingModel(model: VideoModelDefinition): boolean {
   return model.provider === 'kling' || model.id.toLowerCase().includes('kling');
 }
 
+export function isSeedanceModel(model: VideoModelDefinition): boolean {
+  return model.id.toLowerCase().includes('seedance');
+}
+
 export function isPiApiModel(model: VideoModelDefinition): boolean {
   return model.provider === 'piapi' || model.id.toLowerCase().startsWith('piapi-');
 }
@@ -203,6 +257,10 @@ export function isPiApiVeoModel(model: VideoModelDefinition): boolean {
 
 export function isPiApiKlingModel(model: VideoModelDefinition): boolean {
   return isPiApiModel(model) && isKlingModel(model);
+}
+
+export function isPiApiSeedanceModel(model: VideoModelDefinition): boolean {
+  return isPiApiModel(model) && isSeedanceModel(model);
 }
 
 export function isReferencesFeatureSupported(model: VideoModelDefinition): boolean {

@@ -1,6 +1,8 @@
-import { type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { type DragEvent, type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
+import { isBillingErrorText } from '@/lib/videoGeneration/errors';
+import { PIAPI_BILLING_URL } from '@/lib/videoGeneration/piapi';
 import { type MediaFolder, useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -554,7 +556,10 @@ function MediaTile({
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(nameParts.base);
+  const [failureTooltipVisible, setFailureTooltipVisible] = useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const failureTooltipRef = useRef<HTMLDivElement | null>(null);
+  const failureTooltipPositionRef = useRef({ x: 12, y: 12 });
   const skipRenameCommitRef = useRef(false);
   const pointerButtonRef = useRef(0);
   const canInsert = asset.kind !== 'recipe' && asset.generation?.status !== 'generating';
@@ -564,6 +569,7 @@ function MediaTile({
     (asset.kind === 'video' || asset.kind === 'image') &&
     asset.generation?.status !== 'generating';
   const failureMessage = generationFailureMessage(asset);
+  const failureIsBilling = asset.generation?.errorType === 'Billing' || Boolean(failureMessage && isBillingErrorText(failureMessage));
   const generatedWithUi = Boolean(asset.generation) && asset.kind !== 'recipe';
 
   useEffect(() => {
@@ -580,6 +586,18 @@ function MediaTile({
   useEffect(() => {
     if (!renaming) setDraftName(splitFilename(asset.name).base);
   }, [asset.name, renaming]);
+
+  useEffect(() => {
+    if (!failureMessage) setFailureTooltipVisible(false);
+  }, [failureMessage]);
+
+  useLayoutEffect(() => {
+    if (!failureTooltipVisible) return;
+    const tooltip = failureTooltipRef.current;
+    if (!tooltip) return;
+    tooltip.style.left = `${failureTooltipPositionRef.current.x}px`;
+    tooltip.style.top = `${failureTooltipPositionRef.current.y}px`;
+  }, [failureTooltipVisible]);
 
   useEffect(() => {
     if (!renaming) return;
@@ -612,6 +630,24 @@ function MediaTile({
     skipRenameCommitRef.current = true;
     setDraftName(nameParts.base);
     setRenaming(false);
+  };
+
+  const placeFailureTooltip = (event: MouseEvent<HTMLElement>) => {
+    if (!failureMessage) return;
+    const padding = 12;
+    const offsetX = 14;
+    const offsetY = 12;
+    const tooltipWidth = failureTooltipRef.current?.offsetWidth ?? 384;
+    const tooltipHeight = failureTooltipRef.current?.offsetHeight ?? 96;
+    const x = Math.min(event.clientX + offsetX, window.innerWidth - tooltipWidth - padding);
+    const y = Math.max(padding, event.clientY - tooltipHeight - offsetY);
+    const nextPosition = { x: Math.max(padding, x), y };
+    failureTooltipPositionRef.current = nextPosition;
+    if (failureTooltipRef.current) {
+      failureTooltipRef.current.style.left = `${nextPosition.x}px`;
+      failureTooltipRef.current.style.top = `${nextPosition.y}px`;
+    }
+    setFailureTooltipVisible(true);
   };
 
   return (
@@ -656,7 +692,7 @@ function MediaTile({
         setMenuPos({ x: e.clientX, y: e.clientY });
         setMenuOpen(true);
       }}
-      title={failureMessage ?? asset.name}
+      title={asset.name}
     >
       <div className="relative aspect-video bg-surface-900">
         {asset.thumbnailDataUrl ? (
@@ -687,13 +723,38 @@ function MediaTile({
           </div>
         )}
         {asset.generation?.status === 'error' && (
-          <div className="absolute inset-0 flex items-center justify-center bg-red-900/30 text-xs text-white" title={failureMessage ?? 'Generation failed.'}>
-            {failureMessage && (
-              <div className="pointer-events-none absolute left-2 right-2 top-2 z-10 hidden rounded border border-red-300/30 bg-red-950/95 px-2 py-1.5 text-left text-[10px] leading-snug text-red-50 shadow-xl group-hover:block">
-                {failureMessage}
-              </div>
-            )}
-            <div className="rounded bg-red-900/70 px-2 py-1">Generation failed</div>
+          <div
+            className="absolute inset-0 flex items-center justify-center bg-red-900/30 text-xs text-white"
+            aria-label={failureMessage ?? 'Generation failed.'}
+            onMouseEnter={placeFailureTooltip}
+            onMouseMove={placeFailureTooltip}
+            onMouseLeave={() => setFailureTooltipVisible(false)}
+          >
+            <div className="flex flex-col items-center gap-1 rounded bg-red-900/75 px-2 py-1">
+              <span>Generation failed</span>
+              {failureIsBilling && (
+                <a
+                  className="inline-flex items-center gap-1 rounded border border-red-100/40 px-1.5 py-0.5 text-[10px] text-red-50 hover:bg-red-200/10"
+                  href={PIAPI_BILLING_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  Billing
+                  <ExternalLink size={10} />
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+        {failureMessage && failureTooltipVisible && (
+          <div
+            ref={failureTooltipRef}
+            role="tooltip"
+            className="pointer-events-none fixed left-3 top-3 z-[120] max-w-[min(24rem,calc(100vw-1.5rem))] rounded border border-red-300/40 bg-red-950/95 px-2.5 py-2 text-left text-[11px] leading-snug text-red-50 shadow-2xl"
+          >
+            {failureMessage}
           </div>
         )}
         {generatedWithUi && (

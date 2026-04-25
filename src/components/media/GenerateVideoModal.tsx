@@ -5,6 +5,7 @@ import {
   Check,
   Clapperboard,
   Crop,
+  ExternalLink,
   Film,
   FolderOpen,
   Image as ImageIcon,
@@ -28,7 +29,7 @@ import {
   PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
-import { VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
+import { isBillingErrorText, VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
 import {
@@ -36,6 +37,7 @@ import {
   createPiApiVideoTask,
   generatedPiApiVideoFromTask,
   PIAPI_ARTIFACT_TTL_MS,
+  PIAPI_BILLING_URL,
   pollPiApiVideoTask,
 } from '@/lib/videoGeneration/piapi';
 import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
@@ -49,6 +51,7 @@ import {
   isResolutionFeatureSupported,
   isKlingModel,
   isPiApiKlingModel,
+  isPiApiSeedanceModel,
   isPiApiVeoModel,
   isVeoModel,
   missingRequiredStructuredSections,
@@ -87,7 +90,7 @@ type VideoProviderCredentialAvailability = {
 };
 
 const GENERATION_ASPECT_STORAGE_KEY = 'genedit-pro:generation-aspect';
-const GENERATION_ASPECTS: readonly Aspect[] = ['16:9', '9:16', '1:1'];
+const GENERATION_ASPECTS: readonly Aspect[] = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
   subject: UserRound,
@@ -186,7 +189,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   );
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
-  const referencesIgnoredByFrameMode = Boolean(isVeoModel(selectedModel) && (startFrame || endFrame) && references.length > 0);
+  const referencesIgnoredByFrameMode = Boolean((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame) && references.length > 0);
   const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && references.length > 0);
   const generateDisabled = isGenerating ||
     !providerCredentialsAvailable ||
@@ -195,8 +198,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const seconds = Number(duration.replace('s', ''));
     return estimatePiApiCostUsd(selectedModel, resolution, seconds, audioEnabled);
   }, [audioEnabled, duration, resolution, selectedModel]);
-  const imageReferenceLimit = sourceVideo && isKlingModel(selectedModel)
-    ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
+  const imageReferenceLimit = sourceVideo
+    ? isKlingModel(selectedModel)
+      ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
+      : isPiApiSeedanceModel(selectedModel)
+        ? Math.max(0, selectedModel.capabilities.assetInputs.imageReferencesMax - 1)
+        : selectedModel.capabilities.assetInputs.imageReferencesMax
     : selectedModel.capabilities.assetInputs.imageReferencesMax;
   const sourceVideoSupported = selectedModel.capabilities.assetInputs.videoExtension;
   const frameInputsSupported = selectedModel.capabilities.assetInputs.startFrame;
@@ -218,7 +225,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     .filter((asset): asset is MediaAsset => asset !== undefined)
     .filter((asset) => asset.kind === 'image'), [assets, references]);
   const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
-    !(isVeoModel(selectedModel) && (startFrame || endFrame || sourceVideo));
+    !((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame)) &&
+    !(isVeoModel(selectedModel) && sourceVideo);
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
     try {
@@ -410,7 +418,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       kind,
       thumbnail: asset.thumbnailDataUrl,
     };
-    if (!isKlingModel(selectedModel)) setSourceVideo(null);
+    if (!isKlingModel(selectedModel) && !isPiApiSeedanceModel(selectedModel)) setSourceVideo(null);
     setReferences((prev) => [...prev, entry]);
   }
 
@@ -870,6 +878,17 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             {generationError && (
               <div className="flex items-center gap-2 text-xs text-rose-300">
                 <span>{generationError}</span>
+                {isBillingErrorText(generationError) && (
+                  <a
+                    className="inline-flex items-center gap-1 rounded border border-rose-300/40 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/10"
+                    href={PIAPI_BILLING_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open Billing
+                    <ExternalLink size={11} />
+                  </a>
+                )}
                 {(generationError.includes('Missing PiAPI') || generationError.includes('Settings')) && (
                   <button
                     className="rounded border border-rose-300/40 px-2 py-1 text-[11px] text-rose-200 hover:bg-rose-500/10"
@@ -1483,11 +1502,12 @@ function mediaAssetBadgeLabel(asset: MediaAsset): string {
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {
   if (asset.kind !== 'video') return false;
+  if (isPiApiSeedanceModel(model)) return asset.durationSec <= 15.4;
   return isPiApiKlingModel(model);
 }
 
 function providerNameForModel(model: VideoModelDefinition): string {
-  if (isPiApiKlingModel(model) || isPiApiVeoModel(model)) return 'PiAPI';
+  if (isPiApiKlingModel(model) || isPiApiSeedanceModel(model) || isPiApiVeoModel(model)) return 'PiAPI';
   return 'this provider';
 }
 
@@ -1505,7 +1525,7 @@ function hasVideoProviderCredentials(
   model: VideoModelDefinition,
   availability: VideoProviderCredentialAvailability = readVideoProviderCredentialAvailability(),
 ): boolean {
-  if (isPiApiKlingModel(model) || isPiApiVeoModel(model)) return availability.piapi;
+  if (isPiApiKlingModel(model) || isPiApiSeedanceModel(model) || isPiApiVeoModel(model)) return availability.piapi;
   return false;
 }
 
@@ -1543,6 +1563,12 @@ function estimatePiApiCostUsd(
     rate = fast
       ? (audioEnabled ? 0.09 : 0.06)
       : (audioEnabled ? 0.24 : 0.12);
+  } else if (isPiApiSeedanceModel(model)) {
+    const fast = model.id.toLowerCase().includes('fast');
+    if (fast) rate = resolution === '720p' ? 0.16 : 0.08;
+    else if (resolution === '1080p') rate = 0.5;
+    else if (resolution === '720p') rate = 0.2;
+    else rate = 0.1;
   }
   return rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
 }
@@ -1552,6 +1578,7 @@ function formatGenerationError(err: unknown): string {
     const label = {
       NSFW: 'NSFW',
       GuidelinesViolation: 'Guidelines violation',
+      Billing: 'Billing issue',
       InternalError: 'Internal error',
     }[err.type];
     return `${label}: ${err.message}`;

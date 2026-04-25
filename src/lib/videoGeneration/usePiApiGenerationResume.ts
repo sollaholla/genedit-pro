@@ -59,6 +59,7 @@ function formatProviderError(error: VideoGenerationProviderError): string {
   const label = {
     NSFW: 'NSFW',
     GuidelinesViolation: 'Guidelines violation',
+    Billing: 'Billing issue',
     InternalError: 'Internal error',
   }[error.type];
   return `${label}: ${error.message}`;

@@ -1,4 +1,4 @@
-export type GenerationErrorType = 'NSFW' | 'GuidelinesViolation' | 'InternalError';
+export type GenerationErrorType = 'NSFW' | 'GuidelinesViolation' | 'Billing' | 'InternalError';
 
 export class VideoGenerationProviderError extends Error {
   readonly type: GenerationErrorType;
@@ -12,6 +12,7 @@ export class VideoGenerationProviderError extends Error {
 
 export function classifyProviderErrorText(text: string): GenerationErrorType {
   const normalized = text.toLowerCase();
+  if (isBillingErrorText(normalized)) return 'Billing';
   if (/\b(nsfw|sexual|explicit|nudity|nude|porn|adult)\b/.test(normalized)) return 'NSFW';
   if (
     normalized.includes('policy') ||
@@ -26,4 +27,19 @@ export function classifyProviderErrorText(text: string): GenerationErrorType {
     return 'GuidelinesViolation';
   }
   return 'InternalError';
+}
+
+export function isBillingErrorText(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('failed to freeze credit') ||
+    normalized.includes('account credit not enough') ||
+    normalized.includes('credit not enough') ||
+    normalized.includes('insufficient credit') ||
+    normalized.includes('insufficient balance') ||
+    normalized.includes('not enough balance') ||
+    normalized.includes('auto exchange point quota') ||
+    normalized.includes('point quota') ||
+    normalized.includes('quota not enough')
+  );
 }

@@ -1,6 +1,8 @@
 import type { MediaAsset } from '@/types';
 import {
   PIAPI_KLING_3_OMNI_MODEL_ID,
+  PIAPI_SEEDANCE_2_FAST_MODEL_ID,
+  PIAPI_SEEDANCE_2_MODEL_ID,
   PIAPI_VEO_FAST_MODEL_ID,
   PIAPI_VEO_STANDARD_MODEL_ID,
 } from '@/lib/videoModels/capabilities';
@@ -8,6 +10,7 @@ import { classifyProviderErrorText, VideoGenerationProviderError } from './error
 import { assetsByRole, type VideoGenerationMutation } from './mutations';
 
 export const PIAPI_API_BASE_URL = 'https://api.piapi.ai';
+export const PIAPI_BILLING_URL = 'https://piapi.ai/workspace/billing';
 export const PIAPI_ARTIFACT_TTL_MS = 48 * 60 * 60 * 1000;
 
 export type PiApiCredentials = {
@@ -61,6 +64,7 @@ export async function buildPiApiCreateTaskRequest(
   mutation: VideoGenerationMutation,
   options: PiApiCreateTaskOptions = {},
 ): Promise<PiApiCreateTaskRequest> {
+  if (isPiApiSeedanceModelId(mutation.modelId)) return buildPiApiSeedanceRequest(mutation, options);
   if (isPiApiKlingModelId(mutation.modelId)) return buildPiApiKlingOmniRequest(mutation, options);
   if (isPiApiVeoModelId(mutation.modelId)) return buildPiApiVeoRequest(mutation, options);
   throw new VideoGenerationProviderError('InternalError', `${mutation.modelId} is not configured for PiAPI.`);
@@ -253,6 +257,59 @@ async function buildPiApiKlingOmniRequest(
   };
 }
 
+async function buildPiApiSeedanceRequest(
+  mutation: VideoGenerationMutation,
+  options: PiApiCreateTaskOptions,
+): Promise<PiApiCreateTaskRequest> {
+  const startFrames = assetsByRole(mutation, 'start-frame');
+  const endFrames = assetsByRole(mutation, 'end-frame');
+  const referenceImages = assetsByRole(mutation, 'reference-image');
+  const sourceVideos = assetsByRole(mutation, 'source-video');
+
+  validatePiApiSeedanceMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
+
+  const hasFrameMode = startFrames.length > 0 || endFrames.length > 0;
+  const imageUrls = hasFrameMode
+    ? await Promise.all([
+      ...startFrames.map((asset) => resolvePiApiReferenceUrl(asset, 'Seedance start frame', options)),
+      ...endFrames.map((asset) => resolvePiApiReferenceUrl(asset, 'Seedance end frame', options)),
+    ])
+    : await Promise.all(
+      referenceImages.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance image reference ${index + 1}`, options)),
+    );
+  const videoUrls = hasFrameMode
+    ? []
+    : await Promise.all(
+      sourceVideos.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)),
+    );
+
+  const mode = hasFrameMode
+    ? 'first_last_frames'
+    : imageUrls.length > 0 || videoUrls.length > 0
+      ? 'omni_reference'
+      : 'text_to_video';
+  const input: Record<string, unknown> = {
+    prompt: hasFrameMode ? rewriteSeedanceFramePrompt(mutation.prompt, startFrames.length, endFrames.length) : mutation.prompt,
+    mode,
+    duration: mutation.config.durationSeconds,
+    resolution: mutation.config.resolution,
+    aspect_ratio: hasFrameMode ? 'auto' : mutation.config.aspectRatio,
+  };
+  if (imageUrls.length > 0) input.image_urls = imageUrls;
+  if (videoUrls.length > 0) input.video_urls = videoUrls;
+
+  return {
+    body: {
+      model: 'seedance',
+      task_type: mutation.modelId === PIAPI_SEEDANCE_2_FAST_MODEL_ID ? 'seedance-2-fast' : 'seedance-2',
+      input,
+      config: {
+        service_mode: 'public',
+      },
+    },
+  };
+}
+
 function validatePiApiVeoMutation({
   startFrames,
   endFrames,
@@ -310,6 +367,48 @@ function validatePiApiKlingMutation({
   for (const asset of sourceVideos) {
     if (asset.kind !== 'video') throw new Error(`${asset.name} must be a video input.`);
   }
+}
+
+function validatePiApiSeedanceMutation({
+  startFrames,
+  endFrames,
+  referenceImages,
+  sourceVideos,
+  mutation,
+}: {
+  startFrames: MediaAsset[];
+  endFrames: MediaAsset[];
+  referenceImages: MediaAsset[];
+  sourceVideos: MediaAsset[];
+  mutation: VideoGenerationMutation;
+}) {
+  const hasFrameMode = startFrames.length > 0 || endFrames.length > 0;
+  if (mutation.config.durationSeconds < 4 || mutation.config.durationSeconds > 15) {
+    throw new Error('Seedance 2.0 duration must be between 4 and 15 seconds.');
+  }
+  if (startFrames.length > 1) throw new Error('Seedance accepts one start frame.');
+  if (endFrames.length > 1) throw new Error('Seedance accepts one end frame.');
+  if (endFrames.length > 0 && startFrames.length === 0) throw new Error('A Seedance end frame requires a start frame.');
+  if (sourceVideos.length > 1) throw new Error('Seedance accepts one video reference.');
+  if ((startFrames.length > 0 || endFrames.length > 0) && sourceVideos.length > 0) {
+    throw new Error('Seedance video references cannot be combined with first/last frame mode.');
+  }
+  if (!hasFrameMode && referenceImages.length + sourceVideos.length > 12) throw new Error('Seedance accepts up to 12 total references.');
+  const imagesToValidate = hasFrameMode ? [...startFrames, ...endFrames] : [...startFrames, ...endFrames, ...referenceImages];
+  for (const asset of imagesToValidate) {
+    if (asset.kind !== 'image') throw new Error(`${asset.name} must be an image input.`);
+  }
+  for (const asset of sourceVideos) {
+    if (asset.kind !== 'video') throw new Error(`${asset.name} must be a video input.`);
+    if (asset.durationSec > 15.4) throw new Error(`${asset.name} is too long for Seedance video reference mode. Use a video under 15.4 seconds.`);
+  }
+}
+
+function rewriteSeedanceFramePrompt(prompt: string, startFrameCount: number, endFrameCount: number): string {
+  let next = prompt;
+  if (startFrameCount > 0) next = next.replace(/@start-frame\b/gi, '@image1');
+  if (endFrameCount > 0) next = next.replace(/@end-frame\b/gi, `@image${startFrameCount + 1}`);
+  return next;
 }
 
 async function piApiFetch(path: string, credentials: PiApiCredentials, init: RequestInit): Promise<Response> {
@@ -370,8 +469,10 @@ function piApiTaskFailure(
 
 function classifyPiApiError(status: number, code: number | undefined, message: string) {
   if (status === 401 || status === 403) return 'InternalError';
+  const classified = classifyProviderErrorText(message);
+  if (classified !== 'InternalError') return classified;
   if (status >= 500 || (code !== undefined && code >= 5000)) return 'InternalError';
-  return classifyProviderErrorText(message);
+  return classified;
 }
 
 function hasPiApiTaskError(task: PiApiTaskData): boolean {
@@ -467,6 +568,10 @@ function isPiApiVeoModelId(modelId: string): boolean {
 
 function isPiApiKlingModelId(modelId: string): boolean {
   return modelId === PIAPI_KLING_3_OMNI_MODEL_ID;
+}
+
+function isPiApiSeedanceModelId(modelId: string): boolean {
+  return modelId === PIAPI_SEEDANCE_2_MODEL_ID || modelId === PIAPI_SEEDANCE_2_FAST_MODEL_ID;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

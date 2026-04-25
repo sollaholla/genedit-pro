@@ -65,7 +65,7 @@ export function SettingsModal({ open, onClose }: Props) {
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
             <div className="text-sm font-semibold text-slate-100">{tab === 'connections' ? 'Connections' : 'General'}</div>
-            <button className="rounded p-1 text-slate-400 hover:bg-surface-800 hover:text-slate-200" onClick={onClose}>
+            <button className="rounded p-1 text-slate-400 hover:bg-surface-800 hover:text-slate-200" onClick={onClose} title="Close settings" aria-label="Close settings">
               <X size={16} />
             </button>
           </div>
@@ -108,13 +108,13 @@ function PiApiConnectionCard({
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-slate-200">PiAPI</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">One key enables Veo 3.1, Veo 3.1 Fast, and Kling 3.0 Omni.</div>
+          <div className="mt-0.5 text-[11px] text-slate-500">One key enables Veo 3.1, Seedance 2.0, and Kling 3.0 Omni.</div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <a
             href="https://piapi.ai/workspace/veo3"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
           >
             Veo <ExternalLink size={11} />
@@ -122,10 +122,18 @@ function PiApiConnectionCard({
           <a
             href="https://piapi.ai/workspace/kling"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
           >
             Kling <ExternalLink size={11} />
+          </a>
+          <a
+            href="https://piapi.ai/workspace/seedance"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded border border-surface-600 px-2 py-1 text-[11px] text-slate-300 hover:border-brand-400 hover:text-slate-100"
+          >
+            Seedance <ExternalLink size={11} />
           </a>
         </div>
       </div>
