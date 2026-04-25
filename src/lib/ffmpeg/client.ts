@@ -1,8 +1,17 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
 
-const CORE_VERSION = '0.12.6';
-const CORE_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/umd`;
+const CORE_VERSION = '0.12.9';
+const CORE_CDN_CANDIDATES = [
+  {
+    label: 'unpkg',
+    baseURL: `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/esm`,
+  },
+  {
+    label: 'jsDelivr',
+    baseURL: `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`,
+  },
+] as const;
 
 let instance: FFmpeg | null = null;
 let loadingPromise: Promise<FFmpeg> | null = null;
@@ -14,17 +23,36 @@ export async function getFFmpeg(onLog?: LoadProgress): Promise<FFmpeg> {
   if (loadingPromise) return loadingPromise;
 
   loadingPromise = (async () => {
-    const ffmpeg = new FFmpeg();
-    if (onLog) {
-      ffmpeg.on('log', ({ message }) => onLog(message));
+    const errors: string[] = [];
+
+    for (const candidate of CORE_CDN_CANDIDATES) {
+      const ffmpeg = new FFmpeg();
+      if (onLog) {
+        onLog(`Loading encoder core from ${candidate.label}...`);
+        ffmpeg.on('log', ({ message }) => onLog(message));
+      }
+
+      try {
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${candidate.baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${candidate.baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        instance = ffmpeg;
+        return ffmpeg;
+      } catch (error) {
+        ffmpeg.terminate();
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${candidate.label}: ${message}`);
+      }
     }
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
-    instance = ffmpeg;
-    return ffmpeg;
+
+    throw new Error(`Failed to load FFmpeg encoder core. ${errors.join(' | ')}`);
   })();
 
-  return loadingPromise;
+  try {
+    return await loadingPromise;
+  } catch (error) {
+    loadingPromise = null;
+    throw error;
+  }
 }
