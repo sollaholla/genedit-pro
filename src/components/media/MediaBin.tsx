@@ -330,6 +330,7 @@ function MediaTile({
     (asset.kind === 'video' || asset.kind === 'image') &&
     asset.generation?.status !== 'generating';
   const failureMessage = generationFailureMessage(asset);
+  const generatedWithUi = Boolean(asset.generation) && asset.kind !== 'recipe';
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -441,7 +442,7 @@ function MediaTile({
           </span>
         )}
         {statusLabel && (
-          <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-white">
+          <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-mono text-white">
             {statusLabel}
           </span>
         )}
@@ -459,6 +460,14 @@ function MediaTile({
             )}
             <div className="rounded bg-red-900/70 px-2 py-1">Generation failed</div>
           </div>
+        )}
+        {generatedWithUi && (
+          <span
+            className="absolute bottom-1 right-1 z-20 flex h-5 w-5 items-center justify-center rounded bg-brand-500/95 text-white shadow-[0_0_0_1px_rgba(255,255,255,0.18)]"
+            title="Generated with AI"
+          >
+            <Sparkles size={11} />
+          </span>
         )}
         {asset.kind !== 'recipe' && asset.generation?.status !== 'generating' && (
           <button

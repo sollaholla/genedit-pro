@@ -5,6 +5,7 @@ import { createInitialProject } from '@/lib/timeline/operations';
 import { normalizeColorCorrectionData } from '@/lib/components/colorCorrection';
 
 const STORAGE_KEY = 'genedit-pro:project';
+const LEGACY_ASSETS_KEY = 'genedit-pro:assets';
 const MAX_HISTORY = 500;
 
 function loadProject(): Project {
@@ -13,6 +14,13 @@ function loadProject(): Project {
     if (!raw) return createInitialProject();
     const parsed = JSON.parse(raw) as Project;
     if (!parsed.tracks || !parsed.clips) return createInitialProject();
+    const storedGenerationSpend = parsed.metadata?.aiGenerationSpendUsd;
+    parsed.metadata = {
+      ...parsed.metadata,
+      aiGenerationSpendUsd: Number.isFinite(storedGenerationSpend)
+        ? storedGenerationSpend
+        : legacyGenerationSpendFromStoredAssets(),
+    };
     parsed.tracks = parsed.tracks.map((t, i) => ({
       ...t,
       name: (t as { name?: string }).name ?? `${t.kind === 'video' ? 'Video' : 'Audio'} ${i + 1}`,
@@ -133,6 +141,7 @@ type ProjectState = {
   redo: () => void;
   rename: (name: string) => void;
   reset: () => void;
+  recordGenerationCost: (amountUsd: number) => void;
 };
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -204,6 +213,47 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     scheduleSave(fresh);
     set({ project: fresh, _past: [], _future: [] });
   },
+
+  recordGenerationCost: (amountUsd) => {
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return;
+    const next = addGenerationSpend(get().project, amountUsd);
+    scheduleSave(next);
+    set({ project: next });
+  },
 }));
 
 export const projectOps = ops;
+
+function addGenerationSpend(project: Project, amountUsd: number): Project {
+  const current = project.metadata?.aiGenerationSpendUsd ?? 0;
+  return {
+    ...project,
+    metadata: {
+      ...project.metadata,
+      aiGenerationSpendUsd: Number((current + amountUsd).toFixed(4)),
+    },
+  };
+}
+
+function legacyGenerationSpendFromStoredAssets(): number {
+  try {
+    const raw = localStorage.getItem(LEGACY_ASSETS_KEY);
+    if (!raw) return 0;
+    const assets = JSON.parse(raw) as Array<{
+      kind?: string;
+      generation?: {
+        status?: string;
+        actualCostUsd?: number;
+        estimatedCostUsd?: number;
+      };
+    }>;
+    const total = assets.reduce((sum, asset) => {
+      if ((asset.kind !== 'video' && asset.kind !== 'image') || asset.generation?.status !== 'done') return sum;
+      const cost = asset.generation.actualCostUsd ?? asset.generation.estimatedCostUsd ?? 0;
+      return Number.isFinite(cost) ? sum + cost : sum;
+    }, 0);
+    return Number(total.toFixed(4));
+  } catch {
+    return 0;
+  }
+}

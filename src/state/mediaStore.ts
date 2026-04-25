@@ -6,6 +6,7 @@ import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/e
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
+import { useProjectStore } from '@/state/projectStore';
 
 const ASSETS_KEY = 'genedit-pro:assets';
 const FOLDERS_KEY = 'genedit-pro:folders';
@@ -444,6 +445,17 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     const blobKey = `blob_${nanoid(12)}`;
     await putBlob(blobKey, file, file.name);
 
+    const existing = get().assets.find((a) => a.id === id);
+    const accountedAt = existing?.generation?.costAccountedAt;
+    const actualCostUsd = metadata.actualCostUsd ?? existing?.generation?.estimatedCostUsd;
+    const shouldAccountCost = Boolean(
+      existing &&
+      existing.generation?.status !== 'done' &&
+      !accountedAt &&
+      Number.isFinite(actualCostUsd) &&
+      (actualCostUsd ?? 0) > 0,
+    );
+
     const next: MediaAsset[] = get().assets.map((a) => (a.id === id
       ? {
           ...a,
@@ -460,15 +472,24 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             status: 'done' as const,
             progress: 100,
             estimatedCostUsd: a.generation?.estimatedCostUsd,
-            actualCostUsd: metadata.actualCostUsd ?? a.generation?.estimatedCostUsd,
+            actualCostUsd,
             provider: metadata.provider ?? a.generation?.provider,
             providerArtifactUri: metadata.providerArtifactUri ?? a.generation?.providerArtifactUri,
             providerArtifactExpiresAt: metadata.providerArtifactExpiresAt ?? a.generation?.providerArtifactExpiresAt,
+            costAccountedUsd: shouldAccountCost
+              ? actualCostUsd
+              : a.generation?.costAccountedUsd,
+            costAccountedAt: shouldAccountCost
+              ? Date.now()
+              : a.generation?.costAccountedAt,
           },
         }
       : a));
     saveAssets(next);
     set({ assets: next });
+    if (shouldAccountCost) {
+      useProjectStore.getState().recordGenerationCost(actualCostUsd ?? 0);
+    }
   },
 
   failGeneratedAsset: (id, failure = {}) => {

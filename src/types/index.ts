@@ -69,6 +69,8 @@ export type MediaAsset = {
     errorType?: GenerationErrorType;
     errorMessage?: string;
     failedAt?: number;
+    costAccountedUsd?: number;
+    costAccountedAt?: number;
   };
   recipe?: GenerateRecipe;
   createdAt: number;
@@ -192,6 +194,9 @@ export type Project = {
   fps: number;
   width: number;
   height: number;
+  metadata?: {
+    aiGenerationSpendUsd?: number;
+  };
   tracks: Track[];
   clips: Clip[];
 };

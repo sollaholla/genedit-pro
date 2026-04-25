@@ -101,7 +101,7 @@ export function ExportDialog({ open, onClose }: Props) {
             </div>
           )}
 
-          {logTail.length > 0 && busy && (
+          {logTail.length > 0 && (busy || exportState.status === 'error') && (
             <details className="text-[11px] text-slate-500">
               <summary className="cursor-pointer select-none">Encoder log</summary>
               <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-tight">

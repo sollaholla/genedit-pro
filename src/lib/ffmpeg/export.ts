@@ -109,10 +109,16 @@ async function execOrThrow(
   ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
   args: string[],
   label: string,
+  recentLogs: string[],
 ): Promise<void> {
   const code = await ffmpeg.exec(args);
   if (code !== 0) {
-    throw new Error(`FFmpeg ${label} failed with exit code ${code}.`);
+    const tail = recentLogs.slice(-8).join('\n');
+    throw new Error([
+      `FFmpeg ${label} failed with exit code ${code}.`,
+      tail ? `Last encoder log:\n${tail}` : '',
+      `Command: ffmpeg ${args.join(' ')}`,
+    ].filter(Boolean).join('\n'));
   }
 }
 
@@ -199,7 +205,8 @@ export async function exportProject(
   if (totalDuration <= 0) throw new Error('Timeline is empty. Add at least one clip to export.');
 
   onStatus?.('Loading encoder…');
-  const ffmpeg = await getFFmpeg(onLog);
+  const recentLogs: string[] = [];
+  const ffmpeg = await getFFmpeg();
 
   const assetById = new Map(assets.map((a) => [a.id, a]));
   const segments = planSegments(project);
@@ -230,7 +237,13 @@ export async function exportProject(
   const progressHandler = (p: { progress: number }) => {
     lastFfmpegProgress = Math.max(0, Math.min(1, p.progress));
   };
+  const logHandler = ({ message }: { message: string }) => {
+    recentLogs.push(message);
+    if (recentLogs.length > 40) recentLogs.shift();
+    onLog?.(message);
+  };
   ffmpeg.on('progress', progressHandler);
+  ffmpeg.on('log', logHandler);
 
   try {
     for (let i = 0; i < segments.length; i++) {
@@ -250,8 +263,14 @@ export async function exportProject(
         if (asset) {
           const startInSource = seg.videoLayer.clip.inSec
             + (seg.startSec - seg.videoLayer.clip.startSec) * clipSpeed(seg.videoLayer.clip);
-          args.push('-ss', startInSource.toFixed(3));
-          args.push('-t', segDuration.toFixed(3));
+          if (asset.kind === 'image') {
+            args.push('-loop', '1');
+            args.push('-framerate', String(project.fps));
+            args.push('-t', segDuration.toFixed(3));
+          } else {
+            args.push('-ss', startInSource.toFixed(3));
+            args.push('-t', segDuration.toFixed(3));
+          }
           args.push('-i', vfsNameForAsset(asset));
           videoInputIndex = nextIndex++;
         }
@@ -315,7 +334,7 @@ export async function exportProject(
       args.push('-y', outName);
 
       lastFfmpegProgress = 0;
-      await execOrThrow(ffmpeg, args, `segment ${i + 1}/${segments.length}`);
+      await execOrThrow(ffmpeg, args, `segment ${i + 1}/${segments.length}`, recentLogs);
       const segmentData = (await ffmpeg.readFile(outName)) as Uint8Array;
       const segmentCopy = new Uint8Array(segmentData.byteLength);
       segmentCopy.set(segmentData);
@@ -344,7 +363,7 @@ export async function exportProject(
       '-c', 'copy',
       '-movflags', '+faststart',
       '-y', outputFile,
-    ], 'final mux');
+    ], 'final mux', recentLogs);
 
     const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
     onProgress?.(1);
@@ -356,6 +375,7 @@ export async function exportProject(
     throw new Error(exportErrorMessage(error));
   } finally {
     ffmpeg.off('progress', progressHandler);
+    ffmpeg.off('log', logHandler);
     for (const file of temporaryFiles) {
       await ffmpeg.deleteFile(file).catch(() => undefined);
     }

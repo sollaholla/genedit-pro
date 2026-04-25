@@ -398,6 +398,9 @@ export function createInitialProject(): Project {
     fps: 30,
     width: 1920,
     height: 1080,
+    metadata: {
+      aiGenerationSpendUsd: 0,
+    },
     tracks: [v1, v2, a1, a2],
     clips: [],
   };
