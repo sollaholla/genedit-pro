@@ -3,6 +3,7 @@ import type { ComponentInstance, Project } from '@/types';
 import * as ops from '@/lib/timeline/operations';
 import { createInitialProject } from '@/lib/timeline/operations';
 import { normalizeColorCorrectionData } from '@/lib/components/colorCorrection';
+import { nextHistorySeq, notifyHistoryMutation, subscribeHistoryMutation } from './historyClock';
 
 const STORAGE_KEY = 'genedit-pro:project';
 const LEGACY_ASSETS_KEY = 'genedit-pro:assets';
@@ -129,6 +130,8 @@ type ProjectState = {
   project: Project;
   _past: Project[];
   _future: Project[];
+  _pastSeq: number[];
+  _futureSeq: number[];
   /** Push fn(project) to history and update project. Clears redo stack. */
   update: (fn: (p: Project) => Project) => void;
   /** Update project without touching history (use during a drag gesture). */
@@ -139,6 +142,8 @@ type ProjectState = {
   cancelTx: () => void;
   undo: () => void;
   redo: () => void;
+  peekUndoSeq: () => number | null;
+  peekRedoSeq: () => number | null;
   rename: (name: string) => void;
   reset: () => void;
   recordGenerationCost: (amountUsd: number) => void;
@@ -160,13 +165,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   project: loadProject(),
   _past: [],
   _future: [],
+  _pastSeq: [],
+  _futureSeq: [],
 
   update: (fn) => {
-    const { project, _past } = get();
+    const { project, _past, _pastSeq } = get();
     const next = fn(project);
-    const past = [..._past.slice(-(MAX_HISTORY - 1)), project];
+    const past = [..._past, project].slice(-MAX_HISTORY);
+    const pastSeq = [..._pastSeq, nextHistorySeq()].slice(-MAX_HISTORY);
     scheduleSave(next);
-    set({ project: next, _past: past, _future: [] });
+    set({ project: next, _past: past, _pastSeq: pastSeq, _future: [], _futureSeq: [] });
+    notifyHistoryMutation('project');
   },
 
   updateSilent: (fn) => {
@@ -176,32 +185,61 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   beginTx: () => {
-    const { project, _past } = get();
-    set({ _past: [..._past.slice(-(MAX_HISTORY - 1)), project], _future: [] });
+    const { project, _past, _pastSeq } = get();
+    set({
+      _past: [..._past, project].slice(-MAX_HISTORY),
+      _pastSeq: [..._pastSeq, nextHistorySeq()].slice(-MAX_HISTORY),
+      _future: [],
+      _futureSeq: [],
+    });
+    notifyHistoryMutation('project');
   },
 
   cancelTx: () => {
-    const { _past } = get();
+    const { _past, _pastSeq } = get();
     if (_past.length === 0) return;
     const prev = _past[_past.length - 1]!;
     scheduleSave(prev);
-    set({ project: prev, _past: _past.slice(0, -1) });
+    set({ project: prev, _past: _past.slice(0, -1), _pastSeq: _pastSeq.slice(0, -1) });
   },
 
   undo: () => {
-    const { project, _past, _future } = get();
+    const { project, _past, _future, _pastSeq, _futureSeq } = get();
     if (_past.length === 0) return;
     const prev = _past[_past.length - 1]!;
+    const seq = _pastSeq[_pastSeq.length - 1] ?? nextHistorySeq();
     scheduleSave(prev);
-    set({ project: prev, _past: _past.slice(0, -1), _future: [project, ..._future] });
+    set({
+      project: prev,
+      _past: _past.slice(0, -1),
+      _pastSeq: _pastSeq.slice(0, -1),
+      _future: [project, ..._future],
+      _futureSeq: [seq, ..._futureSeq],
+    });
   },
 
   redo: () => {
-    const { project, _past, _future } = get();
+    const { project, _past, _future, _pastSeq, _futureSeq } = get();
     if (_future.length === 0) return;
     const next = _future[0]!;
     scheduleSave(next);
-    set({ project: next, _past: [..._past.slice(-(MAX_HISTORY - 1)), project], _future: _future.slice(1) });
+    set({
+      project: next,
+      _past: [..._past, project].slice(-MAX_HISTORY),
+      _pastSeq: [..._pastSeq, nextHistorySeq()].slice(-MAX_HISTORY),
+      _future: _future.slice(1),
+      _futureSeq: _futureSeq.slice(1),
+    });
+  },
+
+  peekUndoSeq: () => {
+    const { _pastSeq } = get();
+    return _pastSeq.length ? _pastSeq[_pastSeq.length - 1]! : null;
+  },
+
+  peekRedoSeq: () => {
+    const { _futureSeq } = get();
+    return _futureSeq.length ? _futureSeq[0]! : null;
   },
 
   rename: (name) => {
@@ -211,7 +249,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   reset: () => {
     const fresh = createInitialProject();
     scheduleSave(fresh);
-    set({ project: fresh, _past: [], _future: [] });
+    set({ project: fresh, _past: [], _pastSeq: [], _future: [], _futureSeq: [] });
   },
 
   recordGenerationCost: (amountUsd) => {
@@ -223,6 +261,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 }));
 
 export const projectOps = ops;
+
+subscribeHistoryMutation((domain) => {
+  if (domain === 'project') return;
+  useProjectStore.setState({ _future: [], _futureSeq: [] });
+});
 
 function addGenerationSpend(project: Project, amountUsd: number): Project {
   const current = project.metadata?.aiGenerationSpendUsd ?? 0;

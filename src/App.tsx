@@ -11,6 +11,7 @@ import { MasterBussPanel } from '@/components/audio/MasterBussPanel';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { GenerateVideoModal } from '@/components/media/GenerateVideoModal';
 import { useProjectStore } from '@/state/projectStore';
+import { usePlaybackStore } from '@/state/playbackStore';
 import type { MediaAsset } from '@/types';
 import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
@@ -23,8 +24,6 @@ export default function App() {
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
   const reset = useProjectStore((s) => s.reset);
-  const undo = useProjectStore((s) => s.undo);
-  const redo = useProjectStore((s) => s.redo);
 
   useEffect(() => {
     if (!highlightedMediaAssetId) return undefined;
@@ -45,13 +44,13 @@ export default function App() {
 
       event.preventDefault();
       event.stopPropagation();
-      if (isUndo) undo();
-      else redo();
+      if (isUndo) undoLatestHistoryEntry();
+      else redoNextHistoryEntry();
     };
 
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [redo, undo]);
+  }, []);
 
   const openImport = () => importerRef.current?.openPicker();
 
@@ -106,6 +105,30 @@ export default function App() {
       />
     </>
   );
+}
+
+function undoLatestHistoryEntry() {
+  const projectState = useProjectStore.getState();
+  const playbackState = usePlaybackStore.getState();
+  const projectSeq = projectState.peekUndoSeq();
+  const selectionSeq = playbackState.peekSelectionUndoSeq();
+  if (selectionSeq !== null && (projectSeq === null || selectionSeq > projectSeq)) {
+    playbackState.undoSelection();
+    return;
+  }
+  projectState.undo();
+}
+
+function redoNextHistoryEntry() {
+  const projectState = useProjectStore.getState();
+  const playbackState = usePlaybackStore.getState();
+  const projectSeq = projectState.peekRedoSeq();
+  const selectionSeq = playbackState.peekSelectionRedoSeq();
+  if (selectionSeq !== null && (projectSeq === null || selectionSeq < projectSeq)) {
+    playbackState.redoSelection();
+    return;
+  }
+  projectState.redo();
 }
 
 function isTextEditingTarget(target: EventTarget | null): boolean {

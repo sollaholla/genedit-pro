@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Loader2, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
@@ -52,12 +52,10 @@ function useProjectHistoryGesture() {
     endHistoryGesture: () => {
       activeRef.current = false;
     },
-    currentHistoryMode: (): ProjectHistoryMode => (activeRef.current ? 'silent' : 'normal'),
   };
 }
 
 export function ClipInspector() {
-  const [applyingSpeed, setApplyingSpeed] = useState(false);
   const [componentPickerOpen, setComponentPickerOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState('');
   const [draggingComponentId, setDraggingComponentId] = useState<string | null>(null);
@@ -76,6 +74,7 @@ export function ClipInspector() {
   const update = useProjectStore((s) => s.update);
   const updateSilent = useProjectStore((s) => s.updateSilent);
   const assets = useMediaStore((s) => s.assets);
+  const speedGesture = useProjectHistoryGesture();
   const clipVolumeGesture = useProjectHistoryGesture();
 
   useEffect(() => {
@@ -115,13 +114,9 @@ export function ClipInspector() {
     const apply = mode === 'silent' ? updateSilent : update;
     apply((p) => setClipProp(p, selectedId, 'volume', v));
   };
-  const setSpeedAsync = async (nextSpeed: number) => {
-    setApplyingSpeed(true);
-    // Keep speed updates async so any future time-stretch preprocessing
-    // can happen off the immediate input event path.
-    await new Promise<void>((resolve) => setTimeout(resolve, 120));
-    update((p) => setClipProp(p, selectedId, 'speed', nextSpeed));
-    setApplyingSpeed(false);
+  const setSpeed = (nextSpeed: number, mode: ProjectHistoryMode = 'normal') => {
+    const apply = mode === 'silent' ? updateSilent : update;
+    apply((p) => setClipProp(p, selectedId, 'speed', nextSpeed));
   };
   const envelopeEnabled = clip.volumeEnvelope?.enabled ?? false;
   const hasCustomEnvelope =
@@ -181,12 +176,11 @@ export function ClipInspector() {
                 type="button"
                 className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-300 hover:bg-surface-600 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-35"
                 title="Reset speed"
-                disabled={applyingSpeed || Math.abs(speed - 1) < 0.001}
-                onClick={() => void setSpeedAsync(1)}
+                disabled={Math.abs(speed - 1) < 0.001}
+                onClick={() => setSpeed(1)}
               >
                 <RotateCcw size={11} />
               </button>
-              {applyingSpeed && <Loader2 size={12} className="animate-spin text-brand-400" />}
               <span className="font-mono text-xs text-slate-200">{speed.toFixed(2)}x</span>
             </div>
           </div>
@@ -196,10 +190,14 @@ export function ClipInspector() {
             max={SPEED_SLIDER_MAX}
             step={0.05}
             value={speed}
-            disabled={applyingSpeed}
+            onPointerUp={speedGesture.endHistoryGesture}
+            onPointerCancel={speedGesture.endHistoryGesture}
+            onKeyUp={speedGesture.endHistoryGesture}
+            onBlur={speedGesture.endHistoryGesture}
             onChange={(e) => {
               const next = Number(e.target.value);
-              void setSpeedAsync(next);
+              speedGesture.beginHistoryGesture();
+              setSpeed(next, 'silent');
             }}
             className="volume-slider w-full"
           />
@@ -248,11 +246,14 @@ export function ClipInspector() {
               max={200}
               step={1}
               value={Math.round((clip.volume ?? 1) * 100)}
-              onPointerDown={clipVolumeGesture.beginHistoryGesture}
               onPointerUp={clipVolumeGesture.endHistoryGesture}
               onPointerCancel={clipVolumeGesture.endHistoryGesture}
+              onKeyUp={clipVolumeGesture.endHistoryGesture}
               onBlur={clipVolumeGesture.endHistoryGesture}
-              onChange={(e) => setVolume(Number(e.target.value) / 100, clipVolumeGesture.currentHistoryMode())}
+              onChange={(e) => {
+                clipVolumeGesture.beginHistoryGesture();
+                setVolume(Number(e.target.value) / 100, 'silent');
+              }}
               className="volume-slider w-full"
             />
             <div className="flex justify-between text-[10px] text-slate-500">
@@ -506,7 +507,7 @@ function TransformComponentCard({
 }) {
   const update = useProjectStore((s) => s.update);
   const updateSilent = useProjectStore((s) => s.updateSilent);
-  const { beginHistoryGesture, endHistoryGesture, currentHistoryMode } = useProjectHistoryGesture();
+  const { beginHistoryGesture, endHistoryGesture } = useProjectHistoryGesture();
   const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
   const hasKeyframes = hasTransformKeyframes(component);
 
@@ -611,10 +612,13 @@ function TransformComponentCard({
         max={200}
         step={1}
         value={Math.round(resolvedTransform.scale * 100)}
-        onChange={(e) => setPropertyAtPlayhead('scale', Number(e.target.value) / 100, currentHistoryMode())}
-        onPointerDown={beginHistoryGesture}
+        onChange={(e) => {
+          beginHistoryGesture();
+          setPropertyAtPlayhead('scale', Number(e.target.value) / 100, 'silent');
+        }}
         onPointerUp={endHistoryGesture}
         onPointerCancel={endHistoryGesture}
+        onKeyUp={endHistoryGesture}
         onBlur={endHistoryGesture}
         className="volume-slider w-full"
       />
@@ -941,7 +945,7 @@ function ToneSlider({
   suffix: string;
   onChange: (value: number, mode?: ProjectHistoryMode) => void;
 }) {
-  const { beginHistoryGesture, endHistoryGesture, currentHistoryMode } = useProjectHistoryGesture();
+  const { beginHistoryGesture, endHistoryGesture } = useProjectHistoryGesture();
 
   return (
     <div className="space-y-1">
@@ -958,11 +962,14 @@ function ToneSlider({
         max={max}
         step={step}
         value={value}
-        onPointerDown={beginHistoryGesture}
         onPointerUp={endHistoryGesture}
         onPointerCancel={endHistoryGesture}
+        onKeyUp={endHistoryGesture}
         onBlur={endHistoryGesture}
-        onChange={(e) => onChange(Number(e.target.value), currentHistoryMode())}
+        onChange={(e) => {
+          beginHistoryGesture();
+          onChange(Number(e.target.value), 'silent');
+        }}
         className="volume-slider w-full"
       />
     </div>

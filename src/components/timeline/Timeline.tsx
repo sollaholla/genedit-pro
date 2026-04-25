@@ -75,6 +75,7 @@ export function Timeline() {
   const selectClip = usePlaybackStore((s) => s.selectClip);
   const toggleClipSelection = usePlaybackStore((s) => s.toggleClipSelection);
   const setClipSelection = usePlaybackStore((s) => s.setClipSelection);
+  const commitClipSelection = usePlaybackStore((s) => s.commitClipSelection);
   const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
   const hideKeyframeComponents = usePlaybackStore((s) => s.hideKeyframeComponents);
   // Convenience: the single-selected clip ID (when exactly one is selected).
@@ -343,10 +344,14 @@ export function Timeline() {
       ? selectedClipBounds(useProjectStore.getState().project.clips.filter((candidate) => priorSelection.includes(candidate.id)))
       : null;
 
-    beginTx();
-
     const startX = e.clientX;
     let lastGhost: DragOverlay | null = null;
+    let txStarted = false;
+    const ensureTx = () => {
+      if (txStarted) return;
+      beginTx();
+      txStarted = true;
+    };
 
     const move = (ev: MouseEvent) => {
       const el = scrollRef.current;
@@ -389,21 +394,25 @@ export function Timeline() {
               pxPerSec,
             ) - groupBounds.startSec
           : dt;
+        ensureTx();
         updateSilent((p) => moveClipsBy(p, priorSelection, snappedDelta));
         lastGhost = null;
         setDragOverlay(null);
       } else if (isAudioExtraction) {
         // Video stays put; show ghost on target audio track
+        ensureTx();
         updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         const ghost: DragOverlay = { clipId, ghostTrackIdx: trackIdx, isAudioExtraction: true };
         lastGhost = ghost;
         setDragOverlay(ghost);
       } else if (compatible) {
+        ensureTx();
         updateSilent((p) => moveClip(p, clipId, candidate, targetTrack.id));
         lastGhost = null;
         setDragOverlay(null);
       } else {
         // Incompatible — snap back to original
+        ensureTx();
         updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         lastGhost = null;
         setDragOverlay(null);
@@ -416,7 +425,10 @@ export function Timeline() {
       setDragOverlay(null);
 
       const el = scrollRef.current;
-      if (!el) return;
+      if (!el) {
+        if (txStarted) cancelTx();
+        return;
+      }
       const rect = el.getBoundingClientRect();
       const scrollT = el.scrollTop;
       const trackIdx = trackIndexFromContentY(ev.clientY - rect.top + scrollT);
@@ -424,11 +436,11 @@ export function Timeline() {
 
       if (lastGhost?.isAudioExtraction && targetTrack?.kind === 'audio') {
         // Commit audio extraction as a normal history entry
-        cancelTx(); // cancel the beginTx snapshot (video never moved)
+        if (txStarted) cancelTx(); // cancel the beginTx snapshot (video never moved)
         update((p) => extractAudioFromClip(p, clipId, targetTrack.id));
       } else if (targetTrack && targetTrack.kind !== origTrack?.kind) {
         // Cross-kind drop that isn't an audio extraction — revert
-        cancelTx();
+        if (txStarted) cancelTx();
       }
       // Otherwise: committed via updateSilent; beginTx snapshot is the undo point
     };
@@ -450,11 +462,16 @@ export function Timeline() {
     const sourceAsset = assetById.get(clip.assetId);
     const maxSourceSec = sourceAsset?.durationSec;
 
-    beginTx();
     const startX = e.clientX;
     const origStart = clip.startSec;
     const origEnd = clip.startSec + clipTimelineDurationSec(clip);
     setCurrentTime(trimPreviewTimeForClip(clip, side, project.fps));
+    let txStarted = false;
+    const ensureTx = () => {
+      if (txStarted) return;
+      beginTx();
+      txStarted = true;
+    };
 
     const move = (ev: MouseEvent) => {
       const dt = pxToTime(ev.clientX - startX, pxPerSec);
@@ -462,6 +479,7 @@ export function Timeline() {
       if (side === 'l') {
         const candidate = Math.max(0, origStart + dt);
         const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        ensureTx();
         updateSilent((p) => {
           const next = trimClipLeft(p, clipId, snapped);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
@@ -471,6 +489,7 @@ export function Timeline() {
       } else {
         const candidate = origEnd + dt;
         const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        ensureTx();
         updateSilent((p) => {
           const next = trimClipRight(p, clipId, snapped, maxSourceSec);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
@@ -506,8 +525,9 @@ export function Timeline() {
     const rect = el.getBoundingClientRect();
     const startX = e.clientX - rect.left + el.scrollLeft;
     const startY = e.clientY - rect.top + el.scrollTop;
+    const initialSelection = usePlaybackStore.getState().selectedClipIds;
     setMarquee({ startX, startY, curX: startX, curY: startY });
-    if (!additive) selectClip(null);
+    if (!additive) setClipSelection([], { silent: true });
 
     const move = (ev: MouseEvent) => {
       const s = scrollRef.current;
@@ -534,16 +554,17 @@ export function Timeline() {
         if (clipEnd < tStart || clip.startSec > tEnd) continue;
         hitIds.add(clip.id);
       }
-      setClipSelection([...hitIds]);
+      setClipSelection([...hitIds], { silent: true });
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       setMarquee(null);
+      commitClipSelection(initialSelection);
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [pxPerSec, tracks, selectClip, setClipSelection, trackIndexFromContentY]);
+  }, [pxPerSec, tracks, setClipSelection, commitClipSelection, trackIndexFromContentY]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
