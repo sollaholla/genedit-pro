@@ -65,8 +65,6 @@ export function Timeline() {
   const updateSilent = useProjectStore((s) => s.updateSilent);
   const beginTx = useProjectStore((s) => s.beginTx);
   const cancelTx = useProjectStore((s) => s.cancelTx);
-  const undo = useProjectStore((s) => s.undo);
-  const redo = useProjectStore((s) => s.redo);
 
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
@@ -213,9 +211,6 @@ export function Timeline() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       const mod = e.ctrlKey || e.metaKey;
 
-      if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
-      if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
-
       if (mod && (e.key === 'c' || e.key === 'C')) {
         const selected = usePlaybackStore.getState().selectedClipIds;
         if (selected.length === 0) return;
@@ -278,7 +273,7 @@ export function Timeline() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, undo, redo, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe]);
+  }, [selectedClipId, currentTime, update, selectClip, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe]);
 
   // ---- Clip right-click context menu ----
   const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { TopBar } from '@/components/layout/TopBar';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -22,6 +22,29 @@ export default function App() {
   const [generateOpen, setGenerateOpen] = useState(false);
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const reset = useProjectStore((s) => s.reset);
+  const undo = useProjectStore((s) => s.undo);
+  const redo = useProjectStore((s) => s.redo);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod) return;
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === 'z' && !event.shiftKey;
+      const isRedo = key === 'y' || (key === 'z' && event.shiftKey);
+      if (!isUndo && !isRedo) return;
+      if (isTextEditingTarget(event.target)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (isUndo) undo();
+      else redo();
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [redo, undo]);
 
   const openImport = () => importerRef.current?.openPicker();
 
@@ -74,4 +97,12 @@ export default function App() {
       />
     </>
   );
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (!(target instanceof HTMLInputElement)) return false;
+  return ['email', 'password', 'search', 'tel', 'text', 'url'].includes(target.type);
 }

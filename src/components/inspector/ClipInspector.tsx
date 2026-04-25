@@ -33,6 +33,29 @@ function speedTickPercent(value: number): number {
   return ((value - SPEED_SLIDER_MIN) / (SPEED_SLIDER_MAX - SPEED_SLIDER_MIN)) * 100;
 }
 
+type ProjectHistoryMode = 'normal' | 'silent';
+
+function useProjectHistoryGesture() {
+  const beginTx = useProjectStore((s) => s.beginTx);
+  const activeRef = useRef(false);
+
+  useEffect(() => () => {
+    activeRef.current = false;
+  }, []);
+
+  return {
+    beginHistoryGesture: () => {
+      if (activeRef.current) return;
+      activeRef.current = true;
+      beginTx();
+    },
+    endHistoryGesture: () => {
+      activeRef.current = false;
+    },
+    currentHistoryMode: (): ProjectHistoryMode => (activeRef.current ? 'silent' : 'normal'),
+  };
+}
+
 export function ClipInspector() {
   const [applyingSpeed, setApplyingSpeed] = useState(false);
   const [componentPickerOpen, setComponentPickerOpen] = useState(false);
@@ -51,7 +74,9 @@ export function ClipInspector() {
   const clipAudioLevel = usePlaybackStore((s) => (selectedId ? s.clipAudioLevels[selectedId] : undefined));
   const project = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
+  const updateSilent = useProjectStore((s) => s.updateSilent);
   const assets = useMediaStore((s) => s.assets);
+  const clipVolumeGesture = useProjectHistoryGesture();
 
   useEffect(() => {
     setFocusedComponentId(null);
@@ -86,7 +111,10 @@ export function ClipInspector() {
   const speed = clipSpeed(clip);
   const Icon = asset ? kindIcon[asset.kind] : Film;
 
-  const setVolume = (v: number) => update((p) => setClipProp(p, selectedId, 'volume', v));
+  const setVolume = (v: number, mode: ProjectHistoryMode = 'normal') => {
+    const apply = mode === 'silent' ? updateSilent : update;
+    apply((p) => setClipProp(p, selectedId, 'volume', v));
+  };
   const setSpeedAsync = async (nextSpeed: number) => {
     setApplyingSpeed(true);
     // Keep speed updates async so any future time-stretch preprocessing
@@ -220,7 +248,11 @@ export function ClipInspector() {
               max={200}
               step={1}
               value={Math.round((clip.volume ?? 1) * 100)}
-              onChange={(e) => setVolume(Number(e.target.value) / 100)}
+              onPointerDown={clipVolumeGesture.beginHistoryGesture}
+              onPointerUp={clipVolumeGesture.endHistoryGesture}
+              onPointerCancel={clipVolumeGesture.endHistoryGesture}
+              onBlur={clipVolumeGesture.endHistoryGesture}
+              onChange={(e) => setVolume(Number(e.target.value) / 100, clipVolumeGesture.currentHistoryMode())}
               className="volume-slider w-full"
             />
             <div className="flex justify-between text-[10px] text-slate-500">
@@ -382,9 +414,10 @@ export function ClipInspector() {
                   onStartDrag={() => setDraggingComponentId(component.id)}
                   onMove={moveComponent}
                   onRemove={removeComponent}
-                  onChange={(data) => {
+                  onChange={(data, mode = 'normal') => {
                     setFocusedComponentId(component.id);
-                    update((p) => ({
+                    const apply = mode === 'silent' ? updateSilent : update;
+                    apply((p) => ({
                       ...p,
                       clips: p.clips.map((candidate) => (
                         candidate.id === selectedId
@@ -396,7 +429,7 @@ export function ClipInspector() {
                                 : item
                             )),
                           }
-                          : candidate
+                        : candidate
                       )),
                     }));
                   }}
@@ -477,11 +510,14 @@ function TransformComponentCard({
   onShowKeyframes: () => void;
 }) {
   const update = useProjectStore((s) => s.update);
+  const updateSilent = useProjectStore((s) => s.updateSilent);
+  const { beginHistoryGesture, endHistoryGesture, currentHistoryMode } = useProjectHistoryGesture();
   const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
   const hasKeyframes = hasTransformKeyframes(component);
 
-  const setPropertyAtPlayhead = (property: TransformProperty, value: number) => {
-    update((p) => ({
+  const setPropertyAtPlayhead = (property: TransformProperty, value: number, mode: ProjectHistoryMode = 'normal') => {
+    const apply = mode === 'silent' ? updateSilent : update;
+    apply((p) => ({
       ...p,
       clips: p.clips.map((candidate) => (
         candidate.id === clipId
@@ -582,7 +618,11 @@ function TransformComponentCard({
         max={200}
         step={1}
         value={Math.round(resolvedTransform.scale * 100)}
-        onChange={(e) => setPropertyAtPlayhead('scale', Number(e.target.value) / 100)}
+        onChange={(e) => setPropertyAtPlayhead('scale', Number(e.target.value) / 100, currentHistoryMode())}
+        onPointerDown={beginHistoryGesture}
+        onPointerUp={endHistoryGesture}
+        onPointerCancel={endHistoryGesture}
+        onBlur={endHistoryGesture}
         className="volume-slider w-full"
       />
       <div className="flex items-center gap-2">
@@ -617,16 +657,16 @@ function ColorCorrectionCard({
   onStartDrag: () => void;
   onMove: (toIndex: number) => void;
   onRemove: () => void;
-  onChange: (data: ColorCorrectionComponentData) => void;
+  onChange: (data: ColorCorrectionComponentData, mode?: ProjectHistoryMode) => void;
 }) {
   const data = normalizeColorCorrectionData(component.data);
-  const updateData = (patch: Partial<ColorCorrectionComponentData>) => {
+  const updateData = (patch: Partial<ColorCorrectionComponentData>, mode: ProjectHistoryMode = 'normal') => {
     onFocus();
     onChange(normalizeColorCorrectionData({
       ...data,
       ...patch,
       presetId: patch.presetId ?? undefined,
-    }));
+    }), mode);
   };
 
   return (
@@ -670,9 +710,9 @@ function ColorCorrectionCard({
       </div>
 
       <div className="grid grid-cols-3 gap-2">
-        <ColorWheelControl label="Lift" value={data.lift} onChange={(lift) => updateData({ lift })} />
-        <ColorWheelControl label="Gamma" value={data.gammaWheel} onChange={(gammaWheel) => updateData({ gammaWheel })} />
-        <ColorWheelControl label="Gain" value={data.gain} onChange={(gain) => updateData({ gain })} />
+        <ColorWheelControl label="Lift" value={data.lift} onChange={(lift, mode) => updateData({ lift }, mode)} />
+        <ColorWheelControl label="Gamma" value={data.gammaWheel} onChange={(gammaWheel, mode) => updateData({ gammaWheel }, mode)} />
+        <ColorWheelControl label="Gain" value={data.gain} onChange={(gain, mode) => updateData({ gain }, mode)} />
       </div>
 
       <div className="space-y-2">
@@ -684,7 +724,7 @@ function ColorCorrectionCard({
           max={100}
           step={1}
           suffix="%"
-          onChange={(value) => updateData({ brightness: value / 100 })}
+          onChange={(value, mode) => updateData({ brightness: value / 100 }, mode)}
         />
         <ToneSlider
           icon={<Contrast size={12} />}
@@ -694,7 +734,7 @@ function ColorCorrectionCard({
           max={200}
           step={1}
           suffix="%"
-          onChange={(value) => updateData({ contrast: value / 100 })}
+          onChange={(value, mode) => updateData({ contrast: value / 100 }, mode)}
         />
         <ToneSlider
           icon={<Palette size={12} />}
@@ -704,7 +744,7 @@ function ColorCorrectionCard({
           max={200}
           step={1}
           suffix="%"
-          onChange={(value) => updateData({ saturation: value / 100 })}
+          onChange={(value, mode) => updateData({ saturation: value / 100 }, mode)}
         />
         <ToneSlider
           icon={<SlidersHorizontal size={12} />}
@@ -714,7 +754,7 @@ function ColorCorrectionCard({
           max={300}
           step={1}
           suffix="%"
-          onChange={(value) => updateData({ gamma: value / 100 })}
+          onChange={(value, mode) => updateData({ gamma: value / 100 }, mode)}
         />
       </div>
 
@@ -834,19 +874,20 @@ function ColorWheelControl({
 }: {
   label: string;
   value: ColorWheelValue;
-  onChange: (value: ColorWheelValue) => void;
+  onChange: (value: ColorWheelValue, mode?: ProjectHistoryMode) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const { beginHistoryGesture, endHistoryGesture } = useProjectHistoryGesture();
   const normalized = clampWheel(value);
 
-  const commitFromPointer = (clientX: number, clientY: number) => {
+  const commitFromPointer = (clientX: number, clientY: number, mode: ProjectHistoryMode = 'normal') => {
     const node = ref.current;
     if (!node) return;
     const rect = node.getBoundingClientRect();
     const radius = rect.width / 2;
     const x = (clientX - (rect.left + radius)) / radius;
     const y = (clientY - (rect.top + radius)) / radius;
-    onChange(clampWheel({ x, y }));
+    onChange(clampWheel({ x, y }), mode);
   };
 
   return (
@@ -864,14 +905,18 @@ function ColorWheelControl({
         onPointerDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          commitFromPointer(e.clientX, e.clientY);
-          const onMove = (event: PointerEvent) => commitFromPointer(event.clientX, event.clientY);
+          beginHistoryGesture();
+          commitFromPointer(e.clientX, e.clientY, 'silent');
+          const onMove = (event: PointerEvent) => commitFromPointer(event.clientX, event.clientY, 'silent');
           const onUp = () => {
+            endHistoryGesture();
             window.removeEventListener('pointermove', onMove);
             window.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointercancel', onUp);
           };
           window.addEventListener('pointermove', onMove);
           window.addEventListener('pointerup', onUp);
+          window.addEventListener('pointercancel', onUp);
         }}
         onDoubleClick={(e) => {
           e.stopPropagation();
@@ -910,8 +955,10 @@ function ToneSlider({
   max: number;
   step: number;
   suffix: string;
-  onChange: (value: number) => void;
+  onChange: (value: number, mode?: ProjectHistoryMode) => void;
 }) {
+  const { beginHistoryGesture, endHistoryGesture, currentHistoryMode } = useProjectHistoryGesture();
+
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
@@ -927,7 +974,11 @@ function ToneSlider({
         max={max}
         step={step}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerDown={beginHistoryGesture}
+        onPointerUp={endHistoryGesture}
+        onPointerCancel={endHistoryGesture}
+        onBlur={endHistoryGesture}
+        onChange={(e) => onChange(Number(e.target.value), currentHistoryMode())}
         className="volume-slider w-full"
       />
     </div>
