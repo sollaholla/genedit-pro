@@ -1,4 +1,5 @@
 let _ctx: AudioContext | null = null;
+let _masterInput: GainNode | null = null;
 let _masterGain: GainNode | null = null;
 let _analyserL: AnalyserNode | null = null;
 let _analyserR: AnalyserNode | null = null;
@@ -7,10 +8,15 @@ function boot(): AudioContext {
   if (_ctx) return _ctx;
   _ctx = new AudioContext();
 
+  _masterInput = _ctx.createGain();
+  _masterInput.channelCount = 2;
+  _masterInput.channelCountMode = 'max';
+
   _masterGain = _ctx.createGain();
-  // Force stereo so the channel splitter always gets 2 channels even for mono sources.
+  // Force the fader output to stereo so the channel splitter always has L/R.
   _masterGain.channelCount = 2;
   _masterGain.channelCountMode = 'explicit';
+  _masterInput.connect(_masterGain);
   _masterGain.connect(_ctx.destination);
 
   const splitter = _ctx.createChannelSplitter(2);
@@ -42,6 +48,11 @@ export function getAudioContext(): AudioContext {
 export function getMasterGain(): GainNode {
   boot();
   return _masterGain!;
+}
+
+export function getMasterInput(): GainNode {
+  boot();
+  return _masterInput!;
 }
 
 export function getAnalysers(): { left: AnalyserNode; right: AnalyserNode } {

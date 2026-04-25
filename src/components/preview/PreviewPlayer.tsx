@@ -8,6 +8,7 @@ import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { activeEditTransform } from '@/lib/media/editTrail';
 import {
   getAudioContext,
+  getMasterInput,
   getMasterGain,
   resumeAudioContext,
 } from '@/lib/audio/context';
@@ -409,7 +410,7 @@ export function PreviewPlayer() {
             const gain = ctx.createGain();
             gain.gain.value = 0; // silent until activated
             source.connect(gain);
-            gain.connect(getMasterGain());
+            gain.connect(getMasterInput());
             sourceNodes.current.set(clip.id, source);
             gainNodes.current.set(clip.id, gain);
           } catch {
