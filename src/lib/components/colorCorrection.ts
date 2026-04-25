@@ -203,26 +203,11 @@ export function colorCorrectionFfmpegFilters(clip: Clip, timelineTimeSec: number
   const data = resolveColorCorrectionAtTime(clip, timelineTimeSec);
   if (isNeutralColorCorrection(data)) return [];
 
-  const lift = wheelToRgbDelta(data.lift, 0.22);
-  const gamma = wheelToRgbDelta(data.gammaWheel, 0.22);
-  const gain = wheelToRgbDelta(data.gain, 0.24);
+  // @ffmpeg/core's browser build does not include colorbalance/colorlevels.
+  // Keep export on the portable eq filter path so color correction never
+  // breaks the encoder; wheel tinting remains preview-only until we verify a
+  // wasm-safe per-channel filter.
   const filters: string[] = [];
-  if (wheelMagnitude(data.lift) > 0.001 || wheelMagnitude(data.gammaWheel) > 0.001 || wheelMagnitude(data.gain) > 0.001) {
-    filters.push(
-      [
-        'colorbalance',
-        `rs=${roundFilter(lift.r)}`,
-        `gs=${roundFilter(lift.g)}`,
-        `bs=${roundFilter(lift.b)}`,
-        `rm=${roundFilter(gamma.r)}`,
-        `gm=${roundFilter(gamma.g)}`,
-        `bm=${roundFilter(gamma.b)}`,
-        `rh=${roundFilter(gain.r)}`,
-        `gh=${roundFilter(gain.g)}`,
-        `bh=${roundFilter(gain.b)}`,
-      ].join(':'),
-    );
-  }
   filters.push(
     [
       'eq',
