@@ -72,11 +72,25 @@ type ImagePool = Map<string, HTMLImageElement>;
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const HAVE_CURRENT_DATA = 2;
-const VIDEO_HANDOFF_GRACE_MS = 500;
 const PREROLL_SEC = 2.0;
 const HOT_PRIMING_SEC = 0.3;
-const MEDIA_KEEP_ALIVE_SEC = 6;
-const POOL_PRUNE_INTERVAL_MS = 500;
+const MEDIA_KEEP_ALIVE_SEC = 1.5;
+const POOL_PRUNE_INTERVAL_MS = 250;
+const MAX_PREROLL_CLIPS = 8;
+
+function clipEndSec(clip: Clip): number {
+  return clip.startSec + clipTimelineDurationSec(clip);
+}
+
+function clipIntersectsWindow(clip: Clip, startSec: number, endSec: number): boolean {
+  return clip.startSec <= endSec && clipEndSec(clip) >= startSec;
+}
+
+function nearestUpcomingClips(project: Project, timeSec: number): Clip[] {
+  return upcomingClips(project, timeSec, PREROLL_SEC)
+    .sort((first, second) => first.startSec - second.startSec)
+    .slice(0, MAX_PREROLL_CLIPS);
+}
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -87,8 +101,7 @@ function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
 }
 
 function canPaintSyncedVideo(el: HTMLVideoElement, target: number, playing: boolean) {
-  if (el.readyState < HAVE_CURRENT_DATA) return false;
-  if (el.seeking) return playing;
+  if (el.readyState < HAVE_CURRENT_DATA || el.seeking) return false;
   const threshold = playing ? 0.25 : 0.015;
   return Math.abs(el.currentTime - target) <= threshold;
 }
@@ -427,13 +440,27 @@ export function PreviewPlayer() {
       void getBlob(asset.blobKey).then((blob) => {
         pendingClipLoadsRef.current.delete(clip.id);
         if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        urlCache.current.set(mediaKey, url);
+        let url = urlCache.current.get(mediaKey);
+        let ownsUrl = false;
+        if (!url) {
+          url = URL.createObjectURL(blob);
+          ownsUrl = true;
+          urlCache.current.set(mediaKey, url);
+        }
         const latestClip = useProjectStore.getState().project.clips.find((candidate) => candidate.id === clip.id);
         const latestAsset = assetsRef.current.find((candidate) => candidate.id === asset.id);
-        if (!latestClip || !latestAsset || latestClip.assetId !== asset.id || latestAsset.blobKey !== asset.blobKey) {
-          URL.revokeObjectURL(url);
-          urlCache.current.delete(mediaKey);
+        const latestTimeSec = usePlaybackStore.getState().currentTimeSec;
+        if (
+          !latestClip ||
+          !latestAsset ||
+          latestClip.assetId !== asset.id ||
+          latestAsset.blobKey !== asset.blobKey ||
+          !clipIntersectsWindow(latestClip, latestTimeSec - MEDIA_KEEP_ALIVE_SEC, latestTimeSec + PREROLL_SEC)
+        ) {
+          if (ownsUrl && urlCache.current.get(mediaKey) === url) {
+            URL.revokeObjectURL(url);
+            urlCache.current.delete(mediaKey);
+          }
           return;
         }
         attachClipElement(latestClip, latestAsset, url, mediaKey);
@@ -443,16 +470,18 @@ export function PreviewPlayer() {
     return null;
   }, [attachClipElement]);
 
-  const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number, ts: number) => {
+  const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number) => {
     const clipsById = new Map(projectToPrune.clips.map((clip) => [clip.id, clip]));
+    const frame = resolveFrame(projectToPrune, timeSec);
+    const keepIds = new Set<string>();
+    for (const layer of [...frame.videos, ...frame.audios]) keepIds.add(layer.clip.id);
+    for (const clip of nearestUpcomingClips(projectToPrune, timeSec)) keepIds.add(clip.id);
     const keepClip = (clipId: string) => {
       const clip = clipsById.get(clipId);
       if (!clip) return false;
-      const endSec = clip.startSec + clipTimelineDurationSec(clip);
-      const nearPlayhead = timeSec >= clip.startSec - MEDIA_KEEP_ALIVE_SEC && timeSec <= endSec + MEDIA_KEEP_ALIVE_SEC;
-      const recentlyPainted = lastPaintedVisualRef.current?.clipId === clipId
-        && ts - lastPaintedVisualRef.current.ts <= VIDEO_HANDOFF_GRACE_MS;
-      return nearPlayhead || recentlyPainted || fadingOut.current.has(clipId) || fadingIn.current.has(clipId);
+      const selectedForPlayback = keepIds.has(clipId);
+      const lastPainted = lastPaintedVisualRef.current?.clipId === clipId;
+      return selectedForPlayback || lastPainted || fadingOut.current.has(clipId) || fadingIn.current.has(clipId);
     };
 
     for (const clipId of [...videoPool.current.keys()]) {
@@ -603,9 +632,11 @@ export function PreviewPlayer() {
     }
 
     const timeSec = usePlaybackStore.getState().currentTimeSec;
-    for (const clip of project.clips) {
-      const endSec = clip.startSec + clipTimelineDurationSec(clip);
-      if (timeSec < clip.startSec - PREROLL_SEC || timeSec > endSec + 1) continue;
+    const frame = resolveFrame(project, timeSec);
+    const clipsToWarm = new Map<string, Clip>();
+    for (const layer of [...frame.videos, ...frame.audios]) clipsToWarm.set(layer.clip.id, layer.clip);
+    for (const clip of nearestUpcomingClips(project, timeSec)) clipsToWarm.set(clip.id, clip);
+    for (const clip of clipsToWarm.values()) {
       const asset = assetsById.get(clip.assetId);
       if (asset) ensureClipElement(clip, asset);
     }
@@ -639,7 +670,7 @@ export function PreviewPlayer() {
       const t = usePlaybackStore.getState().currentTimeSec;
       const frame = resolveFrame(proj, t);
       const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
-      const upcoming = upcomingClips(proj, t, PREROLL_SEC);
+      const upcoming = nearestUpcomingClips(proj, t);
       const neededClipIds = new Set<string>();
       for (const layer of [...frame.videos, ...frame.audios]) {
         if (neededClipIds.has(layer.clip.id)) continue;
@@ -687,7 +718,6 @@ export function PreviewPlayer() {
       const fallbackVisualClipId = !topPaintableLayer
         && visualLayers.length > 0
         && lastPaintedVisual
-        && ts - lastPaintedVisual.ts <= VIDEO_HANDOFF_GRACE_MS
         ? lastPaintedVisual.clipId
         : null;
       for (const [clipId, el] of videoPool.current) {
@@ -896,7 +926,7 @@ export function PreviewPlayer() {
 
       if (ts - lastPoolPruneRef.current > POOL_PRUNE_INTERVAL_MS) {
         lastPoolPruneRef.current = ts;
-        pruneMediaElements(proj, t, ts);
+        pruneMediaElements(proj, t);
       }
 
       // ---- PUBLISH READINESS (throttled to ~4Hz; diff-guarded) ----
