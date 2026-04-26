@@ -84,6 +84,26 @@ function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
 }
 
+function previewTopologySignature(project: Project): string {
+  const tracks = [...project.tracks]
+    .sort((first, second) => first.index - second.index)
+    .map((track) => [track.id, track.kind, track.index, track.hidden ? 1 : 0, track.muted ? 1 : 0].join(':'))
+    .join(',');
+  const clips = [...project.clips]
+    .sort((first, second) => first.id.localeCompare(second.id))
+    .map((clip) => [
+      clip.id,
+      clip.assetId,
+      clip.trackId,
+      clip.startSec.toFixed(6),
+      clip.inSec.toFixed(6),
+      clip.outSec.toFixed(6),
+      (clip.speed ?? 1).toFixed(6),
+    ].join(':'))
+    .join(',');
+  return `${tracks}|${clips}`;
+}
+
 function clipIntersectsWindow(clip: Clip, startSec: number, endSec: number): boolean {
   return clip.startSec <= endSec && clipEndSec(clip) >= startSec;
 }
@@ -393,6 +413,7 @@ export function PreviewPlayer() {
   const lastTickRef = useRef<number | null>(null);
   const lastTimelineTimeRef = useRef<number | null>(null);
   const playbackClockTimeRef = useRef<number | null>(null);
+  const previewTopologySignatureRef = useRef('');
   const lastPlayingStateRef = useRef(false);
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
@@ -460,6 +481,16 @@ export function PreviewPlayer() {
     fadingIn.current.clear();
     prevActiveAudioIds.current.clear();
   }, []);
+
+  useEffect(() => {
+    const nextSignature = previewTopologySignature(project);
+    if (previewTopologySignatureRef.current && previewTopologySignatureRef.current !== nextSignature) {
+      resetTransientPlaybackState();
+      lastTimelineTimeRef.current = null;
+      playbackClockTimeRef.current = usePlaybackStore.getState().currentTimeSec;
+    }
+    previewTopologySignatureRef.current = nextSignature;
+  }, [project, resetTransientPlaybackState]);
 
   const previewStageStyle = useMemo(() => {
     if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
@@ -982,9 +1013,9 @@ export function PreviewPlayer() {
       playbackVideoBlockedRef.current = Boolean(
         visualLayers.length > 0 && !topPaintableLayer && !canUseFreezeFallback,
       );
-      const previewClipKey = visualLayers.map((layer) => layer.clip.id).join('|');
+      const previewClipKey = visualLayers.map((layer) => `${layer.track.id}:${layer.track.index}:${layer.clip.id}`).join('|');
       const previewFrameKey = `${previewFps}:${visualLayers.map((layer) => (
-        `${layer.clip.id}:${projectFrameIndex(Math.max(0, t - layer.clip.startSec), previewFps)}`
+        `${layer.track.id}:${layer.track.index}:${layer.clip.id}:${projectFrameIndex(Math.max(0, t - layer.clip.startSec), previewFps)}`
       )).join('|')}`;
       if (visualLayers.length > 0 && (state.playing || topPaintableLayer)) {
         if (previewFrameKey !== lastRenderedPreviewFrameRef.current) {
