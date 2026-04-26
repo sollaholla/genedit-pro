@@ -92,6 +92,18 @@ function nearestUpcomingClips(project: Project, timeSec: number): Clip[] {
     .slice(0, MAX_PREROLL_CLIPS);
 }
 
+function safeProjectFps(project: Pick<Project, 'fps'>): number {
+  return Number.isFinite(project.fps) && project.fps > 0 ? project.fps : 30;
+}
+
+function projectFrameIndex(timeSec: number, fps: number): number {
+  return Math.max(0, Math.floor(Math.max(0, timeSec) * fps + 1e-6));
+}
+
+function projectFrameTime(timeSec: number, fps: number): number {
+  return projectFrameIndex(timeSec, fps) / fps;
+}
+
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
   const threshold = playing ? 0.15 : 0.015;
@@ -130,8 +142,8 @@ function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
   maybe.webkitPreservesPitch = true;
 }
 
-function resolvedTransform(clip: ActiveLayer['clip']) {
-  const resolved = resolveTransformAtTime(clip, usePlaybackStore.getState().currentTimeSec);
+function resolvedTransform(clip: ActiveLayer['clip'], timelineTimeSec: number) {
+  const resolved = resolveTransformAtTime(clip, timelineTimeSec);
   return { ...resolved, keyframes: [] };
 }
 
@@ -155,7 +167,7 @@ function applyVisualLayout(
   const stageRect = stage?.getBoundingClientRect();
   if (!stageRect || stageRect.width <= 0 || stageRect.height <= 0) return;
 
-  const tf = resolvedTransform(clip);
+  const tf = resolvedTransform(clip, timelineTimeSec);
   const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
   const mediaWidth = Math.max(1, asset?.width ?? ('videoWidth' in el ? el.videoWidth : el.naturalWidth) ?? project.width);
   const mediaHeight = Math.max(1, asset?.height ?? ('videoHeight' in el ? el.videoHeight : el.naturalHeight) ?? project.height);
@@ -174,24 +186,71 @@ function applyVisualLayout(
   el.style.cursor = tf ? 'move' : 'default';
 }
 
-function captureFreezeFrame(
+function canvasFilterForClip(clip: Clip, timelineTimeSec: number): string {
+  return colorCorrectionCssFilter(clip, timelineTimeSec)
+    .replace(/url\([^)]*\)\s*/g, '')
+    .trim() || 'none';
+}
+
+function renderPreviewCanvas(
   canvas: HTMLCanvasElement | null,
-  source: HTMLVideoElement | HTMLImageElement,
-  project: Pick<Project, 'width' | 'height'>,
+  visualLayers: ActiveLayer[],
+  assetsById: Map<string, MediaAsset>,
+  project: Project,
+  timelineTimeSec: number,
+  videoPool: ElementPool,
+  imagePool: ImagePool,
 ): boolean {
   if (!canvas || project.width <= 0 || project.height <= 0) return false;
-  if (source instanceof HTMLVideoElement && source.readyState < HAVE_CURRENT_DATA) return false;
-  if (source instanceof HTMLImageElement && !source.complete) return false;
+  const drawItems: Array<{
+    source: HTMLVideoElement | HTMLImageElement;
+    asset: MediaAsset;
+    clip: Clip;
+  }> = [];
+
+  for (const layer of [...visualLayers].reverse()) {
+    const asset = assetsById.get(layer.clip.assetId);
+    if (asset?.kind !== 'video' && asset?.kind !== 'image') continue;
+    const source = asset.kind === 'image'
+      ? imagePool.get(layer.clip.id)
+      : videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
+    if (!source) continue;
+    if (source instanceof HTMLVideoElement && (source.readyState < HAVE_CURRENT_DATA || source.seeking)) continue;
+    if (source instanceof HTMLImageElement && !source.complete) continue;
+    drawItems.push({ source, asset, clip: layer.clip });
+  }
+
+  if (drawItems.length === 0) return false;
   if (canvas.width !== project.width) canvas.width = project.width;
   if (canvas.height !== project.height) canvas.height = project.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return false;
   try {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (const { source, asset, clip } of drawItems) {
+      const tf = resolvedTransform(clip, timelineTimeSec);
+      const mediaTransform = activeEditTransform(asset);
+      const sourceWidth = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
+      const sourceHeight = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
+      const mediaWidth = Math.max(1, asset.width ?? sourceWidth ?? project.width);
+      const mediaHeight = Math.max(1, asset.height ?? sourceHeight ?? project.height);
+      const x = project.width / 2 + (tf.offsetX + mediaTransform.offsetX);
+      const y = project.height / 2 + (tf.offsetY + mediaTransform.offsetY);
+      const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
+      ctx.save();
+      ctx.filter = canvasFilterForClip(clip, timelineTimeSec);
+      ctx.translate(x, y);
+      ctx.scale(visualScale, visualScale);
+      ctx.drawImage(source, -mediaWidth / 2, -mediaHeight / 2, mediaWidth, mediaHeight);
+      ctx.restore();
+    }
     return true;
   } catch {
     return false;
+  } finally {
+    ctx.filter = 'none';
   }
 }
 
@@ -234,6 +293,7 @@ export function PreviewPlayer() {
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
   const hasFreezeFrameRef = useRef(false);
+  const lastRenderedPreviewFrameRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -691,11 +751,15 @@ export function PreviewPlayer() {
       }
 
       const t = usePlaybackStore.getState().currentTimeSec;
-      const frame = resolveFrame(proj, t);
+      const previewFps = safeProjectFps(proj);
+      const visualTime = state.playing ? projectFrameTime(t, previewFps) : t;
+      const visualFrameIndex = projectFrameIndex(t, previewFps);
+      const audioFrame = resolveFrame(proj, t);
+      const visualFrame = resolveFrame(proj, visualTime);
       const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
       const upcoming = nearestUpcomingClips(proj, t);
       const neededClipIds = new Set<string>();
-      for (const layer of [...frame.videos, ...frame.audios]) {
+      for (const layer of [...visualFrame.videos, ...audioFrame.audios]) {
         if (neededClipIds.has(layer.clip.id)) continue;
         neededClipIds.add(layer.clip.id);
         const asset = assetsById.get(layer.clip.assetId);
@@ -709,7 +773,7 @@ export function PreviewPlayer() {
       }
 
       // ---- VIDEO DISPLAY ----
-      const visualLayers = frame.videos;
+      const visualLayers = visualFrame.videos;
       const activeVisualLayersByClipId = new Map(visualLayers.map((layer) => [layer.clip.id, layer]));
       const activeVisualAssetsByClipId = new Map<string, MediaAsset>();
       for (const layer of visualLayers) {
@@ -734,17 +798,30 @@ export function PreviewPlayer() {
         }
       }
       const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
+      const previewFrameKey = `${previewFps}:${visualFrameIndex}:${visualLayers.map((layer) => layer.clip.id).join('|')}`;
+      if (state.playing && visualLayers.length > 0) {
+        if (previewFrameKey !== lastRenderedPreviewFrameRef.current) {
+          const rendered = renderPreviewCanvas(
+            freezeFrameCanvasRef.current,
+            visualLayers,
+            assetsById,
+            proj,
+            visualTime,
+            videoPool.current,
+            imagePool.current,
+          );
+          if (rendered) {
+            hasFreezeFrameRef.current = true;
+            lastRenderedPreviewFrameRef.current = previewFrameKey;
+          }
+        }
+      } else {
+        lastRenderedPreviewFrameRef.current = null;
+      }
       if (topPaintableLayer) {
         lastPaintedVisualRef.current = { clipId: topPaintableLayer.clip.id, ts };
-        const activeAsset = activeVisualAssetsByClipId.get(topPaintableLayer.clip.id);
-        const activeElement = activeAsset?.kind === 'image'
-          ? imagePool.current.get(topPaintableLayer.clip.id)
-          : videoPool.current.get(topPaintableLayer.clip.id);
-        if (activeElement && captureFreezeFrame(freezeFrameCanvasRef.current, activeElement as HTMLVideoElement | HTMLImageElement, proj)) {
-          hasFreezeFrameRef.current = true;
-        }
       }
-      const showFreezeFrame = !topPaintableLayer && visualLayers.length > 0 && hasFreezeFrameRef.current;
+      const showFreezeFrame = visualLayers.length > 0 && hasFreezeFrameRef.current && (state.playing || !topPaintableLayer);
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
       }
@@ -758,7 +835,7 @@ export function PreviewPlayer() {
             ? 'visible'
             : 'hidden';
           videoEl.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
+          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, visualTime, videoHostRef.current);
         } else {
           hideVideoElement(videoEl);
         }
@@ -770,7 +847,7 @@ export function PreviewPlayer() {
           img.style.display = '';
           img.style.visibility = 'visible';
           img.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
+          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, visualTime, videoHostRef.current);
         } else {
           img.style.display = 'none';
           img.style.visibility = 'hidden';
@@ -788,7 +865,7 @@ export function PreviewPlayer() {
 
       // ---- AUDIO MIX + PREROLL ----
       const activeAudioIds = new Set<string>();
-      for (const layer of frame.audios) activeAudioIds.add(layer.clip.id);
+      for (const layer of audioFrame.audios) activeAudioIds.add(layer.clip.id);
 
       // Preroll: seek upcoming clips so their decoder buffer is warm.
       const hotPrimedIds = new Set<string>();
@@ -902,7 +979,7 @@ export function PreviewPlayer() {
       }
 
       // ---- DRIVE ACTIVE AUDIO LAYERS ----
-      for (const layer of frame.audios) {
+      for (const layer of audioFrame.audios) {
         const clipId = layer.clip.id;
         const isVideoEl = videoPool.current.has(clipId);
         const el = isVideoEl
@@ -1065,10 +1142,10 @@ export function PreviewPlayer() {
           </svg>
           <canvas
             ref={freezeFrameCanvasRef}
-            className="pointer-events-none absolute inset-0 hidden h-full w-full"
+            className="pointer-events-none absolute inset-0 z-20 hidden h-full w-full"
             aria-hidden
           />
-          <div ref={videoHostRef} className="absolute inset-0" />
+          <div ref={videoHostRef} className="absolute inset-0 z-10" />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {ready ? 'No clip at playhead' : 'Loading…'}
