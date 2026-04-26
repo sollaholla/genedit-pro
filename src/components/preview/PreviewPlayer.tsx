@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
 import type { Clip, MediaAsset, Project } from '@/types';
-import { clipSpeed, projectDurationSec } from '@/lib/timeline/operations';
+import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { activeEditTransform } from '@/lib/media/editTrail';
+import { getBlob } from '@/lib/media/storage';
 import {
   getAudioContext,
   getMasterInput,
@@ -72,6 +73,10 @@ const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const HAVE_CURRENT_DATA = 2;
 const VIDEO_HANDOFF_GRACE_MS = 500;
+const PREROLL_SEC = 2.0;
+const HOT_PRIMING_SEC = 0.3;
+const MEDIA_KEEP_ALIVE_SEC = 6;
+const POOL_PRUNE_INTERVAL_MS = 500;
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -159,7 +164,6 @@ function applyVisualLayout(
 export function PreviewPlayer() {
   const project = useProjectStore((s) => s.project);
   const assets = useMediaStore((s) => s.assets);
-  const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
@@ -188,11 +192,13 @@ export function PreviewPlayer() {
   const clipMeters = useRef<Map<string, StereoAnalyserMeter>>(new Map());
   const clipMeterBuffers = useRef<Map<string, [Float32Array, Float32Array]>>(new Map());
 
-  const urlCache = useRef<Map<string, string>>(new Map()); // assetId → object URL
+  const urlCache = useRef<Map<string, string>>(new Map());
+  const pendingClipLoadsRef = useRef<Set<string>>(new Set());
   const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
+  const lastPoolPruneRef = useRef(0);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -279,6 +285,186 @@ export function PreviewPlayer() {
       void containerRef.current?.requestFullscreen().catch(() => undefined);
     }
   };
+
+  const releaseAudioGraph = useCallback((clipId: string) => {
+    gainNodes.current.get(clipId)?.disconnect();
+    gainNodes.current.delete(clipId);
+    sourceNodes.current.get(clipId)?.disconnect();
+    sourceNodes.current.delete(clipId);
+    clipMeters.current.get(clipId)?.dispose();
+    clipMeters.current.delete(clipId);
+    clipMeterBuffers.current.delete(clipId);
+    fadingOut.current.delete(clipId);
+    fadingIn.current.delete(clipId);
+    hotPrimedSeekRef.current.delete(clipId);
+    prerolledRef.current.delete(clipId);
+    pendingClipLoadsRef.current.delete(clipId);
+  }, []);
+
+  const removeVideoElement = useCallback((clipId: string) => {
+    const el = videoPool.current.get(clipId);
+    if (el) {
+      el.pause();
+      (el as HTMLVideoElement).remove();
+      videoPool.current.delete(clipId);
+    }
+    clipAssetRef.current.delete(clipId);
+    releaseAudioGraph(clipId);
+  }, [releaseAudioGraph]);
+
+  const removeAudioElement = useCallback((clipId: string) => {
+    const el = audioPool.current.get(clipId);
+    if (el) {
+      el.pause();
+      audioPool.current.delete(clipId);
+    }
+    clipAssetRef.current.delete(clipId);
+    releaseAudioGraph(clipId);
+  }, [releaseAudioGraph]);
+
+  const removeImageElement = useCallback((clipId: string) => {
+    imagePool.current.get(clipId)?.remove();
+    imagePool.current.delete(clipId);
+    clipAssetRef.current.delete(clipId);
+    pendingClipLoadsRef.current.delete(clipId);
+  }, []);
+
+  const removeClipElements = useCallback((clipId: string) => {
+    removeVideoElement(clipId);
+    removeAudioElement(clipId);
+    removeImageElement(clipId);
+  }, [removeAudioElement, removeImageElement, removeVideoElement]);
+
+  const attachClipElement = useCallback((clip: Clip, asset: MediaAsset, url: string, mediaKey: string) => {
+    if (asset.kind === 'image') {
+      removeVideoElement(clip.id);
+      removeAudioElement(clip.id);
+      const existing = imagePool.current.get(clip.id);
+      if (!existing) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = '';
+        img.decoding = 'async';
+        img.className = 'absolute max-w-none object-contain';
+        img.style.display = 'none';
+        img.style.visibility = 'hidden';
+        videoHostRef.current?.appendChild(img);
+        imagePool.current.set(clip.id, img);
+      } else if (clipAssetRef.current.get(clip.id) !== mediaKey) {
+        existing.src = url;
+        existing.style.display = 'none';
+        existing.style.visibility = 'hidden';
+      }
+      clipAssetRef.current.set(clip.id, mediaKey);
+      return imagePool.current.get(clip.id) ?? null;
+    }
+
+    removeImageElement(clip.id);
+    const isAudio = asset.kind === 'audio';
+    const pool = isAudio ? audioPool.current : videoPool.current;
+    const existing = pool.get(clip.id);
+    if (existing) {
+      if (clipAssetRef.current.get(clip.id) !== mediaKey) {
+        existing.src = url;
+        if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
+        clipAssetRef.current.set(clip.id, mediaKey);
+      }
+      return existing;
+    }
+
+    let el: HTMLMediaElement;
+    if (isAudio) {
+      const audio = new Audio();
+      audio.preload = 'auto';
+      audio.src = url;
+      pool.set(clip.id, audio);
+      el = audio;
+    } else {
+      const video = document.createElement('video');
+      video.preload = 'auto';
+      video.playsInline = true;
+      video.muted = true;
+      video.src = url;
+      video.className = 'absolute max-w-none object-contain';
+      video.style.display = 'none';
+      video.style.visibility = 'hidden';
+      videoHostRef.current?.appendChild(video);
+      pool.set(clip.id, video);
+      el = video;
+    }
+    clipAssetRef.current.set(clip.id, mediaKey);
+
+    try {
+      const ctx = getAudioContext();
+      const source = ctx.createMediaElementSource(el);
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      const meter = createStereoAnalyserMeter();
+      source.connect(gain);
+      gain.connect(getMasterInput());
+      gain.connect(meter.input);
+      sourceNodes.current.set(clip.id, source);
+      gainNodes.current.set(clip.id, gain);
+      clipMeters.current.set(clip.id, meter);
+    } catch {
+      // Fallback: element won't route through Web Audio; volume stays at el.volume.
+    }
+
+    return el;
+  }, [removeAudioElement, removeImageElement, removeVideoElement]);
+
+  const ensureClipElement = useCallback((clip: Clip, asset: MediaAsset) => {
+    if (asset.kind === 'recipe' || asset.kind === 'sequence') return null;
+    const mediaKey = `${asset.id}:${asset.blobKey}`;
+    const existing = imagePool.current.get(clip.id) ?? videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
+    if (existing && clipAssetRef.current.get(clip.id) === mediaKey) return existing;
+
+    const cachedUrl = urlCache.current.get(mediaKey);
+    if (cachedUrl) return attachClipElement(clip, asset, cachedUrl, mediaKey);
+
+    if (!pendingClipLoadsRef.current.has(clip.id)) {
+      pendingClipLoadsRef.current.add(clip.id);
+      void getBlob(asset.blobKey).then((blob) => {
+        pendingClipLoadsRef.current.delete(clip.id);
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        urlCache.current.set(mediaKey, url);
+        const latestClip = useProjectStore.getState().project.clips.find((candidate) => candidate.id === clip.id);
+        const latestAsset = assetsRef.current.find((candidate) => candidate.id === asset.id);
+        if (!latestClip || !latestAsset || latestClip.assetId !== asset.id || latestAsset.blobKey !== asset.blobKey) {
+          URL.revokeObjectURL(url);
+          urlCache.current.delete(mediaKey);
+          return;
+        }
+        attachClipElement(latestClip, latestAsset, url, mediaKey);
+      });
+    }
+
+    return null;
+  }, [attachClipElement]);
+
+  const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number, ts: number) => {
+    const clipsById = new Map(projectToPrune.clips.map((clip) => [clip.id, clip]));
+    const keepClip = (clipId: string) => {
+      const clip = clipsById.get(clipId);
+      if (!clip) return false;
+      const endSec = clip.startSec + clipTimelineDurationSec(clip);
+      const nearPlayhead = timeSec >= clip.startSec - MEDIA_KEEP_ALIVE_SEC && timeSec <= endSec + MEDIA_KEEP_ALIVE_SEC;
+      const recentlyPainted = lastPaintedVisualRef.current?.clipId === clipId
+        && ts - lastPaintedVisualRef.current.ts <= VIDEO_HANDOFF_GRACE_MS;
+      return nearPlayhead || recentlyPainted || fadingOut.current.has(clipId) || fadingIn.current.has(clipId);
+    };
+
+    for (const clipId of [...videoPool.current.keys()]) {
+      if (!keepClip(clipId)) removeVideoElement(clipId);
+    }
+    for (const clipId of [...imagePool.current.keys()]) {
+      if (!keepClip(clipId)) removeImageElement(clipId);
+    }
+    for (const clipId of [...audioPool.current.keys()]) {
+      if (!keepClip(clipId)) removeAudioElement(clipId);
+    }
+  }, [removeAudioElement, removeImageElement, removeVideoElement]);
 
   useEffect(() => {
     const onChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
@@ -373,10 +559,11 @@ export function PreviewPlayer() {
     return () => el.removeEventListener('mousedown', onDown);
   }, [project, currentTime, selectedClipIds, updateSilent, beginTx, activeTransformComponentId]);
 
-  // Reconcile: one HTMLMediaElement + one GainNode per clip.
+  // Reconcile the lazy media pools. Elements are created on demand for the
+  // active/preroll window so dense chopped timelines do not exhaust decoders.
   useEffect(() => {
-    let cancelled = false;
     const assetsById = new Map(assets.map((a) => [a.id, a]));
+    const knownClipIds = new Set(project.clips.map((clip) => clip.id));
 
     const wantedVideoClipIds = new Set<string>();
     const wantedImageClipIds = new Set<string>();
@@ -386,168 +573,44 @@ export function PreviewPlayer() {
       if (!asset) continue;
       if (asset.kind === 'image') wantedImageClipIds.add(clip.id);
       else if (asset.kind === 'audio') wantedAudioClipIds.add(clip.id);
-      else wantedVideoClipIds.add(clip.id);
+      else if (asset.kind === 'video') wantedVideoClipIds.add(clip.id);
     }
 
-    // Remove elements for clips that no longer exist.
-    for (const [clipId, el] of videoPool.current) {
-      if (!wantedVideoClipIds.has(clipId)) {
-        el.pause();
-        (el as HTMLVideoElement).remove();
-        videoPool.current.delete(clipId);
-        clipAssetRef.current.delete(clipId);
-        gainNodes.current.get(clipId)?.disconnect();
-        gainNodes.current.delete(clipId);
-        sourceNodes.current.get(clipId)?.disconnect();
-        sourceNodes.current.delete(clipId);
-        clipMeters.current.get(clipId)?.dispose();
-        clipMeters.current.delete(clipId);
-        clipMeterBuffers.current.delete(clipId);
-        fadingOut.current.delete(clipId);
-        fadingIn.current.delete(clipId);
-        hotPrimedSeekRef.current.delete(clipId);
-        prerolledRef.current.delete(clipId);
-      }
-    }
-    for (const [clipId, el] of imagePool.current) {
-      if (!wantedImageClipIds.has(clipId)) {
-        el.remove();
-        imagePool.current.delete(clipId);
-        clipAssetRef.current.delete(clipId);
-      }
-    }
-    for (const [clipId, el] of audioPool.current) {
-      if (!wantedAudioClipIds.has(clipId)) {
-        el.pause();
-        audioPool.current.delete(clipId);
-        clipAssetRef.current.delete(clipId);
-        gainNodes.current.get(clipId)?.disconnect();
-        gainNodes.current.delete(clipId);
-        sourceNodes.current.get(clipId)?.disconnect();
-        sourceNodes.current.delete(clipId);
-        clipMeters.current.get(clipId)?.dispose();
-        clipMeters.current.delete(clipId);
-        clipMeterBuffers.current.delete(clipId);
-        fadingOut.current.delete(clipId);
-        fadingIn.current.delete(clipId);
-        hotPrimedSeekRef.current.delete(clipId);
-        prerolledRef.current.delete(clipId);
-      }
+    for (const clipId of new Set([
+      ...videoPool.current.keys(),
+      ...imagePool.current.keys(),
+      ...audioPool.current.keys(),
+    ])) {
+      if (!knownClipIds.has(clipId)) removeClipElements(clipId);
     }
 
-    // Revoke URLs for gone assets.
+    for (const clipId of [...videoPool.current.keys()]) {
+      if (!wantedVideoClipIds.has(clipId)) removeVideoElement(clipId);
+    }
+    for (const clipId of [...imagePool.current.keys()]) {
+      if (!wantedImageClipIds.has(clipId)) removeImageElement(clipId);
+    }
+    for (const clipId of [...audioPool.current.keys()]) {
+      if (!wantedAudioClipIds.has(clipId)) removeAudioElement(clipId);
+    }
+
     const aliveMediaKeys = new Set(assets.map((a) => `${a.id}:${a.blobKey}`));
-    for (const [mediaKey, url] of urlCache.current) {
+    for (const [mediaKey, url] of [...urlCache.current.entries()]) {
       if (!aliveMediaKeys.has(mediaKey)) {
         URL.revokeObjectURL(url);
         urlCache.current.delete(mediaKey);
       }
     }
 
-    (async () => {
-      for (const clip of project.clips) {
-        if (cancelled) return;
-        const asset = assetsById.get(clip.assetId);
-        if (!asset) continue;
-        if (asset.kind === 'image') {
-          const existing = imagePool.current.get(clip.id);
-          const mediaKey = `${asset.id}:${asset.blobKey}`;
-          const previousMediaKey = clipAssetRef.current.get(clip.id);
-
-          let url = urlCache.current.get(mediaKey);
-          if (!url) {
-            const u = await objectUrlFor(asset.id);
-            if (!u) continue;
-            url = u;
-            urlCache.current.set(mediaKey, url);
-          }
-          if (cancelled) return;
-
-          if (!existing) {
-            const img = document.createElement('img');
-            img.src = url;
-            img.alt = '';
-            img.decoding = 'async';
-            img.className = 'absolute max-w-none object-contain';
-            img.style.display = 'none';
-            img.style.visibility = 'hidden';
-            videoHostRef.current?.appendChild(img);
-            imagePool.current.set(clip.id, img);
-            clipAssetRef.current.set(clip.id, mediaKey);
-          } else if (previousMediaKey !== mediaKey) {
-            existing.src = url;
-            existing.style.display = 'none';
-            existing.style.visibility = 'hidden';
-            clipAssetRef.current.set(clip.id, mediaKey);
-          }
-          continue;
-        }
-        const isAudio = asset.kind === 'audio';
-        const pool = isAudio ? audioPool.current : videoPool.current;
-        const existing = pool.get(clip.id);
-        const mediaKey = `${asset.id}:${asset.blobKey}`;
-        const previousMediaKey = clipAssetRef.current.get(clip.id);
-
-        let url = urlCache.current.get(mediaKey);
-        if (!url) {
-          const u = await objectUrlFor(asset.id);
-          if (!u) continue;
-          url = u;
-          urlCache.current.set(mediaKey, url);
-        }
-        if (cancelled) return;
-
-        if (!existing) {
-          let el: HTMLMediaElement;
-          if (isAudio) {
-            const a = new Audio();
-            a.preload = 'auto';
-            a.src = url;
-            pool.set(clip.id, a);
-            el = a;
-          } else {
-            const v = document.createElement('video');
-            v.preload = 'auto';
-            v.playsInline = true;
-            v.muted = true; // starts muted; unmuted by RAF when active for audio
-            v.src = url;
-            v.className = 'absolute max-w-none object-contain';
-            v.style.display = 'none';
-            v.style.visibility = 'hidden';
-            videoHostRef.current?.appendChild(v);
-            pool.set(clip.id, v);
-            el = v;
-          }
-          clipAssetRef.current.set(clip.id, mediaKey);
-
-          // Wire up to the Web Audio graph.
-          try {
-            const ctx = getAudioContext();
-            const source = ctx.createMediaElementSource(el);
-            const gain = ctx.createGain();
-            gain.gain.value = 0; // silent until activated
-            const meter = createStereoAnalyserMeter();
-            source.connect(gain);
-            gain.connect(getMasterInput());
-            gain.connect(meter.input);
-            sourceNodes.current.set(clip.id, source);
-            gainNodes.current.set(clip.id, gain);
-            clipMeters.current.set(clip.id, meter);
-          } catch {
-            // Fallback: element won't route through Web Audio; volume stays at el.volume
-          }
-        } else if (previousMediaKey !== mediaKey) {
-          // Asset replaced on this clip.
-          existing.src = url;
-          if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
-          clipAssetRef.current.set(clip.id, mediaKey);
-        }
-      }
-      if (!cancelled) setReady(true);
-    })();
-
-    return () => { cancelled = true; };
-  }, [project.clips, assets, objectUrlFor]);
+    const timeSec = usePlaybackStore.getState().currentTimeSec;
+    for (const clip of project.clips) {
+      const endSec = clip.startSec + clipTimelineDurationSec(clip);
+      if (timeSec < clip.startSec - PREROLL_SEC || timeSec > endSec + 1) continue;
+      const asset = assetsById.get(clip.assetId);
+      if (asset) ensureClipElement(clip, asset);
+    }
+    setReady(true);
+  }, [assets, ensureClipElement, project.clips, removeAudioElement, removeClipElements, removeImageElement, removeVideoElement]);
 
   // Main RAF loop.
   useEffect(() => {
@@ -575,13 +638,28 @@ export function PreviewPlayer() {
 
       const t = usePlaybackStore.getState().currentTimeSec;
       const frame = resolveFrame(proj, t);
+      const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
+      const upcoming = upcomingClips(proj, t, PREROLL_SEC);
+      const neededClipIds = new Set<string>();
+      for (const layer of [...frame.videos, ...frame.audios]) {
+        if (neededClipIds.has(layer.clip.id)) continue;
+        neededClipIds.add(layer.clip.id);
+        const asset = assetsById.get(layer.clip.assetId);
+        if (asset) ensureClipElement(layer.clip, asset);
+      }
+      for (const clip of upcoming) {
+        if (neededClipIds.has(clip.id)) continue;
+        neededClipIds.add(clip.id);
+        const asset = assetsById.get(clip.assetId);
+        if (asset) ensureClipElement(clip, asset);
+      }
 
       // ---- VIDEO DISPLAY ----
       const visualLayers = frame.videos;
       const activeVisualLayersByClipId = new Map(visualLayers.map((layer) => [layer.clip.id, layer]));
       const activeVisualAssetsByClipId = new Map<string, MediaAsset>();
       for (const layer of visualLayers) {
-        const asset = assetsRef.current.find((item) => item.id === layer.clip.assetId);
+        const asset = assetsById.get(layer.clip.assetId);
         if (asset?.kind === 'video' || asset?.kind === 'image') activeVisualAssetsByClipId.set(layer.clip.id, asset);
       }
       const visualZIndexByClipId = new Map<string, number>();
@@ -663,9 +741,6 @@ export function PreviewPlayer() {
       for (const layer of frame.audios) activeAudioIds.add(layer.clip.id);
 
       // Preroll: seek upcoming clips so their decoder buffer is warm.
-      const PREROLL_SEC = 2.0;
-      const HOT_PRIMING_SEC = 0.3;
-      const upcoming = upcomingClips(proj, t, PREROLL_SEC);
       const hotPrimedIds = new Set<string>();
       for (const clip of upcoming) {
         const el = videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
@@ -819,6 +894,11 @@ export function PreviewPlayer() {
         if (state.playing && el.paused) el.play().catch(() => undefined);
       }
 
+      if (ts - lastPoolPruneRef.current > POOL_PRUNE_INTERVAL_MS) {
+        lastPoolPruneRef.current = ts;
+        pruneMediaElements(proj, t, ts);
+      }
+
       // ---- PUBLISH READINESS (throttled to ~4Hz; diff-guarded) ----
       if (ts - lastReadinessPublishRef.current > 250) {
         lastReadinessPublishRef.current = ts;
@@ -867,7 +947,7 @@ export function PreviewPlayer() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [pause]);
+  }, [ensureClipElement, pause, pruneMediaElements]);
 
   // Cleanup on unmount.
   useEffect(() => {
@@ -875,6 +955,7 @@ export function PreviewPlayer() {
     const imageEls = imagePool.current;
     const audioEls = audioPool.current;
     const urls = urlCache.current;
+    const pendingLoads = pendingClipLoadsRef.current;
     const meters = clipMeters.current;
     const meterBuffers = clipMeterBuffers.current;
     return () => {
@@ -886,6 +967,7 @@ export function PreviewPlayer() {
       meterBuffers.clear();
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
+      pendingLoads.clear();
     };
   }, []);
 
