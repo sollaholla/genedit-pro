@@ -79,9 +79,8 @@ const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
 const PREVIEW_RENDER_DEBOUNCE_MS = 900;
-const PREVIEW_RENDER_BACKWARD_SEC = 2;
-const PREVIEW_RENDER_FORWARD_SEC = 8;
-const PREVIEW_RENDER_EDGE_REFRESH_SEC = 1.5;
+const PREVIEW_RENDER_CHUNK_SEC = 5;
+const PREVIEW_RENDER_EDGE_REFRESH_SEC = 0;
 
 type FfmpegPreviewState = {
   status: 'idle' | 'rendering' | 'ready' | 'error';
@@ -150,20 +149,13 @@ function visualPreviewDurationSec(project: Project, assets: MediaAsset[]): numbe
 }
 
 function previewRenderWindowForTime(timeSec: number, visualDurationSec: number): { startSec: number; endSec: number } {
-  const windowDurationSec = PREVIEW_RENDER_BACKWARD_SEC + PREVIEW_RENDER_FORWARD_SEC;
   const clampedTimeSec = Math.max(0, Math.min(visualDurationSec, timeSec));
-  let startSec = Math.max(0, clampedTimeSec - PREVIEW_RENDER_BACKWARD_SEC);
-  let endSec = Math.min(visualDurationSec, clampedTimeSec + PREVIEW_RENDER_FORWARD_SEC);
-
-  if (endSec - startSec < windowDurationSec) {
-    if (startSec <= 0) {
-      endSec = Math.min(visualDurationSec, windowDurationSec);
-    } else {
-      startSec = Math.max(0, endSec - windowDurationSec);
-    }
-  }
-
-  return { startSec, endSec };
+  const chunkTimeSec = clampedTimeSec >= visualDurationSec
+    ? Math.max(0, visualDurationSec - 1e-6)
+    : clampedTimeSec;
+  const chunkIndex = Math.floor(chunkTimeSec / PREVIEW_RENDER_CHUNK_SEC);
+  const startSec = chunkIndex * PREVIEW_RENDER_CHUNK_SEC;
+  return { startSec, endSec: Math.min(visualDurationSec, startSec + PREVIEW_RENDER_CHUNK_SEC) };
 }
 
 function previewStateCoversTime(
@@ -605,6 +597,7 @@ export function PreviewPlayer() {
 
     const projectSnapshot = cloneForPreviewRender(project);
     const assetsSnapshot = cloneForPreviewRender(assets);
+    const abortController = new AbortController();
     let cancelled = false;
 
     const timeout = window.setTimeout(() => {
@@ -619,7 +612,7 @@ export function PreviewPlayer() {
             setFfmpegPreview((prev) => ({ ...prev, progress }));
           }
         },
-      }, { startSec, endSec }).then((result) => {
+      }, { startSec, endSec, signal: abortController.signal }).then((result) => {
         if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
         const url = URL.createObjectURL(result.blob);
         ffmpegPreviewUrlRef.current = url;
@@ -651,6 +644,7 @@ export function PreviewPlayer() {
 
     return () => {
       cancelled = true;
+      abortController.abort();
       window.clearTimeout(timeout);
     };
   }, [assets, currentTime, ffmpegPreviewDuration, ffmpegPreviewSignature, project]);

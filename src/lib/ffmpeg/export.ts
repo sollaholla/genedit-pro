@@ -12,6 +12,7 @@ const SOURCE_MOUNT_DIR = '/source-media';
 export const PREVIEW_RENDER_SCALE = 0.8;
 
 let ffmpegJobQueue: Promise<unknown> = Promise.resolve();
+const filterSupportCache = new Map<string, Promise<boolean>>();
 
 type TimelineInput = {
   inputIndex: number;
@@ -40,10 +41,18 @@ export type PreviewRenderResult = {
 export type PreviewRenderOptions = {
   startSec?: number;
   endSec?: number;
+  signal?: AbortSignal;
 };
 
-function runFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
-  const run = ffmpegJobQueue.catch(() => undefined).then(job);
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('Preview render cancelled.');
+}
+
+function runFfmpegJob<T>(job: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const run = ffmpegJobQueue.catch(() => undefined).then(() => {
+    throwIfAborted(signal);
+    return job();
+  });
   ffmpegJobQueue = run.catch(() => undefined);
   return run;
 }
@@ -265,18 +274,31 @@ async function detectFfmpegFilterSupport(
   ffmpeg: Awaited<ReturnType<typeof getFFmpeg>>,
   filterName: string,
 ): Promise<boolean> {
-  const filterLines: string[] = [];
-  const filterLogHandler = ({ message }: { message: string }) => {
-    filterLines.push(message);
-  };
+  const cached = filterSupportCache.get(filterName);
+  if (cached) return cached;
 
-  ffmpeg.on('log', filterLogHandler);
+  const probe = (async () => {
+    const filterLines: string[] = [];
+    const filterLogHandler = ({ message }: { message: string }) => {
+      filterLines.push(message);
+    };
+
+    ffmpeg.on('log', filterLogHandler);
+    try {
+      const code = await ffmpeg.exec(['-hide_banner', '-filters']);
+      if (code !== 0) return false;
+      return filterLines.some((line) => new RegExp(`\b${filterName}\b`).test(line));
+    } finally {
+      ffmpeg.off('log', filterLogHandler);
+    }
+  })();
+
+  filterSupportCache.set(filterName, probe);
   try {
-    const code = await ffmpeg.exec(['-hide_banner', '-filters']);
-    if (code !== 0) return false;
-    return filterLines.some((line) => new RegExp(`\\b${filterName}\\b`).test(line));
-  } finally {
-    ffmpeg.off('log', filterLogHandler);
+    return await probe;
+  } catch (error) {
+    filterSupportCache.delete(filterName);
+    throw error;
   }
 }
 
@@ -497,7 +519,7 @@ export async function renderProjectPreview(
   callbacks: ExportCallbacks = {},
   options: PreviewRenderOptions = {},
 ): Promise<PreviewRenderResult> {
-  return runFfmpegJob(() => renderProjectPreviewInternal(project, assets, callbacks, options));
+  return runFfmpegJob(() => renderProjectPreviewInternal(project, assets, callbacks, options), options.signal);
 }
 
 async function renderProjectPreviewInternal(
@@ -526,6 +548,7 @@ async function renderProjectPreviewInternal(
   const temporaryFiles = new Set<string>();
   let resetEncoder = false;
 
+  throwIfAborted(options.signal);
   onStatus?.('Loading preview renderer...');
   const ffmpeg = await getFFmpeg();
 
@@ -563,12 +586,14 @@ async function renderProjectPreviewInternal(
   };
 
   try {
+    throwIfAborted(options.signal);
     onStatus?.('Preparing preview media...');
     if (sourceAssets.length > 0) {
       await mountSourceAssets(ffmpeg, sourceAssets);
       sourceMounted = true;
     }
 
+    throwIfAborted(options.signal);
     const supportsPerChannelColor = await detectFfmpegFilterSupport(ffmpeg, 'lutrgb');
 
     const args: string[] = [];
@@ -601,12 +626,14 @@ async function renderProjectPreviewInternal(
     args.push('-map', '[vout]', '-an');
     args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35', '-pix_fmt', 'yuv420p', '-r', String(project.fps));
     args.push('-t', seconds(totalDuration), '-video_track_timescale', '90000');
-    args.push('-movflags', '+faststart', '-y', outputFile);
+    args.push('-y', outputFile);
 
     ffmpeg.on('progress', progressHandler);
     ffmpeg.on('log', logHandler);
+    throwIfAborted(options.signal);
     onStatus?.('Rendering preview...');
     await execOrThrow(ffmpeg, args, 'preview render', recentLogs);
+    throwIfAborted(options.signal);
 
     const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
     onProgress?.(1);
