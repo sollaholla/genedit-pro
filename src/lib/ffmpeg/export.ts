@@ -9,6 +9,9 @@ import { activeEditTransform } from '@/lib/media/editTrail';
 import { getFFmpeg, resetFFmpeg } from './client';
 
 const SOURCE_MOUNT_DIR = '/source-media';
+export const PREVIEW_RENDER_SCALE = 0.15;
+
+let ffmpegJobQueue: Promise<unknown> = Promise.resolve();
 
 type TimelineInput = {
   inputIndex: number;
@@ -24,6 +27,20 @@ export type ExportCallbacks = {
   onLog?: (line: string) => void;
 };
 
+export type PreviewRenderResult = {
+  blob: Blob;
+  width: number;
+  height: number;
+  durationSec: number;
+  scale: number;
+};
+
+function runFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
+  const run = ffmpegJobQueue.catch(() => undefined).then(job);
+  ffmpegJobQueue = run.catch(() => undefined);
+  return run;
+}
+
 function seconds(value: number): string {
   return Math.max(0, value).toFixed(3);
 }
@@ -35,6 +52,10 @@ function preciseSeconds(value: number): string {
 function filterNumber(value: number): string {
   const safeValue = Number.isFinite(value) ? value : 0;
   return safeValue.toFixed(5);
+}
+
+function evenDimension(value: number): number {
+  return Math.max(2, Math.floor(Math.max(2, value) / 2) * 2);
 }
 
 function clipEndSec(clip: Clip): number {
@@ -214,10 +235,12 @@ function timelineVisualFilters(
   input: TimelineInput,
   project: Project,
   supportsPerChannelColor: boolean,
+  renderScale = 1,
 ): { filters: string; overlayX: string; overlayY: string } {
   const { clip, asset } = input;
   const mediaTransform = activeEditTransform(asset);
   const localOverlayTimeExpr = `(t-${preciseSeconds(clip.startSec)})`;
+  const renderScaleExpr = filterNumber(renderScale);
   const rawScaleExpr = transformExpression(clip, 'scale', 't');
   const visualScaleExpr = `min(6,max(0.1,(${rawScaleExpr})*${filterNumber(mediaTransform.scale)}))`;
   const offsetXExpr = `(${transformExpression(clip, 'offsetX', localOverlayTimeExpr)})+${filterNumber(mediaTransform.offsetX)}`;
@@ -232,7 +255,8 @@ function timelineVisualFilters(
   }
 
   filters.push(
-    `scale=eval=frame:w='trunc(iw*${visualScaleExpr}/2)*2':h='trunc(ih*${visualScaleExpr}/2)*2'`,
+    `scale=eval=frame:w='max(2,trunc(iw*(${visualScaleExpr})*${renderScaleExpr}/2)*2)':` +
+    `h='max(2,trunc(ih*(${visualScaleExpr})*${renderScaleExpr}/2)*2)'`,
   );
 
   filters.push(
@@ -245,8 +269,8 @@ function timelineVisualFilters(
 
   return {
     filters: filters.join(','),
-    overlayX: `(W-w)/2+${offsetXExpr}`,
-    overlayY: `(H-h)/2+${offsetYExpr}`,
+    overlayX: `(W-w)/2+(${offsetXExpr})*${renderScaleExpr}`,
+    overlayY: `(H-h)/2+(${offsetYExpr})*${renderScaleExpr}`,
   };
 }
 
@@ -325,7 +349,10 @@ function buildTimelineFilterGraph(
   backgroundInputIndex: number,
   silenceInputIndex: number | null,
   supportsPerChannelColor: boolean,
+  options: { renderScale?: number; includeAudio?: boolean } = {},
 ): string {
+  const renderScale = options.renderScale ?? 1;
+  const includeAudio = options.includeAudio ?? true;
   const parts: string[] = [
     `[${backgroundInputIndex}:v]trim=duration=${seconds(totalDurationSec)},settb=AVTB,setpts=PTS-STARTPTS,format=rgba[base0]`,
   ];
@@ -333,7 +360,7 @@ function buildTimelineFilterGraph(
   const visualStack = [...visualInputs].sort((first, second) => second.track.index - first.track.index);
   let baseLabel = 'base0';
   visualStack.forEach((input, index) => {
-    const visual = timelineVisualFilters(input, project, supportsPerChannelColor);
+    const visual = timelineVisualFilters(input, project, supportsPerChannelColor, renderScale);
     const layerLabel = `v${index}`;
     const nextBaseLabel = `base${index + 1}`;
     const enable = visualEnableExpression(input, visualInputs);
@@ -345,6 +372,8 @@ function buildTimelineFilterGraph(
     baseLabel = nextBaseLabel;
   });
   parts.push(`[${baseLabel}]format=yuv420p[vout]`);
+
+  if (!includeAudio) return parts.join(';');
 
   const audioLabels: string[] = [];
   audioInputs.forEach((input, index) => {
@@ -397,10 +426,164 @@ function shouldRenderAudio(input: TimelineInput, hasAudioByAssetId: Map<string, 
   return input.track.kind === 'video' && !input.track.hidden;
 }
 
+function shouldRenderPreviewVisual(input: TimelineInput): boolean {
+  return input.track.kind === 'video' && !input.track.hidden && (input.asset.kind === 'video' || input.asset.kind === 'image');
+}
+
+function previewVisualDurationSec(project: Project, assetsById: Map<string, MediaAsset>): number {
+  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
+  return project.clips.reduce((maxDuration, clip) => {
+    const track = tracksById.get(clip.trackId);
+    const asset = assetsById.get(clip.assetId);
+    if (!track || !asset) return maxDuration;
+    if (track.kind !== 'video' || track.hidden) return maxDuration;
+    if (asset.kind !== 'video' && asset.kind !== 'image') return maxDuration;
+    return Math.max(maxDuration, clipEndSec(clip));
+  }, 0);
+}
+
+export async function renderProjectPreview(
+  project: Project,
+  assets: MediaAsset[],
+  callbacks: ExportCallbacks = {},
+): Promise<PreviewRenderResult> {
+  return runFfmpegJob(() => renderProjectPreviewInternal(project, assets, callbacks));
+}
+
+async function renderProjectPreviewInternal(
+  project: Project,
+  assets: MediaAsset[],
+  callbacks: ExportCallbacks,
+): Promise<PreviewRenderResult> {
+  const { onStatus, onProgress, onLog } = callbacks;
+  const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
+  const totalDuration = previewVisualDurationSec(project, assetById);
+  if (totalDuration <= 0) throw new Error('No visible video clips to render.');
+
+  const renderWidth = evenDimension(project.width * PREVIEW_RENDER_SCALE);
+  const renderHeight = evenDimension(project.height * PREVIEW_RENDER_SCALE);
+  const recentLogs: string[] = [];
+  let sourceMounted = false;
+  const temporaryFiles = new Set<string>();
+  let resetEncoder = false;
+
+  onStatus?.('Loading preview renderer...');
+  const ffmpeg = await getFFmpeg();
+
+  const previewInputs: TimelineInput[] = [];
+  const sourceAssetsById = new Map<string, MediaAsset>();
+  for (const clip of project.clips) {
+    const track = tracksById.get(clip.trackId);
+    const asset = assetById.get(clip.assetId);
+    if (!track || !asset) continue;
+    const timelineDurationSec = clipTimelineDurationSec(clip);
+    if (timelineDurationSec <= 0 || clip.startSec >= totalDuration || clipEndSec(clip) <= 0) continue;
+    const input: TimelineInput = {
+      inputIndex: previewInputs.length,
+      clip,
+      track,
+      asset,
+      timelineDurationSec: Math.min(timelineDurationSec, Math.max(0.001, totalDuration - clip.startSec)),
+    };
+    if (!shouldRenderPreviewVisual(input)) continue;
+    previewInputs.push(input);
+    sourceAssetsById.set(asset.id, asset);
+  }
+
+  const sourceAssets = [...sourceAssetsById.values()];
+  const logHandler = ({ message }: { message: string }) => {
+    recentLogs.push(message);
+    if (recentLogs.length > 40) recentLogs.shift();
+    onLog?.(message);
+  };
+  const progressHandler = (progressEvent: { progress: number }) => {
+    onProgress?.(Math.min(0.98, Math.max(0, progressEvent.progress) * 0.98));
+  };
+
+  try {
+    onStatus?.('Preparing preview media...');
+    if (sourceAssets.length > 0) {
+      await mountSourceAssets(ffmpeg, sourceAssets);
+      sourceMounted = true;
+    }
+
+    const supportsPerChannelColor = await detectFfmpegFilterSupport(ffmpeg, 'lutrgb');
+
+    const args: string[] = [];
+    for (const input of previewInputs) {
+      if (input.asset.kind === 'image') {
+        args.push('-loop', '1', '-framerate', String(project.fps), '-t', seconds(input.timelineDurationSec));
+      } else {
+        args.push('-ss', seconds(input.clip.inSec), '-t', seconds(clipSourceDurationSec(input.clip)));
+      }
+      args.push('-i', vfsNameForAsset(input.asset));
+    }
+
+    args.push('-f', 'lavfi', '-t', seconds(totalDuration),
+      '-i', `color=c=black:s=${renderWidth}x${renderHeight}:r=${project.fps}`);
+    const backgroundInputIndex = previewInputs.length;
+
+    const outputFile = 'preview-output.mp4';
+    temporaryFiles.add(outputFile);
+
+    args.push('-filter_complex', buildTimelineFilterGraph(
+      project,
+      totalDuration,
+      previewInputs,
+      [],
+      backgroundInputIndex,
+      null,
+      supportsPerChannelColor,
+      { renderScale: PREVIEW_RENDER_SCALE, includeAudio: false },
+    ));
+    args.push('-map', '[vout]', '-an');
+    args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35', '-pix_fmt', 'yuv420p', '-r', String(project.fps));
+    args.push('-t', seconds(totalDuration), '-video_track_timescale', '90000');
+    args.push('-movflags', '+faststart', '-y', outputFile);
+
+    ffmpeg.on('progress', progressHandler);
+    ffmpeg.on('log', logHandler);
+    onStatus?.('Rendering preview...');
+    await execOrThrow(ffmpeg, args, 'preview render', recentLogs);
+
+    const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
+    onProgress?.(1);
+    onStatus?.('Preview ready');
+
+    return {
+      blob: new Blob([data.slice().buffer], { type: 'video/mp4' }),
+      width: renderWidth,
+      height: renderHeight,
+      durationSec: totalDuration,
+      scale: PREVIEW_RENDER_SCALE,
+    };
+  } catch (error) {
+    resetEncoder = isFfmpegMemoryError(error);
+    throw new Error(exportErrorMessage(error));
+  } finally {
+    ffmpeg.off('progress', progressHandler);
+    ffmpeg.off('log', logHandler);
+    for (const file of temporaryFiles) {
+      await ffmpeg.deleteFile(file).catch(() => undefined);
+    }
+    if (sourceMounted) await unmountDir(ffmpeg, SOURCE_MOUNT_DIR);
+    if (resetEncoder) resetFFmpeg();
+  }
+}
+
 export async function exportProject(
   project: Project,
   assets: MediaAsset[],
   callbacks: ExportCallbacks = {},
+): Promise<Blob> {
+  return runFfmpegJob(() => exportProjectInternal(project, assets, callbacks));
+}
+
+async function exportProjectInternal(
+  project: Project,
+  assets: MediaAsset[],
+  callbacks: ExportCallbacks,
 ): Promise<Blob> {
   const { onStatus, onProgress, onLog } = callbacks;
   const totalDuration = projectDurationSec(project);

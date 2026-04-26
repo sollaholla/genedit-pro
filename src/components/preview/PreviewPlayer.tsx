@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
+import { PREVIEW_RENDER_SCALE, renderProjectPreview } from '@/lib/ffmpeg/export';
 import type { Clip, MediaAsset, Project } from '@/types';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
@@ -76,6 +78,24 @@ const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
+const PREVIEW_RENDER_DEBOUNCE_MS = 900;
+
+type FfmpegPreviewState = {
+  status: 'idle' | 'rendering' | 'ready' | 'error';
+  progress: number;
+  durationSec: number;
+  message?: string;
+  error?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  signature?: string;
+};
+
+function cloneForPreviewRender<T>(value: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -109,6 +129,34 @@ function preparedClipsForTime(project: Project, timeSec: number): Clip[] {
     prepared.set(candidate.clip.id, candidate.clip);
   }
   return [...prepared.values()];
+}
+
+function visualPreviewDurationSec(project: Project, assets: MediaAsset[]): number {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
+  return project.clips.reduce((maxDuration, clip) => {
+    const asset = assetsById.get(clip.assetId);
+    const track = tracksById.get(clip.trackId);
+    if (!asset || !track) return maxDuration;
+    if (track.kind !== 'video' || track.hidden) return maxDuration;
+    if (asset.kind !== 'video' && asset.kind !== 'image') return maxDuration;
+    return Math.max(maxDuration, clipEndSec(clip));
+  }, 0);
+}
+
+function previewRenderSignature(project: Project, assets: MediaAsset[]): string {
+  return JSON.stringify({
+    project,
+    assets: assets.map((asset) => ({
+      id: asset.id,
+      kind: asset.kind,
+      blobKey: asset.blobKey,
+      durationSec: asset.durationSec,
+      width: asset.width,
+      height: asset.height,
+      activeIterationId: asset.editTrail?.activeIterationId,
+    })),
+  });
 }
 
 function safeProjectFps(project: Pick<Project, 'fps'>): number {
@@ -205,6 +253,35 @@ function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
   maybe.preservesPitch = true;
   maybe.mozPreservesPitch = true;
   maybe.webkitPreservesPitch = true;
+}
+
+function syncRenderedPreviewVideo(
+  el: HTMLVideoElement | null,
+  targetTimeSec: number,
+  playing: boolean,
+  active: boolean,
+  durationSec: number,
+) {
+  if (!el) return;
+  if (!active || durationSec <= 0) {
+    el.style.display = 'none';
+    if (!el.paused) el.pause();
+    return;
+  }
+
+  const target = Math.max(0, Math.min(durationSec, targetTimeSec));
+  el.style.display = 'block';
+  el.muted = true;
+  el.playbackRate = 1;
+  const threshold = playing ? 0.14 : 0.025;
+  if (Math.abs(el.currentTime - target) > threshold && !el.seeking) {
+    try { el.currentTime = target; } catch { /* noop */ }
+  }
+  if (playing) {
+    if (el.paused) el.play().catch(() => undefined);
+  } else if (!el.paused) {
+    el.pause();
+  }
 }
 
 function resolvedTransform(clip: ActiveLayer['clip'], timelineTimeSec: number) {
@@ -341,6 +418,10 @@ export function PreviewPlayer() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
+  const ffmpegPreviewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const ffmpegPreviewUrlRef = useRef<string | null>(null);
+  const ffmpegPreviewSeqRef = useRef(0);
+  const ffmpegPreviewStateRef = useRef<FfmpegPreviewState>({ status: 'idle', progress: 0, durationSec: 0 });
 
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
@@ -387,10 +468,20 @@ export function PreviewPlayer() {
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [ffmpegPreview, setFfmpegPreview] = useState<FfmpegPreviewState>({
+    status: 'idle',
+    progress: 0,
+    durationSec: 0,
+  });
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
   const frameRatePreset = frameRateOptionForFps(project.fps);
   const previewAspectRatio = PROJECT_ASPECTS[aspectPreset];
+  const ffmpegPreviewSignature = useMemo(() => previewRenderSignature(project, assets), [project, assets]);
+  const ffmpegPreviewDuration = useMemo(() => visualPreviewDurationSec(project, assets), [project, assets]);
+  const ffmpegPreviewVisible = ffmpegPreview.status === 'ready'
+    && !!ffmpegPreview.url
+    && currentTime <= ffmpegPreview.durationSec + 0.05;
 
   const updateAspectPreset = (value: string) => {
     if (!isProjectAspectPreset(value)) return;
@@ -413,6 +504,89 @@ export function PreviewPlayer() {
   useEffect(() => {
     assetsRef.current = assets;
   }, [assets]);
+
+  useEffect(() => {
+    ffmpegPreviewStateRef.current = ffmpegPreview;
+  }, [ffmpegPreview]);
+
+  useEffect(() => {
+    const currentUrl = ffmpegPreviewUrlRef.current;
+    ffmpegPreviewSeqRef.current += 1;
+    const seq = ffmpegPreviewSeqRef.current;
+
+    if (currentUrl) {
+      URL.revokeObjectURL(currentUrl);
+      ffmpegPreviewUrlRef.current = null;
+    }
+
+    if (ffmpegPreviewDuration <= 0) {
+      setFfmpegPreview({ status: 'idle', progress: 0, durationSec: 0, signature: ffmpegPreviewSignature });
+      return undefined;
+    }
+
+    setFfmpegPreview({
+      status: 'rendering',
+      progress: 0,
+      durationSec: ffmpegPreviewDuration,
+      signature: ffmpegPreviewSignature,
+      message: 'Preparing preview...',
+    });
+
+    const projectSnapshot = cloneForPreviewRender(project);
+    const assetsSnapshot = cloneForPreviewRender(assets);
+    let cancelled = false;
+
+    const timeout = window.setTimeout(() => {
+      void renderProjectPreview(projectSnapshot, assetsSnapshot, {
+        onStatus: (message) => {
+          if (!cancelled && ffmpegPreviewSeqRef.current === seq) {
+            setFfmpegPreview((prev) => ({ ...prev, message }));
+          }
+        },
+        onProgress: (progress) => {
+          if (!cancelled && ffmpegPreviewSeqRef.current === seq) {
+            setFfmpegPreview((prev) => ({ ...prev, progress }));
+          }
+        },
+      }).then((result) => {
+        if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
+        const url = URL.createObjectURL(result.blob);
+        ffmpegPreviewUrlRef.current = url;
+        setFfmpegPreview({
+          status: 'ready',
+          progress: 1,
+          durationSec: result.durationSec,
+          message: 'Preview ready',
+          url,
+          width: result.width,
+          height: result.height,
+          signature: ffmpegPreviewSignature,
+        });
+      }).catch((error) => {
+        if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
+        setFfmpegPreview({
+          status: 'error',
+          progress: 0,
+          durationSec: ffmpegPreviewDuration,
+          error: error instanceof Error ? error.message : String(error),
+          signature: ffmpegPreviewSignature,
+        });
+      });
+    }, PREVIEW_RENDER_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [assets, ffmpegPreviewDuration, ffmpegPreviewSignature, project]);
+
+  useEffect(() => () => {
+    if (ffmpegPreviewUrlRef.current) {
+      URL.revokeObjectURL(ffmpegPreviewUrlRef.current);
+      ffmpegPreviewUrlRef.current = null;
+    }
+  }, []);
+
   const previewStageStyle = useMemo(() => {
     if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
       return { aspectRatio: previewAspectRatio, width: '100%' };
@@ -804,7 +978,11 @@ export function PreviewPlayer() {
       const state = usePlaybackStore.getState();
       const proj = useProjectStore.getState().project;
       const total = projectDurationSec(proj);
-      const mediaPlaybackBlocked = state.playing && playbackVideoBlockedRef.current;
+      const ffmpegPreviewSnapshot = ffmpegPreviewStateRef.current;
+      const renderedPreviewActive = ffmpegPreviewSnapshot.status === 'ready'
+        && !!ffmpegPreviewSnapshot.url
+        && state.currentTimeSec <= ffmpegPreviewSnapshot.durationSec + 0.05;
+      const mediaPlaybackBlocked = state.playing && !renderedPreviewActive && playbackVideoBlockedRef.current;
       const mediaPlaying = state.playing && !mediaPlaybackBlocked;
 
       if (state.playing) {
@@ -826,6 +1004,13 @@ export function PreviewPlayer() {
       }
 
       const t = usePlaybackStore.getState().currentTimeSec;
+      syncRenderedPreviewVideo(
+        ffmpegPreviewVideoRef.current,
+        t,
+        mediaPlaying,
+        renderedPreviewActive,
+        ffmpegPreviewSnapshot.durationSec,
+      );
       const previewFps = safeProjectFps(proj);
       const visualTime = state.playing ? projectFrameTime(t, previewFps) : t;
       const visualFrameIndex = projectFrameIndex(t, previewFps);
@@ -1261,6 +1446,35 @@ export function PreviewPlayer() {
             aria-hidden
           />
           <div ref={videoHostRef} className="absolute inset-0 z-10" />
+          {ffmpegPreview.url && (
+            <video
+              ref={ffmpegPreviewVideoRef}
+              className={`pointer-events-none absolute inset-0 z-30 h-full w-full object-contain ${
+                ffmpegPreviewVisible ? 'block' : 'hidden'
+              }`}
+              src={ffmpegPreview.url}
+              muted
+              playsInline
+              preload="auto"
+              aria-hidden
+            />
+          )}
+          {ffmpegPreview.status === 'rendering' && (
+            <div className="pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded border border-surface-700 bg-surface-950/85 px-2 py-1 text-[11px] text-slate-300 shadow-lg">
+              <Loader2 size={12} className="animate-spin text-brand-300" />
+              <span className="font-mono tabular-nums">
+                {Math.round(PREVIEW_RENDER_SCALE * 100)}% / {Math.round(ffmpegPreview.progress * 100)}%
+              </span>
+            </div>
+          )}
+          {ffmpegPreview.status === 'error' && (
+            <div
+              className="pointer-events-none absolute bottom-2 left-2 z-40 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-200"
+              title={ffmpegPreview.error}
+            >
+              Preview render failed
+            </div>
+          )}
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {ready ? 'No clip at playhead' : 'Loading…'}
