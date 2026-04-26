@@ -1,4 +1,5 @@
-import { type DragEvent, type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentType, type DragEvent, type MouseEvent, type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { BookOpen, Clapperboard, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
@@ -41,14 +42,17 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
   const removeAsset = useMediaStore((s) => s.removeAsset);
   const renameAsset = useMediaStore((s) => s.renameAsset);
   const moveAssetToFolder = useMediaStore((s) => s.moveAssetToFolder);
-  const createSequenceAsset = useMediaStore((s) => s.createSequenceAsset);
   const project = useProjectStore((s) => s.project);
   const updateProject = useProjectStore((s) => s.update);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const [dragOver, setDragOver] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
-  const [editingSequenceAssetId, setEditingSequenceAssetId] = useState<string | null>(null);
+  const [sequenceEditor, setSequenceEditor] = useState<
+    | { kind: 'edit'; assetId: string }
+    | { kind: 'create'; folderId: string | null }
+    | null
+  >(null);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [openAssetMenuId, setOpenAssetMenuId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -108,8 +112,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
     if (name) createFolder(name);
   };
   const createSequence = () => {
-    const id = createSequenceAsset(activeFolderId);
-    setEditingSequenceAssetId(id);
+    setSequenceEditor({ kind: 'create', folderId: activeFolderId });
   };
 
   useEffect(() => {
@@ -161,19 +164,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
     >
       <div className="border-b border-surface-700 px-3 py-2">
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
-        <div className="grid grid-cols-3 gap-1.5">
-          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={createSequence} title="New sequence">
-            <Clapperboard size={12} />
-            <span className="min-w-0 truncate">Sequence</span>
-          </button>
-          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={onGenerateClick} title="Generate video">
-            <Sparkles size={12} />
-            <span className="min-w-0 truncate">Generate</span>
-          </button>
-          <button className="btn-ghost min-w-0 justify-center px-2 py-1 text-xs" onClick={onImportClick} disabled={importing} title="Import media">
-            <Upload size={12} />
-            <span className="min-w-0 truncate">{importing ? 'Importing…' : 'Import'}</span>
-          </button>
+        <div className="flex items-center gap-1.5">
+          <ToolbarIconButton icon={Clapperboard} label="New sequence" onClick={createSequence} />
+          <ToolbarIconButton icon={Sparkles} label="Generate video" onClick={onGenerateClick} />
+          <ToolbarIconButton icon={Upload} label={importing ? 'Importing…' : 'Import media'} onClick={onImportClick} disabled={importing} />
         </div>
       </div>
       <div className="border-b border-surface-700 px-3 py-2">
@@ -257,7 +251,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
                 onRename={(name) => renameAsset(asset.id, name)}
                 onOpenEdit={() => setEditingAssetId(asset.id)}
                 onOpenRecipe={() => onOpenRecipe(asset)}
-                onOpenSequence={() => setEditingSequenceAssetId(asset.id)}
+                onOpenSequence={() => setSequenceEditor({ kind: 'edit', assetId: asset.id })}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
                 onOpenPreview={() => setPreviewAssetId(asset.id)}
                 menuOpen={openAssetMenuId === asset.id}
@@ -279,16 +273,18 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
           onClose={() => setEditingAssetId(null)}
         />
       )}
-      {editingSequenceAssetId && (
+      {sequenceEditor && (
         <SequenceEditor
-          assetId={editingSequenceAssetId}
-          onGenerate={() => {
-            const sequenceAsset = assets.find((candidate) => candidate.id === editingSequenceAssetId && candidate.kind === 'sequence');
+          assetId={sequenceEditor.kind === 'edit' ? sequenceEditor.assetId : null}
+          draftFolderId={sequenceEditor.kind === 'create' ? sequenceEditor.folderId : null}
+          onAssetCommitted={(committedId) => setSequenceEditor({ kind: 'edit', assetId: committedId })}
+          onGenerate={(generatedAssetId) => {
+            const sequenceAsset = assets.find((candidate) => candidate.id === generatedAssetId && candidate.kind === 'sequence');
             if (!sequenceAsset) return;
-            setEditingSequenceAssetId(null);
+            setSequenceEditor(null);
             onGenerateFromSequence(sequenceAsset);
           }}
-          onClose={() => setEditingSequenceAssetId(null)}
+          onClose={() => setSequenceEditor(null)}
         />
       )}
       {previewAsset && (
@@ -1007,4 +1003,58 @@ function assetBadgeLabel(asset: MediaAsset): string {
 function generationFailureMessage(asset: MediaAsset): string | null {
   if (asset.generation?.status !== 'error') return null;
   return asset.generation.errorMessage || 'Generation failed. No provider error was returned.';
+}
+
+function ToolbarIconButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled = false,
+}: {
+  icon: ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn-ghost flex h-7 w-7 shrink-0 items-center justify-center px-0 py-0"
+        onClick={() => {
+          setTooltip(null);
+          onClick();
+        }}
+        disabled={disabled}
+        aria-label={label}
+        onMouseEnter={(event) => setTooltip({ x: event.clientX, y: event.clientY })}
+        onMouseMove={(event) => setTooltip({ x: event.clientX, y: event.clientY })}
+        onMouseLeave={() => setTooltip(null)}
+      >
+        <Icon size={14} />
+      </button>
+      {tooltip && !disabled && <MouseFollowTooltip x={tooltip.x} y={tooltip.y} label={label} />}
+    </>
+  );
+}
+
+function MouseFollowTooltip({ x, y, label }: { x: number; y: number; label: string }) {
+  if (typeof document === 'undefined') return null;
+  const offsetX = 14;
+  const offsetY = 18;
+  const maxWidth = 240;
+  const left = Math.min(x + offsetX, window.innerWidth - maxWidth - 8);
+  const top = Math.min(y + offsetY, window.innerHeight - 32);
+  return createPortal(
+    <div
+      role="tooltip"
+      className="pointer-events-none fixed z-[200] whitespace-nowrap rounded-md border border-white/10 bg-surface-950/95 px-2 py-1 text-[11px] text-slate-100 shadow-lg"
+      style={{ left, top, maxWidth }}
+    >
+      {label}
+    </div>,
+    document.body,
+  );
 }

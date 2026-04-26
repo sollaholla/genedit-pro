@@ -231,6 +231,20 @@ function hideVideoElement(el: HTMLVideoElement) {
   el.style.zIndex = '';
 }
 
+function keepVideoDecoderElementWarm(el: HTMLVideoElement) {
+  el.style.display = 'block';
+  el.style.visibility = 'visible';
+  el.style.left = '0';
+  el.style.top = '0';
+  el.style.width = '1px';
+  el.style.height = '1px';
+  el.style.transform = '';
+  el.style.filter = '';
+  el.style.opacity = '1';
+  el.style.cursor = 'default';
+  el.style.zIndex = '';
+}
+
 function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
   if (Math.abs(el.playbackRate - speed) > 1e-3) {
     el.playbackRate = speed;
@@ -938,10 +952,13 @@ export function PreviewPlayer() {
         if (activeAsset?.kind !== 'video') continue;
         const videoEl = videoPool.current.get(layer.clip.id) as HTMLVideoElement | undefined;
         if (!videoEl) continue;
+        keepVideoDecoderElementWarm(videoEl);
+        setPitchPreservingRate(videoEl, clipSpeed(layer.clip));
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
+        if (mediaPlaying && videoEl.paused) videoEl.play().catch(() => undefined);
       }
       if (visualLayers.length > 0) {
         renderPreviewCanvas(
@@ -959,9 +976,15 @@ export function PreviewPlayer() {
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = visualLayers.length > 0 ? 'block' : 'none';
       }
-      for (const el of videoPool.current.values()) {
+      for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
-        hideVideoElement(videoEl);
+        const activeLayer = activeVisualLayersByClipId.get(clipId);
+        const activeAsset = activeVisualAssetsByClipId.get(clipId);
+        if (activeLayer && activeAsset?.kind === 'video') {
+          keepVideoDecoderElementWarm(videoEl);
+        } else {
+          hideVideoElement(videoEl);
+        }
       }
       for (const img of imagePool.current.values()) {
         img.style.display = 'none';

@@ -13,23 +13,32 @@ import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
 
 type Props = {
-  assetId: string;
+  assetId: string | null;
+  draftFolderId?: string | null;
   onClose: () => void;
-  onGenerate: () => void;
+  onGenerate: (assetId: string) => void;
+  onAssetCommitted?: (assetId: string) => void;
 };
 
 const SVG_WIDTH = 1000;
 const TIMELINE_Y = 42;
 
-export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
+export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGenerate, onAssetCommitted }: Props) {
   const assets = useMediaStore((state) => state.assets);
   const importFiles = useMediaStore((state) => state.importFiles);
   const objectUrlFor = useMediaStore((state) => state.objectUrlFor);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
-  const asset = assets.find((candidate) => candidate.id === assetId && candidate.kind === 'sequence') ?? null;
+  const createSequenceAsset = useMediaStore((state) => state.createSequenceAsset);
   const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
   const fallbackModel = sequenceModels[0];
-  const sequence = asset?.sequence ?? createDefaultSequence(fallbackModel);
+  const [committedAssetId, setCommittedAssetId] = useState<string | null>(null);
+  const [draftSequence, setDraftSequence] = useState<SequenceAssetData>(() => createDefaultSequence(fallbackModel));
+  const effectiveAssetId = assetId ?? committedAssetId;
+  const storedAsset = effectiveAssetId
+    ? assets.find((candidate) => candidate.id === effectiveAssetId && candidate.kind === 'sequence') ?? null
+    : null;
+  const isDraft = !effectiveAssetId;
+  const sequence = storedAsset?.sequence ?? draftSequence;
   const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
   const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
   const imageAssets = useMemo(() => assets.filter((candidate) => candidate.kind === 'image'), [assets]);
@@ -53,8 +62,9 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence), [sequence]);
 
   useEffect(() => {
-    if (!asset) onClose();
-  }, [asset, onClose]);
+    if (isDraft) return;
+    if (!storedAsset) onClose();
+  }, [isDraft, storedAsset, onClose]);
 
   useEffect(() => {
     if (selectedMarkerId && sequence.markers.some((marker) => marker.id === selectedMarkerId)) return;
@@ -116,10 +126,26 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [imagePickerMarkerId, onClose]);
 
-  if (!asset || !selectedModel) return null;
+  if (!selectedModel) return null;
+  if (!isDraft && !storedAsset) return null;
+
+  const shouldCommitDraft = (next: SequenceAssetData): boolean =>
+    next.markers.some((marker) => marker.imageAssetId) || next.markers.length > 0;
 
   const persist = (next: SequenceAssetData) => {
-    updateSequenceAsset(asset.id, normalizeSequence(next));
+    const normalized = normalizeSequence(next);
+    if (effectiveAssetId) {
+      updateSequenceAsset(effectiveAssetId, normalized);
+      return;
+    }
+    if (shouldCommitDraft(normalized)) {
+      const newId = createSequenceAsset(draftFolderId);
+      updateSequenceAsset(newId, normalized);
+      setCommittedAssetId(newId);
+      onAssetCommitted?.(newId);
+      return;
+    }
+    setDraftSequence(normalized);
   };
   const updateMarker = (markerId: string, patch: Partial<SequenceMarker>) => {
     persist({
@@ -243,12 +269,19 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
           <div className="flex min-w-0 items-center gap-2">
             <Clapperboard size={17} className="shrink-0 text-brand-300" />
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-slate-100">{asset.name}</div>
-              <div className="text-[11px] uppercase tracking-wide text-slate-500">Sequence</div>
+              <div className="truncate text-sm font-semibold text-slate-100">{storedAsset?.name ?? 'New sequence'}</div>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">Sequence{isDraft ? ' · Draft' : ''}</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button className="btn-ghost px-2 py-1 text-xs" onClick={onGenerate}>
+            <button
+              className="btn-ghost px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                if (effectiveAssetId) onGenerate(effectiveAssetId);
+              }}
+              disabled={!effectiveAssetId}
+              title={effectiveAssetId ? 'Generate' : 'Add a marker first'}
+            >
               <Sparkles size={12} />
               Generate
             </button>
