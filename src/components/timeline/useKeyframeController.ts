@@ -85,9 +85,11 @@ export function useKeyframeController({
     const valueStep = selectedKeyframeData.property === 'scale' ? 0.01 : 1;
     const durationSec = clipTimelineDurationSec(selectedKeyframeClip);
     const patch = property === 'time'
-      ? { timeSec: Math.max(0, Math.min(durationSec, selectedKeyframeData.timeSec + direction * frameStep)) }
+      ? { timeSec: quantizeKeyframeTime(selectedKeyframeData.timeSec + direction * frameStep, fps, durationSec) }
       : { value: selectedKeyframeData.value + direction * valueStep };
-    patchClip(selectedKeyframeClip.id, (clip) => updateTransformKeyframe(clip, selectedKeyframeData, patch));
+    patchClip(selectedKeyframeClip.id, (clip) => updateTransformKeyframe(clip, selectedKeyframeData, patch, {
+      mergeEpsSec: keyframeFrameMergeEpsSec(fps),
+    }));
     if (property === 'time') {
       const nextTime = patch.timeSec ?? selectedKeyframeData.timeSec;
       setCurrentTime(selectedKeyframeClip.startSec + nextTime);
@@ -99,9 +101,15 @@ export function useKeyframeController({
   }, [beginTx]);
 
   const moveKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number; value: number }) => {
+    const clip = clips.find((candidate) => candidate.id === meta.clipId);
+    if (!clip) return;
+    const durationSec = clipTimelineDurationSec(clip);
+    const nextTimeSec = quantizeKeyframeTime(meta.timeSec, fps, durationSec);
     patchClip(
       meta.clipId,
-      (clip) => updateTransformKeyframe(clip, meta, { timeSec: meta.timeSec, value: meta.value }),
+      (clip) => updateTransformKeyframe(clip, meta, { timeSec: nextTimeSec, value: meta.value }, {
+        mergeEpsSec: keyframeFrameMergeEpsSec(fps),
+      }),
       true,
     );
     setSelectedKeyframe({
@@ -111,9 +119,8 @@ export function useKeyframeController({
       property: meta.property,
       keyframeId: meta.keyframeId,
     });
-    const clip = clips.find((candidate) => candidate.id === meta.clipId);
-    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
-  }, [clips, patchClip, setCurrentTime]);
+    setCurrentTime(clip.startSec + nextTimeSec);
+  }, [clips, fps, patchClip, setCurrentTime]);
 
   const moveKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
@@ -121,15 +128,17 @@ export function useKeyframeController({
     const clip = clips.find((candidate) => candidate.id === first.clipId);
     if (!clip) return;
     const durationSec = clipTimelineDurationSec(clip);
-    const nextTimeSec = Math.max(0, Math.min(durationSec, meta.timeSec));
+    const nextTimeSec = quantizeKeyframeTime(meta.timeSec, fps, durationSec);
     patchClip(
       first.clipId,
-      (clip) => moveTransformKeyframeGroup(clip, meta.members, nextTimeSec),
+      (clip) => moveTransformKeyframeGroup(clip, meta.members, nextTimeSec, {
+        mergeEpsSec: keyframeFrameMergeEpsSec(fps),
+      }),
       true,
     );
     setSelectedKeyframe(first);
     setCurrentTime(clip.startSec + nextTimeSec);
-  }, [clips, patchClip, setCurrentTime]);
+  }, [clips, fps, patchClip, setCurrentTime]);
 
   const selectKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number }) => {
     setSelectedKeyframe({
@@ -140,16 +149,16 @@ export function useKeyframeController({
       keyframeId: meta.keyframeId,
     });
     const clip = clips.find((candidate) => candidate.id === meta.clipId);
-    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
-  }, [clips, setCurrentTime]);
+    if (clip) setCurrentTime(clip.startSec + quantizeKeyframeTime(meta.timeSec, fps, clipTimelineDurationSec(clip)));
+  }, [clips, fps, setCurrentTime]);
 
   const selectKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
     if (!first) return;
     setSelectedKeyframe(first);
     const clip = clips.find((candidate) => candidate.id === first.clipId);
-    if (clip) setCurrentTime(clip.startSec + meta.timeSec);
-  }, [clips, setCurrentTime]);
+    if (clip) setCurrentTime(clip.startSec + quantizeKeyframeTime(meta.timeSec, fps, clipTimelineDurationSec(clip)));
+  }, [clips, fps, setCurrentTime]);
 
   return {
     currentTimeSec,
@@ -171,4 +180,14 @@ export function useKeyframeController({
 
 function countVisibleComponentsWithKeyframes(rows: Array<{ componentId: string }>): number {
   return new Set(rows.map((row) => row.componentId)).size;
+}
+
+function quantizeKeyframeTime(timeSec: number, fps: number, durationSec: number): number {
+  const safeFps = Math.max(1, fps);
+  const frame = Math.round(Math.max(0, timeSec) * safeFps);
+  return Math.max(0, Math.min(durationSec, frame / safeFps));
+}
+
+function keyframeFrameMergeEpsSec(fps: number): number {
+  return 0.5 / Math.max(1, fps) + 1e-6;
 }

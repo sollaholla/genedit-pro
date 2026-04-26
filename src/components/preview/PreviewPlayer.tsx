@@ -163,7 +163,10 @@ function seekIfNeeded(
   const lastRequestedTarget = requestedSeekTargets?.get(el);
   const hasRequestedTarget = lastRequestedTarget !== undefined && Math.abs(lastRequestedTarget - target) <= 0.002;
   const canRetargetPausedSeek = !playing && !hasRequestedTarget;
-  if ((!el.seeking || canRetargetPausedSeek) && el.readyState >= 1) {
+  const canRetargetPlayingSeek = playing && (
+    lastRequestedTarget === undefined || Math.abs(lastRequestedTarget - target) > 0.2
+  );
+  if ((!el.seeking || canRetargetPausedSeek || canRetargetPlayingSeek) && el.readyState >= 1) {
     try { el.currentTime = target; } catch { /* noop */ }
     requestedSeekTargets?.set(el, target);
     return true;
@@ -362,6 +365,8 @@ export function PreviewPlayer() {
   const playbackVideoBlockedRef = useRef(false);
   const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
+  const lastTimelineTimeRef = useRef<number | null>(null);
+  const lastPlayingStateRef = useRef(false);
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
   const hasFreezeFrameRef = useRef(false);
@@ -413,6 +418,20 @@ export function PreviewPlayer() {
   useEffect(() => {
     assetsRef.current = assets;
   }, [assets]);
+
+  const resetTransientPlaybackState = useCallback(() => {
+    requestedSeekTargetsRef.current = new WeakMap();
+    playbackVideoBlockedRef.current = false;
+    lastPaintedVisualRef.current = null;
+    hasFreezeFrameRef.current = false;
+    lastRenderedPreviewFrameRef.current = null;
+    lastRenderedPreviewClipKeyRef.current = null;
+    prerolledRef.current.clear();
+    hotPrimedSeekRef.current.clear();
+    fadingOut.current.clear();
+    fadingIn.current.clear();
+    prevActiveAudioIds.current.clear();
+  }, []);
 
   const previewStageStyle = useMemo(() => {
     if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
@@ -805,6 +824,23 @@ export function PreviewPlayer() {
       const state = usePlaybackStore.getState();
       const proj = useProjectStore.getState().project;
       const total = projectDurationSec(proj);
+      const previewFps = safeProjectFps(proj);
+      const frameSec = 1 / previewFps;
+      const previousTimelineTime = lastTimelineTimeRef.current;
+      const timelineDelta = previousTimelineTime === null ? 0 : state.currentTimeSec - previousTimelineTime;
+      const playStateChanged = lastPlayingStateRef.current !== state.playing;
+      const pausedPlayheadChanged = previousTimelineTime !== null
+        && !state.playing
+        && Math.abs(timelineDelta) > frameSec * 0.5;
+      const jumpedBackward = previousTimelineTime !== null && timelineDelta < -frameSec * 1.5;
+      const jumpedFar = previousTimelineTime !== null && Math.abs(timelineDelta) > Math.max(0.25, frameSec * 8);
+
+      if (playStateChanged || pausedPlayheadChanged || jumpedBackward || jumpedFar) {
+        resetTransientPlaybackState();
+        lastTickRef.current = ts;
+      }
+      lastPlayingStateRef.current = state.playing;
+
       const mediaPlaybackBlocked = state.playing && playbackVideoBlockedRef.current;
       const mediaPlaying = state.playing && !mediaPlaybackBlocked;
 
@@ -827,7 +863,6 @@ export function PreviewPlayer() {
       }
 
       const t = usePlaybackStore.getState().currentTimeSec;
-      const previewFps = safeProjectFps(proj);
       const visualTime = state.playing ? projectFrameTime(t, previewFps) : t;
       const visualFrameIndex = projectFrameIndex(t, previewFps);
       const audioFrame = resolveFrame(proj, t);
@@ -1183,11 +1218,12 @@ export function PreviewPlayer() {
         usePlaybackStore.getState().setClipAudioLevels(levels);
       }
 
+      lastTimelineTimeRef.current = usePlaybackStore.getState().currentTimeSec;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [ensureClipElement, pause, pruneMediaElements]);
+  }, [ensureClipElement, pause, pruneMediaElements, resetTransientPlaybackState]);
 
   // Cleanup on unmount.
   useEffect(() => {

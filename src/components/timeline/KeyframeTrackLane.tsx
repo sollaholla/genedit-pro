@@ -49,9 +49,10 @@ export function KeyframeTrackLane({
   onEmptyMouseDown?: (e: React.MouseEvent) => void;
 }) {
   if (rows.length === 0) return null;
+  const safeFps = Math.max(1, fps);
   const groupedRows = groupRows(rows);
-  const frameGroups = buildFrameGroups(rows, fps, clip.id);
-  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, fps, clip.id);
+  const frameGroups = buildFrameGroups(rows, safeFps, clip.id);
+  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, safeFps, clip.id);
   const durationSec = Math.max(1e-6, clipTimelineDurationSec(clip));
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(durationSec, pxPerSec));
@@ -107,8 +108,8 @@ export function KeyframeTrackLane({
                   const move = (ev: MouseEvent) => {
                     const rect = rail.getBoundingClientRect();
                     const localPx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
-                    const nextFrame = Math.round((localPx / pxPerSec) * fps);
-                    const nextTimeSec = Math.max(0, Math.min(durationSec, nextFrame / fps));
+                    const nextFrame = Math.round((localPx / pxPerSec) * safeFps);
+                    const nextTimeSec = Math.max(0, Math.min(durationSec, nextFrame / safeFps));
                     onMoveKeyframeGroup({
                       members: group.members,
                       timeSec: nextTimeSec,
@@ -172,20 +173,21 @@ export function KeyframeTrackLane({
               >
                 <div className="pointer-events-none absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-slate-600/45" />
                 {row.points.map((keyframe) => {
-                  const frame = Math.round(keyframe.timeSec * fps);
+                  const frame = Math.round(keyframe.timeSec * safeFps);
+                  const frameTimeSec = Math.max(0, Math.min(durationSec, frame / safeFps));
                   const selected = selectedFrame === frame ||
                     (selectedKeyframe?.keyframeId === keyframe.id &&
                       selectedKeyframe.clipId === clip.id &&
                       selectedKeyframe.componentId === row.componentId &&
                       selectedKeyframe.property === row.property);
-                  const left = Math.max(0, Math.min(clipWidthPx, timeToPx(keyframe.timeSec, pxPerSec)));
+                  const left = Math.max(0, Math.min(clipWidthPx, timeToPx(frameTimeSec, pxPerSec)));
                   return (
                     <button
                       key={keyframe.id}
                       type="button"
                       className="absolute top-1/2 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none"
                       style={{ left }}
-                      title={`${row.label} at ${keyframe.timeSec.toFixed(2)}s`}
+                      title={`${row.label} at ${frameTimeSec.toFixed(2)}s`}
                       onMouseDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -203,13 +205,15 @@ export function KeyframeTrackLane({
                         const move = (ev: MouseEvent) => {
                           const rect = rail.getBoundingClientRect();
                           const localPx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+                          const nextFrame = Math.round((localPx / pxPerSec) * safeFps);
+                          const nextTimeSec = Math.max(0, Math.min(durationSec, nextFrame / safeFps));
                           onMoveKeyframe({
                             componentIndex: row.componentIndex,
                             componentId: row.componentId,
                             clipId: clip.id,
                             property: row.property,
                             keyframeId: keyframe.id,
-                            timeSec: Math.max(0, Math.min(durationSec, localPx / pxPerSec)),
+                            timeSec: nextTimeSec,
                             value: keyframe.value,
                           });
                         };

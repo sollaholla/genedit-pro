@@ -136,6 +136,7 @@ export function updateTransformKeyframe(
   clip: Clip,
   target: TransformTarget & { property: TransformProperty; keyframeId: string },
   patch: Partial<Pick<KeyframePoint, 'timeSec' | 'value'>>,
+  options: { mergeEpsSec?: number } = {},
 ): Clip {
   const components = getClipComponents(clip);
   const stackIndex = findTransformStackIndex(clip, target);
@@ -147,11 +148,14 @@ export function updateTransformKeyframe(
       const points = component.data.keyframes[target.property].map((point) => (
         point.id === target.keyframeId ? { ...point, ...patch } : point
       ));
+      const nextPoints = patch.timeSec === undefined
+        ? points
+        : mergeKeyframesAtSameTime(points, new Set([target.keyframeId]), options.mergeEpsSec);
       return {
         ...component,
         data: {
           ...component.data,
-          keyframes: { ...component.data.keyframes, [target.property]: points },
+          keyframes: { ...component.data.keyframes, [target.property]: nextPoints },
         },
       };
     }),
@@ -162,6 +166,7 @@ export function moveTransformKeyframeGroup(
   clip: Clip,
   targets: Array<TransformTarget & { property: TransformProperty; keyframeId: string }>,
   timeSec: number,
+  options: { mergeEpsSec?: number } = {},
 ): Clip {
   const components = getClipComponents(clip);
   if (targets.length === 0 || components.length === 0) return clip;
@@ -185,9 +190,10 @@ export function moveTransformKeyframeGroup(
             .map((target) => target.keyframeId),
         );
         if (ids.size === 0) return;
-        keyframes[property] = keyframes[property].map((point) => (
+        const moved = keyframes[property].map((point) => (
           ids.has(point.id) ? { ...point, timeSec } : point
         ));
+        keyframes[property] = mergeKeyframesAtSameTime(moved, ids, options.mergeEpsSec);
       });
 
       return {
@@ -199,6 +205,30 @@ export function moveTransformKeyframeGroup(
       };
     }),
   };
+}
+
+function mergeKeyframesAtSameTime(
+  points: KeyframePoint[],
+  preferredIds: Set<string>,
+  epsSec = KEYFRAME_EPS_SEC,
+): KeyframePoint[] {
+  const merged: KeyframePoint[] = [];
+  const sorted = [...points].sort((first, second) => first.timeSec - second.timeSec);
+
+  for (const point of sorted) {
+    const existingIndex = merged.findIndex((candidate) => Math.abs(candidate.timeSec - point.timeSec) <= epsSec);
+    if (existingIndex < 0) {
+      merged.push(point);
+      continue;
+    }
+
+    const existing = merged[existingIndex]!;
+    const preferPoint = preferredIds.has(point.id);
+    const preferExisting = preferredIds.has(existing.id);
+    if (preferPoint || !preferExisting) merged[existingIndex] = point;
+  }
+
+  return merged;
 }
 
 export function removeTransformKeyframe(
