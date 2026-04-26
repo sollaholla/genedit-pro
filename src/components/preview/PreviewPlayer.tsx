@@ -1064,6 +1064,7 @@ export function PreviewPlayer() {
         if (!videoEl) continue;
         keepVideoDecoderElementWarm(videoEl);
         setPitchPreservingRate(videoEl, clipSpeed(layer.clip));
+        if (!mediaPlaying && !videoEl.paused) videoEl.pause();
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
