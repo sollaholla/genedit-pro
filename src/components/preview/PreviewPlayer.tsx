@@ -76,6 +76,8 @@ const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
+const RECENT_MEDIA_RETAIN_MS = 30_000;
+const MAX_RECENT_MEDIA_RETAINED = 24;
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -376,6 +378,7 @@ export function PreviewPlayer() {
 
   const urlCache = useRef<Map<string, string>>(new Map());
   const pendingClipLoadsRef = useRef<Set<string>>(new Set());
+  const clipMediaTouchedAtRef = useRef<Map<string, number>>(new Map());
   const requestedSeekTargetsRef = useRef<WeakMap<HTMLMediaElement, number>>(new WeakMap());
   const playbackVideoBlockedRef = useRef(false);
   const assetsRef = useRef(assets);
@@ -512,6 +515,7 @@ export function PreviewPlayer() {
       videoPool.current.delete(clipId);
     }
     clipAssetRef.current.delete(clipId);
+    clipMediaTouchedAtRef.current.delete(clipId);
     releaseAudioGraph(clipId);
   }, [releaseAudioGraph]);
 
@@ -522,6 +526,7 @@ export function PreviewPlayer() {
       audioPool.current.delete(clipId);
     }
     clipAssetRef.current.delete(clipId);
+    clipMediaTouchedAtRef.current.delete(clipId);
     releaseAudioGraph(clipId);
   }, [releaseAudioGraph]);
 
@@ -529,6 +534,7 @@ export function PreviewPlayer() {
     imagePool.current.get(clipId)?.remove();
     imagePool.current.delete(clipId);
     clipAssetRef.current.delete(clipId);
+    clipMediaTouchedAtRef.current.delete(clipId);
     pendingClipLoadsRef.current.delete(clipId);
   }, []);
 
@@ -662,17 +668,31 @@ export function PreviewPlayer() {
     return null;
   }, [attachClipElement]);
 
-  const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number) => {
+  const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number, nowMs: number) => {
     const clipsById = new Map(projectToPrune.clips.map((clip) => [clip.id, clip]));
     const keepIds = new Set<string>();
     for (const clip of preparedClipsForTime(projectToPrune, timeSec)) keepIds.add(clip.id);
+    const currentPoolIds = new Set([
+      ...videoPool.current.keys(),
+      ...imagePool.current.keys(),
+      ...audioPool.current.keys(),
+    ]);
+    const recentRetainedIds = new Set(
+      [...currentPoolIds]
+        .filter((clipId) => !keepIds.has(clipId) && clipsById.has(clipId))
+        .map((clipId) => ({ clipId, touchedAt: clipMediaTouchedAtRef.current.get(clipId) ?? 0 }))
+        .filter(({ touchedAt }) => touchedAt > 0 && nowMs - touchedAt <= RECENT_MEDIA_RETAIN_MS)
+        .sort((first, second) => second.touchedAt - first.touchedAt)
+        .slice(0, MAX_RECENT_MEDIA_RETAINED)
+        .map(({ clipId }) => clipId),
+    );
     const keepClip = (clipId: string) => {
       const clip = clipsById.get(clipId);
       if (!clip) return false;
       const selectedForPlayback = keepIds.has(clipId);
       const closeEnoughToFade = (fadingOut.current.has(clipId) || fadingIn.current.has(clipId))
         && clipIntersectsWindow(clip, timeSec - AUDIO_FADE_RETAIN_SEC, timeSec + AUDIO_FADE_RETAIN_SEC);
-      return selectedForPlayback || closeEnoughToFade;
+      return selectedForPlayback || closeEnoughToFade || recentRetainedIds.has(clipId);
     };
 
     for (const clipId of [...videoPool.current.keys()]) {
@@ -880,6 +900,9 @@ export function PreviewPlayer() {
       const t = usePlaybackStore.getState().currentTimeSec;
       const audioFrame = resolveFrame(proj, t);
       const visualFrame = resolveFrame(proj, t);
+      for (const layer of [...visualFrame.videos, ...audioFrame.audios]) {
+        clipMediaTouchedAtRef.current.set(layer.clip.id, ts);
+      }
       const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
       const preparedClips = preparedClipsForTime(proj, t);
       const neededClipIds = new Set<string>();
@@ -1192,7 +1215,7 @@ export function PreviewPlayer() {
         if (mediaPlaying && el.paused) el.play().catch(() => undefined);
       }
 
-      pruneMediaElements(proj, t);
+      pruneMediaElements(proj, t, ts);
 
       // ---- PUBLISH READINESS (throttled to ~4Hz; diff-guarded) ----
       if (ts - lastReadinessPublishRef.current > 250) {
