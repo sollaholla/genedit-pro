@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Clip } from '@/types';
+import type { Clip, Project } from '@/types';
 import { Plus, Scissors, Trash2 } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
@@ -22,10 +22,12 @@ import { useMediaStore } from '@/state/mediaStore';
 import {
   addClip,
   addTrack,
+  clipSpeed,
   clipTimelineDurationSec,
   duplicateClip,
   extractAudioFromClip,
   insertTrack,
+  MIN_CLIP_DURATION,
   moveClip,
   moveClipsBy,
   moveTrack,
@@ -35,8 +37,6 @@ import {
   removeClip,
   sortedTracks,
   splitClipAt,
-  trimClipLeft,
-  trimClipRight,
 } from '@/lib/timeline/operations';
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
@@ -165,12 +165,7 @@ export function Timeline() {
   });
 
   const snapTargets = useMemo(() => {
-    const s = new Set<number>([0, currentTime]);
-    for (const c of project.clips) {
-      s.add(c.startSec);
-      s.add(c.startSec + clipTimelineDurationSec(c));
-    }
-    return [...s];
+    return buildSnapTargets(project.clips, currentTime);
   }, [project.clips, currentTime]);
 
   const trackIndexFromContentY = useCallback((contentY: number) => {
@@ -480,6 +475,7 @@ export function Timeline() {
     const startX = e.clientX;
     const origStart = clip.startSec;
     const origEnd = clip.startSec + clipTimelineDurationSec(clip);
+    const trimSnapTargets = buildSnapTargets(useProjectStore.getState().project.clips, undefined, new Set([clipId]));
     setCurrentTime(trimPreviewTimeForClip(clip, side, project.fps));
     let txStarted = false;
     const ensureTx = () => {
@@ -490,23 +486,23 @@ export function Timeline() {
 
     const move = (ev: MouseEvent) => {
       const dt = pxToTime(ev.clientX - startX, pxPerSec);
-      let previewTime = currentTime;
+      let previewTime = trimPreviewTimeForClip(clip, side, project.fps);
       if (side === 'l') {
         const candidate = Math.max(0, origStart + dt);
-        const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        const snapped = ev.altKey ? candidate : snapTime(candidate, trimSnapTargets, pxPerSec, SNAP_TOLERANCE_PX);
         ensureTx();
         updateSilent((p) => {
-          const next = trimClipLeft(p, clipId, snapped);
+          const next = trimClipLeftFromBaseline(p, clip, snapped);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
           if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
           return next;
         });
       } else {
         const candidate = origEnd + dt;
-        const snapped = ev.altKey ? candidate : snapTime(candidate, snapTargets, pxPerSec, SNAP_TOLERANCE_PX);
+        const snapped = ev.altKey ? candidate : snapTime(candidate, trimSnapTargets, pxPerSec, SNAP_TOLERANCE_PX);
         ensureTx();
         updateSilent((p) => {
-          const next = trimClipRight(p, clipId, snapped, maxSourceSec);
+          const next = trimClipRightFromBaseline(p, clip, snapped, maxSourceSec);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
           if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
           return next;
@@ -520,7 +516,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [assetById, currentTime, pause, project.fps, pxPerSec, snapTargets, selectClip, beginTx, setCurrentTime, updateSilent]);
+  }, [assetById, pause, project.fps, pxPerSec, selectClip, beginTx, setCurrentTime, updateSilent]);
 
   // ---- Asset drop from media bin ----
   const handleDropAsset = useCallback((trackId: string, assetId: string, startSec: number) => {
@@ -864,6 +860,54 @@ function trimPreviewTimeForClip(clip: Clip, side: ClipDragSide, fps: number): nu
   const frameDuration = 1 / Math.max(1, fps);
   const lastVisibleFrame = clip.startSec + clipTimelineDurationSec(clip) - frameDuration;
   return Math.max(clip.startSec, lastVisibleFrame);
+}
+
+function buildSnapTargets(clips: Clip[], currentTime?: number, excludedClipIds = new Set<string>()): number[] {
+  const targets = new Set<number>([0]);
+  if (currentTime !== undefined) targets.add(currentTime);
+  for (const clip of clips) {
+    if (excludedClipIds.has(clip.id)) continue;
+    targets.add(clip.startSec);
+    targets.add(clip.startSec + clipTimelineDurationSec(clip));
+  }
+  return [...targets];
+}
+
+function trimClipLeftFromBaseline(project: Project, baselineClip: Clip, newStartSec: number): Project {
+  if (!project.clips.some((clip) => clip.id === baselineClip.id)) return project;
+  const rawDelta = newStartSec - baselineClip.startSec;
+  const minDelta = Math.max(-baselineClip.inSec, -baselineClip.startSec);
+  const maxDelta = clipTimelineDurationSec(baselineClip) - MIN_CLIP_DURATION;
+  const delta = Math.max(minDelta, Math.min(maxDelta, rawDelta));
+  const nextInSec = baselineClip.inSec + delta * clipSpeed(baselineClip);
+  const nextStart = baselineClip.startSec + delta;
+  return {
+    ...project,
+    clips: project.clips.map((clip) => (
+      clip.id === baselineClip.id ? { ...clip, startSec: nextStart, inSec: nextInSec } : clip
+    )),
+  };
+}
+
+function trimClipRightFromBaseline(
+  project: Project,
+  baselineClip: Clip,
+  newEndSec: number,
+  maxSourceSec?: number,
+): Project {
+  if (!project.clips.some((clip) => clip.id === baselineClip.id)) return project;
+  const requestedDur = newEndSec - baselineClip.startSec;
+  const maxDurFromSource = maxSourceSec !== undefined
+    ? Math.max(MIN_CLIP_DURATION, (maxSourceSec - baselineClip.inSec) / clipSpeed(baselineClip))
+    : Infinity;
+  const dur = Math.max(MIN_CLIP_DURATION, Math.min(maxDurFromSource, requestedDur));
+  const nextOutSec = baselineClip.inSec + dur * clipSpeed(baselineClip);
+  return {
+    ...project,
+    clips: project.clips.map((clip) => (
+      clip.id === baselineClip.id ? { ...clip, outSec: nextOutSec } : clip
+    )),
+  };
 }
 
 function snapMovedClipStartOrEnd(
