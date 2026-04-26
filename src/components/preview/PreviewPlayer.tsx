@@ -299,14 +299,14 @@ function renderPreviewCanvas(
     const source = asset.kind === 'image'
       ? imagePool.get(layer.clip.id)
       : videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
-    if (!source) return false;
+    if (!source) continue;
     const layerTimelineTimeSec = layerVisualTimelineTime(layer, timelineTimeSec, previewFps, playing);
     const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
     if (source instanceof HTMLVideoElement) {
       const tolerance = videoSyncWindow(layer.clip, previewFps, playing);
-      if (!canPaintSyncedVideo(source, layer.clip, layerSourceTimeSec, tolerance)) return false;
+      if (!canPaintSyncedVideo(source, layer.clip, layerSourceTimeSec, tolerance)) continue;
     }
-    if (source instanceof HTMLImageElement && !source.complete) return false;
+    if (source instanceof HTMLImageElement && !source.complete) continue;
     drawItems.push({ source, asset, clip: layer.clip, timelineTimeSec: layerTimelineTimeSec });
   }
 
@@ -961,8 +961,9 @@ export function PreviewPlayer() {
         }
       }
       const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
+      const canUseFreezeFallback = state.playing && hasFreezeFrameRef.current;
       playbackVideoBlockedRef.current = Boolean(
-        visualLayers.length > 0 && !topPaintableLayer,
+        visualLayers.length > 0 && !topPaintableLayer && !canUseFreezeFallback,
       );
       const previewClipKey = visualLayers.map((layer) => layer.clip.id).join('|');
       const previewFrameKey = `${previewFps}:${visualLayers.map((layer) => (
@@ -988,6 +989,7 @@ export function PreviewPlayer() {
           }
         }
       } else {
+        if (visualLayers.length === 0) hasFreezeFrameRef.current = false;
         lastRenderedPreviewFrameRef.current = null;
         lastRenderedPreviewClipKeyRef.current = null;
       }
@@ -997,9 +999,10 @@ export function PreviewPlayer() {
       const hasCurrentFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewFrameRef.current === previewFrameKey;
       const hasSameClipFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewClipKeyRef.current === previewClipKey;
       const canReuseSameClipFreezeFrame = state.playing && hasSameClipFreezeFrame;
+      const canReuseTransitionFreezeFrame = state.playing && hasFreezeFrameRef.current;
       const showFreezeFrame = visualLayers.length > 0
         && !topPaintableLayer
-        && (hasCurrentFreezeFrame || canReuseSameClipFreezeFrame);
+        && (hasCurrentFreezeFrame || canReuseSameClipFreezeFrame || canReuseTransitionFreezeFrame);
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
       }
