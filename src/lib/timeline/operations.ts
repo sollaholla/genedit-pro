@@ -19,7 +19,8 @@ export function clipFadeInSec(clip: Clip): number {
 }
 
 export function clipFadeOutSec(clip: Clip): number {
-  return Math.max(0, Math.min(clipTimelineDurationSec(clip), clip.fadeOutSec ?? 0));
+  const durationSec = clipTimelineDurationSec(clip);
+  return Math.max(0, Math.min(durationSec - clipFadeInSec(clip), clip.fadeOutSec ?? 0));
 }
 
 export function clipOpacityAtTimelineTime(clip: Clip, timelineTimeSec: number): number {

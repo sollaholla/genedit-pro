@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, BookOpen, Clapperboard, Contrast, Diamond, Eye, Eye
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
-import { clipSpeed, clipTimelineDurationSec, setClipProp } from '@/lib/timeline/operations';
+import { clipFadeInSec, clipFadeOutSec, clipSpeed, clipTimelineDurationSec, setClipProp, withClampedClipFades } from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
 import type { Clip, ColorCorrectionComponentData, ColorCorrectionComponentInstance, ColorWheelValue, ComponentInstance, TransformComponentInstance } from '@/types';
@@ -108,6 +108,9 @@ export function ClipInspector() {
   const fps = project.fps;
   const timelineDuration = clipTimelineDurationSec(clip);
   const speed = clipSpeed(clip);
+  const fadeInPercent = timelineDuration > 0 ? (clipFadeInSec(clip) / timelineDuration) * 100 : 0;
+  const fadeOutPercent = timelineDuration > 0 ? (clipFadeOutSec(clip) / timelineDuration) * 100 : 0;
+  const fadeOutStartPercent = 100 - fadeOutPercent;
   const Icon = asset ? kindIcon[asset.kind] : Film;
 
   const setVolume = (v: number, mode: ProjectHistoryMode = 'normal') => {
@@ -117,6 +120,23 @@ export function ClipInspector() {
   const setSpeed = (nextSpeed: number, mode: ProjectHistoryMode = 'normal') => {
     const apply = mode === 'silent' ? updateSilent : update;
     apply((p) => setClipProp(p, selectedId, 'speed', nextSpeed));
+  };
+  const setFadeRange = (nextFadeInPercent: number, nextFadeOutStartPercent: number, mode: ProjectHistoryMode = 'normal') => {
+    const apply = mode === 'silent' ? updateSilent : update;
+    const clampedIn = Math.max(0, Math.min(100, nextFadeInPercent));
+    const clampedOutStart = Math.max(clampedIn, Math.min(100, nextFadeOutStartPercent));
+    apply((p) => ({
+      ...p,
+      clips: p.clips.map((candidate) => (
+        candidate.id === selectedId
+          ? withClampedClipFades({
+              ...candidate,
+              fadeInSec: timelineDuration * (clampedIn / 100),
+              fadeOutSec: timelineDuration * ((100 - clampedOutStart) / 100),
+            })
+          : candidate
+      )),
+    }));
   };
   const envelopeEnabled = clip.volumeEnvelope?.enabled ?? false;
   const hasCustomEnvelope =
@@ -212,6 +232,11 @@ export function ClipInspector() {
             Pitch is preserved during preview/export; slower rates are smoothed asynchronously.
           </p>
         </div>
+        <FadeRangeControl
+          fadeInPercent={fadeInPercent}
+          fadeOutStartPercent={fadeOutStartPercent}
+          onChange={setFadeRange}
+        />
       </Section>
 
       <Divider />
@@ -922,6 +947,106 @@ function ColorWheelControl({
         />
       </div>
       <div className="text-[10px] font-medium text-slate-300">{label}</div>
+    </div>
+  );
+}
+
+function FadeRangeControl({
+  fadeInPercent,
+  fadeOutStartPercent,
+  onChange,
+}: {
+  fadeInPercent: number;
+  fadeOutStartPercent: number;
+  onChange: (fadeInPercent: number, fadeOutStartPercent: number, mode?: ProjectHistoryMode) => void;
+}) {
+  const controlRef = useRef<HTMLDivElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const { beginHistoryGesture, endHistoryGesture } = useProjectHistoryGesture();
+  const inPercent = Math.max(0, Math.min(100, fadeInPercent));
+  const outStartPercent = Math.max(inPercent, Math.min(100, fadeOutStartPercent));
+  const outPercent = Math.max(0, 100 - outStartPercent);
+
+  useEffect(() => {
+    const node = controlRef.current;
+    if (!node) return;
+    node.style.setProperty('--fade-in-percent', `${inPercent}%`);
+    node.style.setProperty('--fade-out-start-percent', `${outStartPercent}%`);
+  }, [inPercent, outStartPercent]);
+
+  const percentFromPointer = (clientX: number): number => {
+    const track = trackRef.current;
+    if (!track) return 0;
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
+  };
+
+  const commitPointerValue = (clientX: number, handle: 'in' | 'out', minPercent: number, maxPercent: number) => {
+    const pointerPercent = percentFromPointer(clientX);
+    if (handle === 'in') onChange(Math.min(pointerPercent, maxPercent), maxPercent, 'silent');
+    else onChange(minPercent, Math.max(pointerPercent, minPercent), 'silent');
+  };
+
+  const beginDrag = (clientX: number) => {
+    const pointerPercent = percentFromPointer(clientX);
+    const handle = Math.abs(pointerPercent - inPercent) <= Math.abs(pointerPercent - outStartPercent) ? 'in' : 'out';
+    const minPercent = inPercent;
+    const maxPercent = outStartPercent;
+    beginHistoryGesture();
+    commitPointerValue(clientX, handle, minPercent, maxPercent);
+    const onMove = (event: PointerEvent) => commitPointerValue(event.clientX, handle, minPercent, maxPercent);
+    const onUp = () => {
+      endHistoryGesture();
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
+  return (
+    <div ref={controlRef} className="mt-2 space-y-2 rounded border border-surface-700 bg-surface-900/50 p-2.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs text-slate-400">Fade</label>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center rounded bg-surface-700 text-slate-300 hover:bg-surface-600 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-35"
+            title="Reset fade"
+            disabled={inPercent < 0.5 && outPercent < 0.5}
+            onClick={() => onChange(0, 100)}
+          >
+            <RotateCcw size={11} />
+          </button>
+          <span className="font-mono text-xs text-slate-200">
+            In {Math.round(inPercent)}% · Out {Math.round(outPercent)}%
+          </span>
+        </div>
+      </div>
+      <div
+        ref={trackRef}
+        className="relative h-8 cursor-ew-resize py-3"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          beginDrag(event.clientX);
+        }}
+      >
+        <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-surface-600" />
+        <div className="absolute left-0 top-1/2 h-1.5 w-[var(--fade-in-percent,0%)] -translate-y-1/2 rounded-l-full bg-gradient-to-r from-brand-500/80 to-brand-500/25" />
+        <div className="absolute top-1/2 h-1.5 left-[var(--fade-in-percent,0%)] right-[calc(100%-var(--fade-out-start-percent,100%))] -translate-y-1/2 bg-brand-500/25" />
+        <div className="absolute right-0 top-1/2 h-1.5 w-[calc(100%-var(--fade-out-start-percent,100%))] -translate-y-1/2 rounded-r-full bg-gradient-to-l from-brand-500/80 to-brand-500/25" />
+        <div className="absolute left-[var(--fade-in-percent,0%)] top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-brand-500 shadow" />
+        <div className="absolute left-[var(--fade-out-start-percent,100%)] top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 bg-brand-500 shadow" />
+      </div>
+      <div className="flex justify-between text-[10px] text-slate-500">
+        <span>0%</span>
+        <span>50%</span>
+        <span>100%</span>
+      </div>
     </div>
   );
 }

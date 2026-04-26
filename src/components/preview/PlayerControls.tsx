@@ -83,7 +83,7 @@ export function PlayerControls({
         </button>
         <button
           className="rounded p-1.5 text-slate-300 hover:bg-surface-700"
-          onClick={() => setCurrentTime(duration)}
+          onClick={() => setCurrentTime(duration, { snapMode: 'floor' })}
           title="Go to end (End)"
         >
           <ChevronLast size={16} />

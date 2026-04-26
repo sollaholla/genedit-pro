@@ -4,7 +4,7 @@ import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
 import { resolveFrame } from '@/lib/playback/engine';
 import { projectDurationSec } from '@/lib/timeline/operations';
-import { formatTimecode } from '@/lib/timeline/geometry';
+import { formatTimecode, snapTimeToFrame } from '@/lib/timeline/geometry';
 
 const PREVIEW_WIDTH = 220;
 const PREVIEW_HEIGHT = 124;
@@ -43,8 +43,9 @@ export function FullscreenScrubBar() {
     const rect = barRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || duration === 0) return 0;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return ratio * duration;
-  }, [duration]);
+    const snapped = snapTimeToFrame(ratio * duration, project.fps);
+    return snapped > duration ? snapTimeToFrame(duration, project.fps, 'floor') : snapped;
+  }, [duration, project.fps]);
 
   const seekPreviewTo = useCallback((time: number) => {
     const vid = previewVideoRef.current;

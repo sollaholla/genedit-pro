@@ -38,6 +38,19 @@ export function snapTime(
   return best;
 }
 
+export type FrameSnapMode = 'nearest' | 'floor' | 'ceil';
+
+export function snapTimeToFrame(timeSec: number, fps = 30, mode: FrameSnapMode = 'nearest'): number {
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
+  const rawFrame = Math.max(0, Number.isFinite(timeSec) ? timeSec : 0) * safeFps;
+  const frame = mode === 'floor'
+    ? Math.floor(rawFrame + 1e-6)
+    : mode === 'ceil'
+      ? Math.ceil(rawFrame - 1e-6)
+      : Math.round(rawFrame);
+  return Math.max(0, frame / safeFps);
+}
+
 export function formatTimecode(totalSec: number, fps = 30): string {
   const sign = totalSec < 0 ? '-' : '';
   const t = Math.max(0, Math.abs(totalSec));

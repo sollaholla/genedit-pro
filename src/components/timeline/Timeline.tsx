@@ -957,7 +957,8 @@ function setClipFadeFromBaseline(
 ): Project {
   if (!project.clips.some((clip) => clip.id === baselineClip.id)) return project;
   const durationSec = clipTimelineDurationSec(baselineClip);
-  const clampedFade = Math.max(0, Math.min(durationSec, fadeSec));
+  const oppositeFadeSec = side === 'l' ? clipFadeOutSec(baselineClip) : clipFadeInSec(baselineClip);
+  const clampedFade = Math.max(0, Math.min(Math.max(0, durationSec - oppositeFadeSec), fadeSec));
   return {
     ...project,
     clips: project.clips.map((clip) => (

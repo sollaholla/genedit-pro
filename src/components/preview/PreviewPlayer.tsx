@@ -392,6 +392,7 @@ export function PreviewPlayer() {
   const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
   const lastTimelineTimeRef = useRef<number | null>(null);
+  const playbackClockTimeRef = useRef<number | null>(null);
   const lastPlayingStateRef = useRef(false);
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
@@ -439,6 +440,7 @@ export function PreviewPlayer() {
     const fps = fpsForFrameRateOption(value);
     if (!fps) return;
     updateProject((p) => ({ ...p, fps }));
+    setCurrentTime(usePlaybackStore.getState().currentTimeSec);
   };
 
   useEffect(() => {
@@ -880,6 +882,7 @@ export function PreviewPlayer() {
 
       if (playStateChanged || pausedPlayheadChanged || jumpedBackward || jumpedFar) {
         resetTransientPlaybackState();
+        playbackClockTimeRef.current = state.currentTimeSec;
         lastTickRef.current = ts;
       }
       lastPlayingStateRef.current = state.playing;
@@ -891,10 +894,16 @@ export function PreviewPlayer() {
         resumeAudioContext();
         const dt = (ts - (lastTickRef.current ?? ts)) / 1000;
         if (!mediaPlaybackBlocked) {
-          const next = Math.min(total, state.currentTimeSec + dt);
-          state.setCurrentTime(next);
-          if (total > 0 && next >= total) pause();
+          const clockTime = playbackClockTimeRef.current ?? state.currentTimeSec;
+          const nextContinuous = Math.min(total, clockTime + dt);
+          playbackClockTimeRef.current = nextContinuous;
+          state.setCurrentTime(nextContinuous, { snapMode: 'floor' });
+          if (total > 0 && nextContinuous >= total) pause();
+        } else {
+          playbackClockTimeRef.current = state.currentTimeSec;
         }
+      } else {
+        playbackClockTimeRef.current = state.currentTimeSec;
       }
       lastTickRef.current = ts;
 
@@ -1315,7 +1324,7 @@ export function PreviewPlayer() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (e.code === 'Space') { e.preventDefault(); usePlaybackStore.getState().toggle(); }
       else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0); }
-      else if (e.key === 'End') { e.preventDefault(); setCurrentTime(duration); }
+      else if (e.key === 'End') { e.preventDefault(); setCurrentTime(duration, { snapMode: 'floor' }); }
       else if (e.key === ',' || e.key === '<') { e.preventDefault(); stepFrame(-1); }
       else if (e.key === '.' || e.key === '>') { e.preventDefault(); stepFrame(1); }
       else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFullscreen(); }

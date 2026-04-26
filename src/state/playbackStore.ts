@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import type { Clip } from '@/types';
-import { DEFAULT_PX_PER_SEC, clampPxPerSec } from '@/lib/timeline/geometry';
+import { DEFAULT_PX_PER_SEC, clampPxPerSec, snapTimeToFrame, type FrameSnapMode } from '@/lib/timeline/geometry';
 import { nextHistorySeq, notifyHistoryMutation, subscribeHistoryMutation } from './historyClock';
+import { useProjectStore } from './projectStore';
 
 export type ClipAudioLevel = {
   left: number;
@@ -9,6 +10,11 @@ export type ClipAudioLevel = {
 };
 
 const MAX_SELECTION_HISTORY = 500;
+
+type SetCurrentTimeOptions = {
+  snap?: boolean;
+  snapMode?: FrameSnapMode;
+};
 
 type PlaybackState = {
   playing: boolean;
@@ -35,7 +41,7 @@ type PlaybackState = {
   play: () => void;
   pause: () => void;
   toggle: () => void;
-  setCurrentTime: (t: number) => void;
+  setCurrentTime: (t: number, options?: SetCurrentTimeOptions) => void;
   setPxPerSec: (v: number) => void;
   zoomBy: (delta: number) => void;
   /** Replace selection with just this clip, or clear if null. */
@@ -79,7 +85,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   play: () => set({ playing: true }),
   pause: () => set({ playing: false }),
   toggle: () => set({ playing: !get().playing }),
-  setCurrentTime: (t) => set({ currentTimeSec: Math.max(0, t) }),
+  setCurrentTime: (t, options) => set({ currentTimeSec: normalizePlaybackTime(t, options) }),
   setPxPerSec: (v) => set({ pxPerSec: clampPxPerSec(v) }),
   zoomBy: (delta) => set({ pxPerSec: clampPxPerSec(get().pxPerSec * (1 + delta)) }),
   selectClip: (id, options) => {
@@ -218,6 +224,12 @@ function commitSelection(
 
 function normalizeSelection(ids: string[]): string[] {
   return [...new Set(ids)];
+}
+
+function normalizePlaybackTime(timeSec: number, options?: SetCurrentTimeOptions): number {
+  const clamped = Math.max(0, Number.isFinite(timeSec) ? timeSec : 0);
+  if (options?.snap === false) return clamped;
+  return snapTimeToFrame(clamped, useProjectStore.getState().project.fps, options?.snapMode ?? 'nearest');
 }
 
 function sameSelection(a: string[], b: string[]): boolean {
