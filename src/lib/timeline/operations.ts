@@ -14,6 +14,33 @@ export function clipTimelineDurationSec(clip: Clip): number {
   return Math.max(MIN_CLIP_DURATION, (clip.outSec - clip.inSec) / clipSpeed(clip));
 }
 
+export function clipFadeInSec(clip: Clip): number {
+  return Math.max(0, Math.min(clipTimelineDurationSec(clip), clip.fadeInSec ?? 0));
+}
+
+export function clipFadeOutSec(clip: Clip): number {
+  return Math.max(0, Math.min(clipTimelineDurationSec(clip), clip.fadeOutSec ?? 0));
+}
+
+export function clipOpacityAtTimelineTime(clip: Clip, timelineTimeSec: number): number {
+  const durationSec = clipTimelineDurationSec(clip);
+  const localTimeSec = Math.max(0, Math.min(durationSec, timelineTimeSec - clip.startSec));
+  const fadeIn = clipFadeInSec(clip);
+  const fadeOut = clipFadeOutSec(clip);
+  let opacity = 1;
+  if (fadeIn > 1e-6) opacity = Math.min(opacity, localTimeSec / fadeIn);
+  if (fadeOut > 1e-6) opacity = Math.min(opacity, (durationSec - localTimeSec) / fadeOut);
+  return Math.max(0, Math.min(1, opacity));
+}
+
+export function withClampedClipFades(clip: Clip): Clip {
+  return {
+    ...clip,
+    fadeInSec: clipFadeInSec(clip),
+    fadeOutSec: clipFadeOutSec(clip),
+  };
+}
+
 export function projectDurationSec(project: Project): number {
   let max = 0;
   for (const clip of project.clips) {
@@ -54,6 +81,8 @@ export function addClip(
     scale: 1,
     components: [],
     volume: 1,
+    fadeInSec: 0,
+    fadeOutSec: 0,
   };
   return { ...project, clips: [...project.clips, clip] };
 }
@@ -134,7 +163,7 @@ export function trimClipLeft(
   return {
     ...project,
     clips: project.clips.map((c) =>
-      c.id === clipId ? { ...c, startSec: nextStart, inSec: nextInSec } : c,
+      c.id === clipId ? withClampedClipFades({ ...c, startSec: nextStart, inSec: nextInSec }) : c,
     ),
   };
 }
@@ -161,7 +190,7 @@ export function trimClipRight(
   return {
     ...project,
     clips: project.clips.map((c) =>
-      c.id === clipId ? { ...c, outSec: nextOutSec } : c,
+      c.id === clipId ? withClampedClipFades({ ...c, outSec: nextOutSec }) : c,
     ),
   };
 }

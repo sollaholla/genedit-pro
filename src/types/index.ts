@@ -148,6 +148,10 @@ export type Clip = {
   volume: number;
   /** Optional editable volume envelope; absent means flat at 100%. */
   volumeEnvelope?: VolumeEnvelope;
+  /** Timeline-edge fade-in duration in seconds. Visual fades use alpha transparency. */
+  fadeInSec?: number;
+  /** Timeline-edge fade-out duration in seconds. Visual fades use alpha transparency. */
+  fadeOutSec?: number;
 };
 
 export type KeyframePoint = {

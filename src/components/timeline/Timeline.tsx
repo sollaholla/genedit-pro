@@ -22,6 +22,8 @@ import { useMediaStore } from '@/state/mediaStore';
 import {
   addClip,
   addTrack,
+  clipFadeInSec,
+  clipFadeOutSec,
   clipSpeed,
   clipTimelineDurationSec,
   duplicateClip,
@@ -37,6 +39,7 @@ import {
   removeClip,
   sortedTracks,
   splitClipAt,
+  withClampedClipFades,
 } from '@/lib/timeline/operations';
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
@@ -475,8 +478,12 @@ export function Timeline() {
     const startX = e.clientX;
     const origStart = clip.startSec;
     const origEnd = clip.startSec + clipTimelineDurationSec(clip);
+    const editingFade = e.shiftKey;
+    const origFade = side === 'l' ? clipFadeInSec(clip) : clipFadeOutSec(clip);
     const trimSnapTargets = buildSnapTargets(useProjectStore.getState().project.clips, undefined, new Set([clipId]));
-    setCurrentTime(trimPreviewTimeForClip(clip, side, project.fps));
+    setCurrentTime(editingFade
+      ? fadePreviewTimeForClip(clip, side, origFade, project.fps)
+      : trimPreviewTimeForClip(clip, side, project.fps));
     let txStarted = false;
     const ensureTx = () => {
       if (txStarted) return;
@@ -486,7 +493,28 @@ export function Timeline() {
 
     const move = (ev: MouseEvent) => {
       const dt = pxToTime(ev.clientX - startX, pxPerSec);
-      let previewTime = trimPreviewTimeForClip(clip, side, project.fps);
+      let previewTime = editingFade
+        ? fadePreviewTimeForClip(clip, side, origFade, project.fps)
+        : trimPreviewTimeForClip(clip, side, project.fps);
+      if (editingFade) {
+        const nextFadeSec = side === 'l' ? origFade + dt : origFade - dt;
+        ensureTx();
+        updateSilent((p) => {
+          const next = setClipFadeFromBaseline(p, clip, side, nextFadeSec);
+          const nextClip = next.clips.find((candidate) => candidate.id === clipId);
+          if (nextClip) {
+            previewTime = fadePreviewTimeForClip(
+              nextClip,
+              side,
+              side === 'l' ? clipFadeInSec(nextClip) : clipFadeOutSec(nextClip),
+              project.fps,
+            );
+          }
+          return next;
+        });
+        setCurrentTime(previewTime);
+        return;
+      }
       if (side === 'l') {
         const candidate = Math.max(0, origStart + dt);
         const snapped = ev.altKey ? candidate : snapTime(candidate, trimSnapTargets, pxPerSec, SNAP_TOLERANCE_PX);
@@ -864,6 +892,15 @@ function trimPreviewTimeForClip(clip: Clip, side: ClipDragSide, fps: number): nu
   return Math.max(clip.startSec, lastVisibleFrame);
 }
 
+function fadePreviewTimeForClip(clip: Clip, side: ClipDragSide, fadeSec: number, fps: number): number {
+  const frameDuration = 1 / Math.max(1, fps);
+  const durationSec = clipTimelineDurationSec(clip);
+  const clampedFade = Math.max(0, Math.min(durationSec, fadeSec));
+  const maxPreviewLocalTime = Math.max(0, durationSec - frameDuration);
+  if (side === 'l') return clip.startSec + Math.min(maxPreviewLocalTime, clampedFade);
+  return clip.startSec + Math.max(0, durationSec - Math.max(frameDuration, clampedFade));
+}
+
 function buildSnapTargets(clips: Clip[], currentTime?: number, excludedClipIds = new Set<string>()): number[] {
   const targets = new Set<number>([0]);
   if (currentTime !== undefined) targets.add(currentTime);
@@ -886,7 +923,7 @@ function trimClipLeftFromBaseline(project: Project, baselineClip: Clip, newStart
   return {
     ...project,
     clips: project.clips.map((clip) => (
-      clip.id === baselineClip.id ? { ...clip, startSec: nextStart, inSec: nextInSec } : clip
+      clip.id === baselineClip.id ? withClampedClipFades({ ...clip, startSec: nextStart, inSec: nextInSec }) : clip
     )),
   };
 }
@@ -907,7 +944,30 @@ function trimClipRightFromBaseline(
   return {
     ...project,
     clips: project.clips.map((clip) => (
-      clip.id === baselineClip.id ? { ...clip, outSec: nextOutSec } : clip
+      clip.id === baselineClip.id ? withClampedClipFades({ ...clip, outSec: nextOutSec }) : clip
+    )),
+  };
+}
+
+function setClipFadeFromBaseline(
+  project: Project,
+  baselineClip: Clip,
+  side: ClipDragSide,
+  fadeSec: number,
+): Project {
+  if (!project.clips.some((clip) => clip.id === baselineClip.id)) return project;
+  const durationSec = clipTimelineDurationSec(baselineClip);
+  const clampedFade = Math.max(0, Math.min(durationSec, fadeSec));
+  return {
+    ...project,
+    clips: project.clips.map((clip) => (
+      clip.id === baselineClip.id
+        ? withClampedClipFades({
+            ...clip,
+            fadeInSec: side === 'l' ? clampedFade : clip.fadeInSec,
+            fadeOutSec: side === 'r' ? clampedFade : clip.fadeOutSec,
+          })
+        : clip
     )),
   };
 }

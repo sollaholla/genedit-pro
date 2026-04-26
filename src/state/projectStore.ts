@@ -101,11 +101,13 @@ function normalizeProject(input: Project): Project {
     ...t,
     name: (t as { name?: string }).name ?? `${t.kind === 'video' ? 'Video' : 'Audio'} ${i + 1}`,
   }));
-  parsed.clips = parsed.clips.map((c) => ({
+  parsed.clips = parsed.clips.map((c) => ops.withClampedClipFades({
     ...c,
     volume: (c as { volume?: number }).volume ?? 1,
     speed: (c as { speed?: number }).speed ?? 1,
     scale: (c as { scale?: number }).scale ?? 1,
+    fadeInSec: Number.isFinite((c as { fadeInSec?: number }).fadeInSec) ? Math.max(0, (c as { fadeInSec: number }).fadeInSec) : 0,
+    fadeOutSec: Number.isFinite((c as { fadeOutSec?: number }).fadeOutSec) ? Math.max(0, (c as { fadeOutSec: number }).fadeOutSec) : 0,
     transform: (c as {
       transform?: {
         scale?: number;

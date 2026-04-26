@@ -1,10 +1,8 @@
-import { useMemo } from 'react';
+import { type CSSProperties, useMemo } from 'react';
 import type { Clip, MediaAsset } from '@/types';
 import { timeToPx } from '@/lib/timeline/geometry';
 import { ClipEnvelopeOverlay } from './ClipEnvelopeOverlay';
-import { clipTimelineDurationSec } from '@/lib/timeline/operations';
-
-const HANDLE_WIDTH = 6;
+import { clipFadeInSec, clipFadeOutSec, clipTimelineDurationSec } from '@/lib/timeline/operations';
 
 export type ClipDragSide = 'l' | 'r';
 
@@ -41,6 +39,15 @@ export function TimelineClip({
   const duration = clipTimelineDurationSec(clip);
   const left = timeToPx(startSec, pxPerSec);
   const width = Math.max(4, timeToPx(duration, pxPerSec));
+  const fadeInWidth = Math.max(0, Math.min(width, timeToPx(clipFadeInSec(clip), pxPerSec)));
+  const fadeOutWidth = Math.max(0, Math.min(width, timeToPx(clipFadeOutSec(clip), pxPerSec)));
+  const clipStyle = {
+    left,
+    width,
+    height: height - 8,
+    '--fade-in-width': `${fadeInWidth}px`,
+    '--fade-out-width': `${fadeOutWidth}px`,
+  } as CSSProperties;
 
   const bg = useMemo(() => {
     if (!asset) return 'bg-surface-600';
@@ -56,7 +63,7 @@ export function TimelineClip({
         ${bg}
         ${selected && !ghost ? 'ring-2 ring-brand-400' : 'ring-1 ring-black/30'}
         ${ghost ? 'pointer-events-none opacity-60 ring-2 ring-brand-400 ring-dashed' : 'cursor-grab active:cursor-grabbing'}`}
-      style={{ left, width, height: height - 8 }}
+      style={clipStyle}
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
       onMouseDown={ghost ? undefined : (e) => {
@@ -72,14 +79,14 @@ export function TimelineClip({
         <>
           <div
             data-role="trim-l"
-            className="absolute left-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
-            style={{ width: HANDLE_WIDTH }}
+            className="absolute left-0 top-0 z-20 h-full w-1.5 cursor-ew-resize bg-black/30 hover:bg-white/30"
+            title="Trim edge; Shift-drag to fade"
             onMouseDown={(e) => { e.stopPropagation(); onTrimMouseDown(clip.id, 'l', e); }}
           />
           <div
             data-role="trim-r"
-            className="absolute right-0 top-0 h-full cursor-ew-resize bg-black/30 hover:bg-white/30"
-            style={{ width: HANDLE_WIDTH }}
+            className="absolute right-0 top-0 z-20 h-full w-1.5 cursor-ew-resize bg-black/30 hover:bg-white/30"
+            title="Trim edge; Shift-drag to fade"
             onMouseDown={(e) => { e.stopPropagation(); onTrimMouseDown(clip.id, 'r', e); }}
           />
         </>
@@ -101,7 +108,27 @@ export function TimelineClip({
           style={{ width: Math.min(80, Math.max(20, width * 0.25)) }}
         />
       )}
-      <div className="pointer-events-none absolute inset-0 flex items-center px-2 font-medium">
+      {fadeInWidth > 0 && (
+        <>
+          <div
+            className="pointer-events-none absolute inset-y-0 left-0 z-10 w-[var(--fade-in-width)] bg-gradient-to-r from-surface-950/60 to-transparent"
+          />
+          <div
+            className="pointer-events-none absolute bottom-0 top-0 z-10 left-[var(--fade-in-width)] border-r border-white/50"
+          />
+        </>
+      )}
+      {fadeOutWidth > 0 && (
+        <>
+          <div
+            className="pointer-events-none absolute inset-y-0 right-0 z-10 w-[var(--fade-out-width)] bg-gradient-to-l from-surface-950/60 to-transparent"
+          />
+          <div
+            className="pointer-events-none absolute bottom-0 top-0 z-10 right-[var(--fade-out-width)] border-l border-white/50"
+          />
+        </>
+      )}
+      <div className="pointer-events-none absolute inset-0 z-20 flex items-center px-2 font-medium">
         <span className="truncate">{asset?.name ?? 'missing asset'}</span>
       </div>
       {!ghost && clip.volumeEnvelope?.enabled && (

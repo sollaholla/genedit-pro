@@ -1,7 +1,14 @@
 import { FFFSType } from '@ffmpeg/ffmpeg';
 import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { getBlob } from '@/lib/media/storage';
-import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
+import {
+  clipFadeInSec,
+  clipFadeOutSec,
+  clipOpacityAtTimelineTime,
+  clipSpeed,
+  clipTimelineDurationSec,
+  projectDurationSec,
+} from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { colorCorrectionFfmpegFiltersWithOptions } from '@/lib/components/colorCorrection';
 import { getTransformComponents } from '@/lib/components/transform';
@@ -59,10 +66,6 @@ function clipEndSec(clip: Clip): number {
 
 function clipSourceDurationSec(clip: Clip): number {
   return Math.max(0.001, clip.outSec - clip.inSec);
-}
-
-function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
-  return startA < endB && startB < endA;
 }
 
 function betweenExpression(startSec: number, endSec: number): string {
@@ -271,9 +274,17 @@ function timelineVisualFilters(
     ...colorCorrectionFfmpegFiltersWithOptions(clip, clip.startSec, { perChannel: supportsPerChannelColor }),
     `fps=${project.fps}`,
     `trim=duration=${seconds(input.timelineDurationSec)}`,
-    `setpts=PTS-STARTPTS+${preciseSeconds(clip.startSec)}/TB`,
+    'setpts=PTS-STARTPTS',
     'format=rgba',
   );
+
+  const fadeIn = Math.min(input.timelineDurationSec, clipFadeInSec(clip));
+  const fadeOut = Math.min(input.timelineDurationSec, clipFadeOutSec(clip));
+  if (fadeIn > 0.001) filters.push(`fade=t=in:st=0:d=${seconds(fadeIn)}:alpha=1`);
+  if (fadeOut > 0.001) {
+    filters.push(`fade=t=out:st=${seconds(Math.max(0, input.timelineDurationSec - fadeOut))}:d=${seconds(fadeOut)}:alpha=1`);
+  }
+  filters.push(`setpts=PTS-STARTPTS+${preciseSeconds(clip.startSec)}/TB`);
 
   return {
     filters: filters.join(','),
@@ -282,28 +293,17 @@ function timelineVisualFilters(
   };
 }
 
-function visualEnableExpression(input: TimelineInput, visualInputs: TimelineInput[]): string {
-  const inputStart = input.clip.startSec;
-  const inputEnd = clipEndSec(input.clip);
-  const activeExpression = betweenExpression(inputStart, inputEnd);
-  const higherTrackExpressions = visualInputs
-    .filter((candidate) => (
-      candidate !== input &&
-      candidate.track.index < input.track.index &&
-      rangesOverlap(inputStart, inputEnd, candidate.clip.startSec, clipEndSec(candidate.clip))
-    ))
-    .map((candidate) => betweenExpression(candidate.clip.startSec, clipEndSec(candidate.clip)));
-
-  if (higherTrackExpressions.length === 0) return activeExpression;
-  return `${activeExpression}*not(${higherTrackExpressions.join('+')})`;
+function visualEnableExpression(input: TimelineInput, _visualInputs: TimelineInput[]): string {
+  return betweenExpression(input.clip.startSec, clipEndSec(input.clip));
 }
 
 function timelineAudioVolumeFilter(clip: Clip, segStartSec: number, segEndSec: number): string | null {
   const master = clip.volume ?? 1;
   const env = clip.volumeEnvelope;
   const hasEnv = !!env && env.enabled && env.points.length >= 2;
+  const hasEdgeFade = clipFadeInSec(clip) > 0.001 || clipFadeOutSec(clip) > 0.001;
 
-  if (!hasEnv) {
+  if (!hasEnv && !hasEdgeFade) {
     if (Math.abs(master - 1) < 1e-4) return null;
     return `volume=${master.toFixed(4)}`;
   }
@@ -317,7 +317,8 @@ function timelineAudioVolumeFilter(clip: Clip, segStartSec: number, segEndSec: n
     const sourceTime = clip.inSec + (segStartSec - clip.startSec + tau) * clipSpeed(clip);
     const localTime = Math.max(0, Math.min(1, (sourceTime - clip.inSec) / clipDur));
     const envelopeVolume = evalEnvelopeAt(env, localTime);
-    samples.push({ timeSec: tau, volume: Math.max(0, master * envelopeVolume) });
+    const edgeFadeVolume = clipOpacityAtTimelineTime(clip, segStartSec + tau);
+    samples.push({ timeSec: tau, volume: Math.max(0, master * envelopeVolume * edgeFadeVolume) });
   }
 
   let expr = samples[sampleCount]!.volume.toFixed(5);

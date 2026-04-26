@@ -4,7 +4,7 @@ import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
 import type { Clip, MediaAsset, Project } from '@/types';
-import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
+import { clipOpacityAtTimelineTime, clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { activeEditTransform } from '@/lib/media/editTrail';
 import { getBlob } from '@/lib/media/storage';
@@ -49,7 +49,8 @@ function clipEffectiveGain(layer: ActiveLayer): number {
   const master = Math.max(0, Math.min(2, layer.clip.volume ?? 1));
   const clipDur = Math.max(1e-6, layer.clip.outSec - layer.clip.inSec);
   const localT = Math.max(0, Math.min(1, (layer.sourceTimeSec - layer.clip.inSec) / clipDur));
-  return master * evalEnvelopeAt(layer.clip.volumeEnvelope, localT);
+  const timelineTimeSec = layer.clip.startSec + ((layer.sourceTimeSec - layer.clip.inSec) / clipSpeed(layer.clip));
+  return master * evalEnvelopeAt(layer.clip.volumeEnvelope, localT) * clipOpacityAtTimelineTime(layer.clip, timelineTimeSec);
 }
 
 const CLIP_METER_DB_FLOOR = -60;
@@ -205,6 +206,7 @@ function hideVideoElement(el: HTMLVideoElement) {
   el.style.visibility = 'hidden';
   el.style.transform = '';
   el.style.filter = '';
+  el.style.opacity = '';
   el.style.cursor = 'default';
   el.style.zIndex = '';
 }
@@ -265,6 +267,7 @@ function applyVisualLayout(
   el.style.transform = `translate(-50%, -50%) scale(${visualScale})`;
   el.style.transformOrigin = 'center center';
   el.style.filter = colorCorrectionCssFilter(clip, timelineTimeSec);
+  el.style.opacity = String(clipOpacityAtTimelineTime(clip, timelineTimeSec));
   el.style.cursor = tf ? 'move' : 'default';
 }
 
@@ -307,6 +310,7 @@ function renderPreviewCanvas(
       if (!canPaintSyncedVideo(source, layer.clip, layerSourceTimeSec, tolerance)) continue;
     }
     if (source instanceof HTMLImageElement && !source.complete) continue;
+    if (clipOpacityAtTimelineTime(layer.clip, layerTimelineTimeSec) <= 0.001) continue;
     drawItems.push({ source, asset, clip: layer.clip, timelineTimeSec: layerTimelineTimeSec });
   }
 
@@ -330,11 +334,15 @@ function renderPreviewCanvas(
       const y = project.height / 2 + (tf.offsetY + mediaTransform.offsetY);
       const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
       ctx.save();
-      ctx.filter = canvasFilterForClip(clip, layerTimelineTimeSec);
-      ctx.translate(x, y);
-      ctx.scale(visualScale, visualScale);
-      ctx.drawImage(source, -mediaWidth / 2, -mediaHeight / 2, mediaWidth, mediaHeight);
-      ctx.restore();
+      try {
+        ctx.filter = canvasFilterForClip(clip, layerTimelineTimeSec);
+        ctx.globalAlpha = clipOpacityAtTimelineTime(clip, layerTimelineTimeSec);
+        ctx.translate(x, y);
+        ctx.scale(visualScale, visualScale);
+        ctx.drawImage(source, -mediaWidth / 2, -mediaHeight / 2, mediaWidth, mediaHeight);
+      } finally {
+        ctx.restore();
+      }
     }
     return true;
   } catch {
@@ -1036,6 +1044,7 @@ export function PreviewPlayer() {
           img.style.visibility = 'hidden';
           img.style.transform = '';
           img.style.filter = '';
+          img.style.opacity = '';
           img.style.cursor = 'default';
           img.style.zIndex = '';
         }
