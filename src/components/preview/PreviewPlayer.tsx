@@ -79,10 +79,15 @@ const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
 const PREVIEW_RENDER_DEBOUNCE_MS = 900;
+const PREVIEW_RENDER_BACKWARD_SEC = 2;
+const PREVIEW_RENDER_FORWARD_SEC = 8;
+const PREVIEW_RENDER_EDGE_REFRESH_SEC = 1.5;
 
 type FfmpegPreviewState = {
   status: 'idle' | 'rendering' | 'ready' | 'error';
   progress: number;
+  startSec: number;
+  endSec: number;
   durationSec: number;
   message?: string;
   error?: string;
@@ -142,6 +147,35 @@ function visualPreviewDurationSec(project: Project, assets: MediaAsset[]): numbe
     if (asset.kind !== 'video' && asset.kind !== 'image') return maxDuration;
     return Math.max(maxDuration, clipEndSec(clip));
   }, 0);
+}
+
+function previewRenderWindowForTime(timeSec: number, visualDurationSec: number): { startSec: number; endSec: number } {
+  const windowDurationSec = PREVIEW_RENDER_BACKWARD_SEC + PREVIEW_RENDER_FORWARD_SEC;
+  const clampedTimeSec = Math.max(0, Math.min(visualDurationSec, timeSec));
+  let startSec = Math.max(0, clampedTimeSec - PREVIEW_RENDER_BACKWARD_SEC);
+  let endSec = Math.min(visualDurationSec, clampedTimeSec + PREVIEW_RENDER_FORWARD_SEC);
+
+  if (endSec - startSec < windowDurationSec) {
+    if (startSec <= 0) {
+      endSec = Math.min(visualDurationSec, windowDurationSec);
+    } else {
+      startSec = Math.max(0, endSec - windowDurationSec);
+    }
+  }
+
+  return { startSec, endSec };
+}
+
+function previewStateCoversTime(
+  preview: FfmpegPreviewState,
+  signature: string,
+  timeSec: number,
+): boolean {
+  if (preview.signature !== signature) return false;
+  if (preview.status !== 'ready' && preview.status !== 'rendering') return false;
+  if (preview.endSec <= preview.startSec) return false;
+  if (timeSec < preview.startSec - 0.05) return false;
+  return timeSec <= preview.endSec - PREVIEW_RENDER_EDGE_REFRESH_SEC;
 }
 
 function previewRenderSignature(project: Project, assets: MediaAsset[]): string {
@@ -260,6 +294,7 @@ function syncRenderedPreviewVideo(
   targetTimeSec: number,
   playing: boolean,
   active: boolean,
+  startSec: number,
   durationSec: number,
 ) {
   if (!el) return;
@@ -269,7 +304,7 @@ function syncRenderedPreviewVideo(
     return;
   }
 
-  const target = Math.max(0, Math.min(durationSec, targetTimeSec));
+  const target = Math.max(0, Math.min(durationSec, targetTimeSec - startSec));
   el.style.display = 'block';
   el.muted = true;
   el.playbackRate = 1;
@@ -421,7 +456,13 @@ export function PreviewPlayer() {
   const ffmpegPreviewVideoRef = useRef<HTMLVideoElement | null>(null);
   const ffmpegPreviewUrlRef = useRef<string | null>(null);
   const ffmpegPreviewSeqRef = useRef(0);
-  const ffmpegPreviewStateRef = useRef<FfmpegPreviewState>({ status: 'idle', progress: 0, durationSec: 0 });
+  const ffmpegPreviewStateRef = useRef<FfmpegPreviewState>({
+    status: 'idle',
+    progress: 0,
+    startSec: 0,
+    endSec: 0,
+    durationSec: 0,
+  });
 
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
@@ -471,6 +512,8 @@ export function PreviewPlayer() {
   const [ffmpegPreview, setFfmpegPreview] = useState<FfmpegPreviewState>({
     status: 'idle',
     progress: 0,
+    startSec: 0,
+    endSec: 0,
     durationSec: 0,
   });
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
@@ -481,7 +524,8 @@ export function PreviewPlayer() {
   const ffmpegPreviewDuration = useMemo(() => visualPreviewDurationSec(project, assets), [project, assets]);
   const ffmpegPreviewVisible = ffmpegPreview.status === 'ready'
     && !!ffmpegPreview.url
-    && currentTime <= ffmpegPreview.durationSec + 0.05;
+    && currentTime >= ffmpegPreview.startSec - 0.05
+    && currentTime <= ffmpegPreview.endSec + 0.05;
 
   const updateAspectPreset = (value: string) => {
     if (!isProjectAspectPreset(value)) return;
@@ -510,6 +554,36 @@ export function PreviewPlayer() {
   }, [ffmpegPreview]);
 
   useEffect(() => {
+    const currentPreview = ffmpegPreviewStateRef.current;
+    const noVisualAtPlayhead = ffmpegPreviewDuration <= 0 || currentTime > ffmpegPreviewDuration + 0.05;
+
+    if (noVisualAtPlayhead) {
+      if (currentPreview.status !== 'idle' || currentPreview.signature !== ffmpegPreviewSignature) {
+        ffmpegPreviewSeqRef.current += 1;
+        if (ffmpegPreviewUrlRef.current) {
+          URL.revokeObjectURL(ffmpegPreviewUrlRef.current);
+          ffmpegPreviewUrlRef.current = null;
+        }
+        setFfmpegPreview({
+          status: 'idle',
+          progress: 0,
+          startSec: 0,
+          endSec: 0,
+          durationSec: 0,
+          signature: ffmpegPreviewSignature,
+        });
+      }
+      return undefined;
+    }
+
+    if (previewStateCoversTime(currentPreview, ffmpegPreviewSignature, currentTime)) {
+      return undefined;
+    }
+
+    const { startSec, endSec } = previewRenderWindowForTime(currentTime, ffmpegPreviewDuration);
+    const durationSec = Math.max(0, endSec - startSec);
+    if (durationSec <= 0) return undefined;
+
     const currentUrl = ffmpegPreviewUrlRef.current;
     ffmpegPreviewSeqRef.current += 1;
     const seq = ffmpegPreviewSeqRef.current;
@@ -519,15 +593,12 @@ export function PreviewPlayer() {
       ffmpegPreviewUrlRef.current = null;
     }
 
-    if (ffmpegPreviewDuration <= 0) {
-      setFfmpegPreview({ status: 'idle', progress: 0, durationSec: 0, signature: ffmpegPreviewSignature });
-      return undefined;
-    }
-
     setFfmpegPreview({
       status: 'rendering',
       progress: 0,
-      durationSec: ffmpegPreviewDuration,
+      startSec,
+      endSec,
+      durationSec,
       signature: ffmpegPreviewSignature,
       message: 'Preparing preview...',
     });
@@ -548,13 +619,15 @@ export function PreviewPlayer() {
             setFfmpegPreview((prev) => ({ ...prev, progress }));
           }
         },
-      }).then((result) => {
+      }, { startSec, endSec }).then((result) => {
         if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
         const url = URL.createObjectURL(result.blob);
         ffmpegPreviewUrlRef.current = url;
         setFfmpegPreview({
           status: 'ready',
           progress: 1,
+          startSec: result.startSec,
+          endSec: result.endSec,
           durationSec: result.durationSec,
           message: 'Preview ready',
           url,
@@ -567,7 +640,9 @@ export function PreviewPlayer() {
         setFfmpegPreview({
           status: 'error',
           progress: 0,
-          durationSec: ffmpegPreviewDuration,
+          startSec,
+          endSec,
+          durationSec,
           error: error instanceof Error ? error.message : String(error),
           signature: ffmpegPreviewSignature,
         });
@@ -578,7 +653,7 @@ export function PreviewPlayer() {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [assets, ffmpegPreviewDuration, ffmpegPreviewSignature, project]);
+  }, [assets, currentTime, ffmpegPreviewDuration, ffmpegPreviewSignature, project]);
 
   useEffect(() => () => {
     if (ffmpegPreviewUrlRef.current) {
@@ -981,7 +1056,8 @@ export function PreviewPlayer() {
       const ffmpegPreviewSnapshot = ffmpegPreviewStateRef.current;
       const renderedPreviewActive = ffmpegPreviewSnapshot.status === 'ready'
         && !!ffmpegPreviewSnapshot.url
-        && state.currentTimeSec <= ffmpegPreviewSnapshot.durationSec + 0.05;
+        && state.currentTimeSec >= ffmpegPreviewSnapshot.startSec - 0.05
+        && state.currentTimeSec <= ffmpegPreviewSnapshot.endSec + 0.05;
       const mediaPlaybackBlocked = state.playing && !renderedPreviewActive && playbackVideoBlockedRef.current;
       const mediaPlaying = state.playing && !mediaPlaybackBlocked;
 
@@ -1009,6 +1085,7 @@ export function PreviewPlayer() {
         t,
         mediaPlaying,
         renderedPreviewActive,
+        ffmpegPreviewSnapshot.startSec,
         ffmpegPreviewSnapshot.durationSec,
       );
       const previewFps = safeProjectFps(proj);
