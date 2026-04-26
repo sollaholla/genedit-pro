@@ -13,6 +13,7 @@ import { GenerateVideoModal } from '@/components/media/GenerateVideoModal';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useExportStore } from '@/state/exportStore';
+import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset } from '@/types';
 import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
@@ -25,7 +26,10 @@ export default function App() {
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const [sequenceToGenerate, setSequenceToGenerate] = useState<MediaAsset | null>(null);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
-  const reset = useProjectStore((s) => s.reset);
+  const projectId = useProjectStore((s) => s.project.id);
+  const createProject = useProjectStore((s) => s.createProject);
+  const setActiveMediaProject = useMediaStore((s) => s.setActiveProject);
+  const previousProjectIdRef = useRef(projectId);
   const exportStatus = useExportStore((s) => s.status);
   const exportInProgress = exportStatus === 'preparing' || exportStatus === 'encoding';
 
@@ -44,6 +48,21 @@ export default function App() {
     const timeout = window.setTimeout(() => setHighlightedMediaAssetId(null), 5000);
     return () => window.clearTimeout(timeout);
   }, [highlightedMediaAssetId]);
+
+  useEffect(() => {
+    setActiveMediaProject(projectId);
+    if (previousProjectIdRef.current === projectId) return;
+    previousProjectIdRef.current = projectId;
+    const playback = usePlaybackStore.getState();
+    playback.pause();
+    playback.setCurrentTime(0);
+    playback.setClipSelection([]);
+    setExportOpen(false);
+    setGenerateOpen(false);
+    setRecipeToOpen(null);
+    setSequenceToGenerate(null);
+    setHighlightedMediaAssetId(null);
+  }, [projectId, setActiveMediaProject]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -69,9 +88,9 @@ export default function App() {
   const openImport = () => importerRef.current?.openPicker();
 
   const handleNewProject = () => {
-    if (window.confirm('Start a new project? This will clear the timeline (media is preserved).')) {
-      reset();
-    }
+    const name = window.prompt('Project name', `Project ${useProjectStore.getState().projects.length + 1}`);
+    if (name === null) return;
+    createProject(name.trim() || undefined);
   };
 
   return (

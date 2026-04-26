@@ -11,7 +11,9 @@ type Props = {
 
 export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsClick }: Props) {
   const project = useProjectStore((s) => s.project);
+  const projects = useProjectStore((s) => s.projects);
   const rename = useProjectStore((s) => s.rename);
+  const switchProject = useProjectStore((s) => s.switchProject);
   const exportStatus = useExportStore((s) => s.status);
   const exportProgress = useExportStore((s) => s.progress);
   const exportBusy = exportStatus === 'preparing' || exportStatus === 'encoding';
@@ -33,6 +35,16 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
         </div>
         <div className="text-sm font-semibold tracking-tight">GenEdit Pro</div>
         <div className="h-5 w-px bg-surface-700" />
+        <select
+          value={project.id}
+          onChange={(e) => switchProject(e.target.value)}
+          className="max-w-44 rounded border border-surface-700 bg-surface-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-surface-500"
+          title="Switch project"
+        >
+          {projects.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+          ))}
+        </select>
         <input
           type="text"
           value={project.name}

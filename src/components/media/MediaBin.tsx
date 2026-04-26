@@ -28,6 +28,9 @@ const kindIcon = {
 };
 
 const ASSET_DRAG_MIME = 'application/x-genedit-asset';
+const MEDIA_CONTEXT_MENU_WIDTH_PX = 210;
+const MEDIA_CONTEXT_MENU_MAX_HEIGHT_PX = 270;
+const MEDIA_CONTEXT_MENU_MARGIN_PX = 8;
 
 export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
@@ -47,6 +50,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editingSequenceAssetId, setEditingSequenceAssetId] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
+  const [openAssetMenuId, setOpenAssetMenuId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
   const tileRefs = useRef(new Map<string, HTMLLIElement>());
@@ -131,6 +135,12 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
       folderInputRef.current?.select();
     });
   }, [creatingFolder]);
+
+  useEffect(() => {
+    if (activeFolderId && !folders.some((folder) => folder.id === activeFolderId)) {
+      setActiveFolderId(null);
+    }
+  }, [activeFolderId, folders]);
 
   return (
     <div
@@ -250,6 +260,9 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
                 onOpenSequence={() => setEditingSequenceAssetId(asset.id)}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
                 onOpenPreview={() => setPreviewAssetId(asset.id)}
+                menuOpen={openAssetMenuId === asset.id}
+                onMenuOpen={() => setOpenAssetMenuId(asset.id)}
+                onMenuClose={() => setOpenAssetMenuId((currentId) => (currentId === asset.id ? null : currentId))}
                 isHighlighted={asset.id === highlightedAssetId}
                 tileRef={(node) => {
                   if (node) tileRefs.current.set(asset.id, node);
@@ -558,6 +571,9 @@ function MediaTile({
   onOpenSequence,
   onAddToTimeline,
   onOpenPreview,
+  menuOpen,
+  onMenuOpen,
+  onMenuClose,
   isHighlighted,
   tileRef,
 }: {
@@ -569,6 +585,9 @@ function MediaTile({
   onOpenSequence: () => void;
   onAddToTimeline: () => void;
   onOpenPreview: () => void;
+  menuOpen: boolean;
+  onMenuOpen: () => void;
+  onMenuClose: () => void;
   isHighlighted: boolean;
   tileRef: (node: HTMLLIElement | null) => void;
 }) {
@@ -580,11 +599,11 @@ function MediaTile({
       : asset.kind === 'video' || asset.kind === 'audio'
         ? `${asset.durationSec.toFixed(1)}s`
         : '';
-  const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(nameParts.base);
   const [failureTooltipVisible, setFailureTooltipVisible] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const failureTooltipRef = useRef<HTMLDivElement | null>(null);
   const failureTooltipPositionRef = useRef({ x: 12, y: 12 });
@@ -602,14 +621,14 @@ function MediaTile({
 
   useEffect(() => {
     if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
+    const close = () => onMenuClose();
     window.addEventListener('click', close);
     window.addEventListener('contextmenu', close);
     return () => {
       window.removeEventListener('click', close);
       window.removeEventListener('contextmenu', close);
     };
-  }, [menuOpen]);
+  }, [menuOpen, onMenuClose]);
 
   useEffect(() => {
     if (!renaming) setDraftName(splitFilename(asset.name).base);
@@ -618,6 +637,15 @@ function MediaTile({
   useEffect(() => {
     if (!failureMessage) setFailureTooltipVisible(false);
   }, [failureMessage]);
+
+  useLayoutEffect(() => {
+    if (!menuOpen) return;
+    const menu = menuRef.current;
+    if (!menu) return;
+    const position = clampMediaMenuPosition(menuPos.x, menuPos.y, menu.offsetWidth, menu.offsetHeight);
+    menu.style.left = `${position.x}px`;
+    menu.style.top = `${position.y}px`;
+  }, [menuOpen, menuPos]);
 
   useLayoutEffect(() => {
     if (!failureTooltipVisible) return;
@@ -639,7 +667,7 @@ function MediaTile({
     setDraftName(splitFilename(asset.name).base);
     skipRenameCommitRef.current = false;
     setRenaming(true);
-    setMenuOpen(false);
+    onMenuClose();
   };
 
   const commitRename = () => {
@@ -703,7 +731,7 @@ function MediaTile({
         e.dataTransfer.effectAllowed = 'copyMove';
       }}
       onClick={() => {
-        setMenuOpen(false);
+        onMenuClose();
       }}
       onDoubleClick={() => {
         if (asset.kind === 'recipe') {
@@ -722,7 +750,7 @@ function MediaTile({
         e.stopPropagation();
         pointerButtonRef.current = 2;
         setMenuPos({ x: e.clientX, y: e.clientY });
-        setMenuOpen(true);
+        onMenuOpen();
       }}
       title={asset.name}
     >
@@ -818,6 +846,7 @@ function MediaTile({
             <div className="flex min-w-0 flex-1 items-center">
               <input
                 ref={renameInputRef}
+                title="Asset name"
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
                 onBlur={commitRename}
@@ -870,8 +899,8 @@ function MediaTile({
       </div>
       {menuOpen && (
         <div
+          ref={menuRef}
           className="fixed z-[80] min-w-[150px] rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
-          style={{ left: menuPos.x, top: menuPos.y }}
           onContextMenu={(e) => e.preventDefault()}
         >
           {canReusePrompt && (
@@ -879,7 +908,7 @@ function MediaTile({
               <button
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
                 onClick={() => {
-                  setMenuOpen(false);
+                  onMenuClose();
                   onOpenRecipe();
                 }}
               >
@@ -894,7 +923,7 @@ function MediaTile({
             disabled={!canInsert}
             onClick={() => {
               if (!canInsert) return;
-              setMenuOpen(false);
+              onMenuClose();
               onAddToTimeline();
             }}
           >
@@ -905,7 +934,7 @@ function MediaTile({
             <button
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
               onClick={() => {
-                setMenuOpen(false);
+                onMenuClose();
                 onOpenEdit();
               }}
             >
@@ -926,7 +955,7 @@ function MediaTile({
           <button
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10"
             onClick={() => {
-              setMenuOpen(false);
+              onMenuClose();
               void onDelete();
             }}
           >
@@ -946,6 +975,20 @@ function splitFilename(name: string): { base: string; extension: string } {
   return {
     base: trimmed.slice(0, lastDot),
     extension: trimmed.slice(lastDot + 1),
+  };
+}
+
+function clampMediaMenuPosition(
+  x: number,
+  y: number,
+  width = MEDIA_CONTEXT_MENU_WIDTH_PX,
+  height = MEDIA_CONTEXT_MENU_MAX_HEIGHT_PX,
+): { x: number; y: number } {
+  const maxX = window.innerWidth - width - MEDIA_CONTEXT_MENU_MARGIN_PX;
+  const maxY = window.innerHeight - height - MEDIA_CONTEXT_MENU_MARGIN_PX;
+  return {
+    x: Math.max(MEDIA_CONTEXT_MENU_MARGIN_PX, Math.min(x, maxX)),
+    y: Math.max(MEDIA_CONTEXT_MENU_MARGIN_PX, Math.min(y, maxY)),
   };
 }
 
