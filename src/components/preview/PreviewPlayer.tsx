@@ -68,6 +68,10 @@ function computeRms(buf: Float32Array): number {
 
 type ElementPool = Map<string, HTMLMediaElement>;
 type ImagePool = Map<string, HTMLImageElement>;
+type VideoFrameCallbackElement = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: (now: number, metadata: { mediaTime: number }) => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
 
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
@@ -124,18 +128,62 @@ function projectFrameTime(timeSec: number, fps: number): number {
   return projectFrameIndex(timeSec, fps) / fps;
 }
 
-function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
-  const drift = Math.abs(el.currentTime - target);
-  const threshold = playing ? 0.15 : 0.015;
-  if (drift > threshold && !el.seeking && el.readyState >= 1) {
-    try { el.currentTime = target; } catch { /* noop */ }
-  }
+type VideoSyncWindow = {
+  beforeSec: number;
+  afterSec: number;
+};
+
+function videoSyncWindow(clip: Clip, fps: number, playing: boolean): VideoSyncWindow {
+  const frameSec = 1 / Math.max(1, fps);
+  const sourceFrameSec = frameSec * Math.max(0.01, Math.abs(clipSpeed(clip)));
+  const beforeSec = Math.min(0.035, Math.max(0.015, sourceFrameSec * 0.75));
+  if (!playing) return { beforeSec, afterSec: beforeSec };
+  return {
+    beforeSec,
+    afterSec: Math.min(0.12, Math.max(0.035, sourceFrameSec * 1.25)),
+  };
 }
 
-function canPaintSyncedVideo(el: HTMLVideoElement, target: number, playing: boolean) {
+function outsideSyncWindow(current: number, target: number, tolerance: number | VideoSyncWindow): boolean {
+  if (typeof tolerance === 'number') return Math.abs(current - target) > tolerance;
+  return current < target - tolerance.beforeSec || current > target + tolerance.afterSec;
+}
+
+function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean, tolerance?: number | VideoSyncWindow): boolean {
+  const drift = Math.abs(el.currentTime - target);
+  const threshold = tolerance ?? (playing ? 0.15 : 0.015);
+  const shouldSeek = typeof threshold === 'number'
+    ? drift > threshold
+    : outsideSyncWindow(el.currentTime, target, threshold);
+  if (shouldSeek && !el.seeking && el.readyState >= 1) {
+    try { el.currentTime = target; } catch { /* noop */ }
+    return true;
+  }
+  return false;
+}
+
+function decodedVideoTime(
+  el: HTMLVideoElement,
+  clipId: string,
+  videoFrameTimes: Map<string, number>,
+): number | null {
+  const video = el as VideoFrameCallbackElement;
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    return videoFrameTimes.get(clipId) ?? null;
+  }
+  return el.currentTime;
+}
+
+function canPaintSyncedVideo(
+  el: HTMLVideoElement,
+  clipId: string,
+  target: number,
+  tolerance: number | VideoSyncWindow,
+  videoFrameTimes: Map<string, number>,
+) {
   if (el.readyState < HAVE_CURRENT_DATA || el.seeking) return false;
-  const threshold = playing ? 0.25 : 0.015;
-  return Math.abs(el.currentTime - target) <= threshold;
+  const mediaTime = decodedVideoTime(el, clipId, videoFrameTimes);
+  return mediaTime !== null && !outsideSyncWindow(mediaTime, target, tolerance);
 }
 
 function hideVideoElement(el: HTMLVideoElement) {
@@ -218,8 +266,11 @@ function renderPreviewCanvas(
   assetsById: Map<string, MediaAsset>,
   project: Project,
   timelineTimeSec: number,
+  previewFps: number,
+  playing: boolean,
   videoPool: ElementPool,
   imagePool: ImagePool,
+  videoFrameTimes: Map<string, number>,
 ): boolean {
   if (!canvas || project.width <= 0 || project.height <= 0) return false;
   const drawItems: Array<{
@@ -234,9 +285,12 @@ function renderPreviewCanvas(
     const source = asset.kind === 'image'
       ? imagePool.get(layer.clip.id)
       : videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
-    if (!source) continue;
-    if (source instanceof HTMLVideoElement && (source.readyState < HAVE_CURRENT_DATA || source.seeking)) continue;
-    if (source instanceof HTMLImageElement && !source.complete) continue;
+    if (!source) return false;
+    if (source instanceof HTMLVideoElement) {
+      const tolerance = videoSyncWindow(layer.clip, previewFps, playing);
+      if (!canPaintSyncedVideo(source, layer.clip.id, layer.sourceTimeSec, tolerance, videoFrameTimes)) return false;
+    }
+    if (source instanceof HTMLImageElement && !source.complete) return false;
     drawItems.push({ source, asset, clip: layer.clip });
   }
 
@@ -297,6 +351,8 @@ export function PreviewPlayer() {
   const videoPool = useRef<ElementPool>(new Map());
   const imagePool = useRef<ImagePool>(new Map());
   const audioPool = useRef<ElementPool>(new Map());
+  const videoFrameTimesRef = useRef<Map<string, number>>(new Map());
+  const videoFrameCallbacksRef = useRef<Map<string, number>>(new Map());
   // clipId -> asset id + active blob key that el.src is currently set to.
   const clipAssetRef = useRef<Map<string, string>>(new Map());
   // clipId → GainNode connected to the master bus
@@ -314,6 +370,7 @@ export function PreviewPlayer() {
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
   const hasFreezeFrameRef = useRef(false);
   const lastRenderedPreviewFrameRef = useRef<string | null>(null);
+  const lastRenderedPreviewClipKeyRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -401,6 +458,26 @@ export function PreviewPlayer() {
     }
   };
 
+  const startVideoFrameTracking = useCallback((clipId: string, video: HTMLVideoElement) => {
+    const element = video as VideoFrameCallbackElement;
+    if (typeof element.requestVideoFrameCallback !== 'function' || videoFrameCallbacksRef.current.has(clipId)) return;
+
+    const schedule = () => {
+      if (videoPool.current.get(clipId) !== video || typeof element.requestVideoFrameCallback !== 'function') {
+        videoFrameCallbacksRef.current.delete(clipId);
+        return;
+      }
+      const handle = element.requestVideoFrameCallback((_now, metadata) => {
+        videoFrameCallbacksRef.current.delete(clipId);
+        if (Number.isFinite(metadata.mediaTime)) videoFrameTimesRef.current.set(clipId, metadata.mediaTime);
+        schedule();
+      });
+      videoFrameCallbacksRef.current.set(clipId, handle);
+    };
+
+    schedule();
+  }, []);
+
   const releaseAudioGraph = useCallback((clipId: string) => {
     gainNodes.current.get(clipId)?.disconnect();
     gainNodes.current.delete(clipId);
@@ -419,6 +496,11 @@ export function PreviewPlayer() {
   const removeVideoElement = useCallback((clipId: string) => {
     const el = videoPool.current.get(clipId);
     if (el) {
+      const video = el as VideoFrameCallbackElement;
+      const handle = videoFrameCallbacksRef.current.get(clipId);
+      if (handle !== undefined) video.cancelVideoFrameCallback?.(handle);
+      videoFrameCallbacksRef.current.delete(clipId);
+      videoFrameTimesRef.current.delete(clipId);
       el.pause();
       (el as HTMLVideoElement).remove();
       videoPool.current.delete(clipId);
@@ -483,8 +565,10 @@ export function PreviewPlayer() {
         existing.src = url;
         if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
         clipAssetRef.current.set(clip.id, mediaKey);
+        if (!isAudio) videoFrameTimesRef.current.delete(clip.id);
         existing.load();
       }
+      if (!isAudio) startVideoFrameTracking(clip.id, existing as HTMLVideoElement);
       return existing;
     }
 
@@ -504,8 +588,16 @@ export function PreviewPlayer() {
       video.className = 'absolute max-w-none object-contain';
       video.style.display = 'none';
       video.style.visibility = 'hidden';
+      const markDecodedFrameTime = () => {
+        if (videoPool.current.get(clip.id) === video && Number.isFinite(video.currentTime)) {
+          videoFrameTimesRef.current.set(clip.id, video.currentTime);
+        }
+      };
+      video.addEventListener('loadeddata', markDecodedFrameTime);
+      video.addEventListener('seeked', markDecodedFrameTime);
       videoHostRef.current?.appendChild(video);
       pool.set(clip.id, video);
+      startVideoFrameTracking(clip.id, video);
       el = video;
     }
     clipAssetRef.current.set(clip.id, mediaKey);
@@ -528,7 +620,7 @@ export function PreviewPlayer() {
     }
 
     return el;
-  }, [removeAudioElement, removeImageElement, removeVideoElement]);
+  }, [removeAudioElement, removeImageElement, removeVideoElement, startVideoFrameTracking]);
 
   const ensureClipElement = useCallback((clip: Clip, asset: MediaAsset) => {
     if (asset.kind === 'recipe' || asset.kind === 'sequence') return null;
@@ -810,13 +902,17 @@ export function PreviewPlayer() {
         if (activeAsset?.kind !== 'video') continue;
         const videoEl = videoPool.current.get(layer.clip.id) as HTMLVideoElement | undefined;
         if (!videoEl) continue;
-        seekIfNeeded(videoEl, layer.sourceTimeSec, state.playing);
-        if (canPaintSyncedVideo(videoEl, layer.sourceTimeSec, state.playing)) {
+        const tolerance = videoSyncWindow(layer.clip, previewFps, state.playing);
+        if (seekIfNeeded(videoEl, layer.sourceTimeSec, state.playing, tolerance)) {
+          videoFrameTimesRef.current.delete(layer.clip.id);
+        }
+        if (canPaintSyncedVideo(videoEl, layer.clip.id, layer.sourceTimeSec, tolerance, videoFrameTimesRef.current)) {
           paintableVisualClipIds.add(layer.clip.id);
         }
       }
       const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
-      const previewFrameKey = `${previewFps}:${visualFrameIndex}:${visualLayers.map((layer) => layer.clip.id).join('|')}`;
+      const previewClipKey = visualLayers.map((layer) => layer.clip.id).join('|');
+      const previewFrameKey = `${previewFps}:${visualFrameIndex}:${previewClipKey}`;
       if (state.playing && visualLayers.length > 0) {
         if (previewFrameKey !== lastRenderedPreviewFrameRef.current) {
           const rendered = renderPreviewCanvas(
@@ -825,21 +921,28 @@ export function PreviewPlayer() {
             assetsById,
             proj,
             visualTime,
+            previewFps,
+            state.playing,
             videoPool.current,
             imagePool.current,
+            videoFrameTimesRef.current,
           );
           if (rendered) {
             hasFreezeFrameRef.current = true;
             lastRenderedPreviewFrameRef.current = previewFrameKey;
+            lastRenderedPreviewClipKeyRef.current = previewClipKey;
           }
         }
       } else {
         lastRenderedPreviewFrameRef.current = null;
+        lastRenderedPreviewClipKeyRef.current = null;
       }
       if (topPaintableLayer) {
         lastPaintedVisualRef.current = { clipId: topPaintableLayer.clip.id, ts };
       }
-      const showFreezeFrame = visualLayers.length > 0 && hasFreezeFrameRef.current && (state.playing || !topPaintableLayer);
+      const hasCurrentFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewFrameRef.current === previewFrameKey;
+      const hasSameClipFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewClipKeyRef.current === previewClipKey;
+      const showFreezeFrame = visualLayers.length > 0 && (state.playing ? hasSameClipFreezeFrame : hasCurrentFreezeFrame && !topPaintableLayer);
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
       }
@@ -897,6 +1000,7 @@ export function PreviewPlayer() {
         if (!prerolledRef.current.has(clip.id) && el.readyState >= 1 && !el.seeking) {
           if (Math.abs(el.currentTime - clip.inSec) > 0.2) {
             try { el.currentTime = clip.inSec; } catch { /* noop */ }
+            if (videoPool.current.has(clip.id)) videoFrameTimesRef.current.delete(clip.id);
           }
           prerolledRef.current.add(clip.id);
         }
@@ -924,6 +1028,7 @@ export function PreviewPlayer() {
             const alignedStart = Math.max(0, clip.inSec - timeUntilActive);
             if (el.readyState >= 1 && !el.seeking) {
               try { el.currentTime = alignedStart; } catch { /* noop */ }
+              if (videoPool.current.has(clip.id)) videoFrameTimesRef.current.delete(clip.id);
               hotPrimedSeekRef.current.add(clip.id);
             }
           }
@@ -1037,7 +1142,9 @@ export function PreviewPlayer() {
         setPitchPreservingRate(el, clipSpeed(layer.clip));
 
         if (!state.playing && !el.paused) el.pause();
-        seekIfNeeded(el, layer.sourceTimeSec, state.playing);
+        if (seekIfNeeded(el, layer.sourceTimeSec, state.playing) && isVideoEl) {
+          videoFrameTimesRef.current.delete(clipId);
+        }
         if (state.playing && el.paused) el.play().catch(() => undefined);
       }
 
