@@ -1,6 +1,6 @@
 import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
-import { Check, Clapperboard, Copy, Image as ImageIcon, Plus, Search, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import {
   DEFAULT_VIDEO_MODELS,
   isPiApiKlingModel,
@@ -36,6 +36,7 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   const sortedMarkers = useMemo(() => sortedSequenceMarkers(sequence), [sequence]);
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(sortedMarkers[0]?.id ?? null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -63,6 +64,33 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
   useEffect(() => {
     setCurrentTimeSec((time) => clampTime(time, sequence.durationSec));
   }, [sequence.durationSec]);
+
+  useEffect(() => {
+    if (!playing) return undefined;
+    let raf = 0;
+    let lastTs: number | null = null;
+    const tick = (ts: number) => {
+      if (lastTs === null) lastTs = ts;
+      const dt = (ts - lastTs) / 1000;
+      lastTs = ts;
+      let reachedEnd = false;
+      setCurrentTimeSec((time) => {
+        const next = clampTime(time + dt, sequence.durationSec);
+        if (next >= sequence.durationSec) {
+          reachedEnd = true;
+          return sequence.durationSec;
+        }
+        return next;
+      });
+      if (reachedEnd) {
+        setPlaying(false);
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, sequence.durationSec]);
 
   useEffect(() => {
     let mounted = true;
@@ -112,6 +140,16 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
     setSelectedMarkerId(marker.id);
     setCurrentTimeSec(marker.timeSec);
   };
+  const seekStart = () => setCurrentTimeSec(0);
+  const seekEnd = () => {
+    setCurrentTimeSec(sequence.durationSec);
+    setPlaying(false);
+  };
+  const playPreview = () => {
+    setCurrentTimeSec((time) => (time >= sequence.durationSec ? 0 : time));
+    setPlaying(true);
+  };
+  const pausePreview = () => setPlaying(false);
   const deleteSelectedMarker = () => {
     if (!selectedMarker) return;
     const remaining = sequence.markers.filter((marker) => marker.id !== selectedMarker.id);
@@ -258,7 +296,49 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
             </div>
 
             <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="font-mono text-xs text-slate-400">{formatTime(currentTimeSec)} / {formatTime(sequence.durationSec)}</div>
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="inline-flex items-center rounded-md border border-surface-700 bg-surface-950 p-0.5">
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300"
+                    onClick={seekStart}
+                    title="Go to start"
+                    aria-label="Go to start"
+                  >
+                    <SkipBack size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-200 hover:bg-surface-700 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300 disabled:cursor-not-allowed disabled:opacity-35"
+                    onClick={playPreview}
+                    disabled={playing}
+                    title="Play preview"
+                    aria-label="Play preview"
+                  >
+                    <Play size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300 disabled:cursor-not-allowed disabled:opacity-35"
+                    onClick={pausePreview}
+                    disabled={!playing}
+                    title="Pause preview"
+                    aria-label="Pause preview"
+                  >
+                    <Pause size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300"
+                    onClick={seekEnd}
+                    title="Go to end"
+                    aria-label="Go to end"
+                  >
+                    <SkipForward size={13} />
+                  </button>
+                </div>
+                <div className="font-mono text-xs text-slate-400">{formatTime(currentTimeSec)} / {formatTime(sequence.durationSec)}</div>
+              </div>
               <button className="btn-ghost px-2 py-1 text-xs" onClick={() => addMarker()}>
                 <Plus size={12} />
                 Add Marker
@@ -271,6 +351,7 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
                 viewBox={`0 0 ${SVG_WIDTH} 92`}
                 className="block h-28 w-full touch-none select-none overflow-visible"
                 onPointerDown={(event) => {
+                  setPlaying(false);
                   event.currentTarget.setPointerCapture(event.pointerId);
                   timelineGestureRef.current = {
                     pointerId: event.pointerId,
@@ -306,6 +387,7 @@ export function SequenceEditor({ assetId, onClose, onGenerate }: Props) {
                       transform={`translate(${x} 0)`}
                       className="cursor-ew-resize"
                       onPointerDown={(event) => {
+                        setPlaying(false);
                         event.stopPropagation();
                         event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
                         timelineGestureRef.current = {
