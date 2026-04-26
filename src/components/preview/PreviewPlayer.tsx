@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
-import { resolveFrame, upcomingClips, type ActiveLayer } from '@/lib/playback/engine';
+import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
 import type { Clip, MediaAsset, Project } from '@/types';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
@@ -72,11 +72,11 @@ type ImagePool = Map<string, HTMLImageElement>;
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const HAVE_CURRENT_DATA = 2;
-const PREROLL_SEC = 2.0;
+const PREPARE_BACKWARD_SEC = 5.0;
+const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
-const MEDIA_KEEP_ALIVE_SEC = 1.5;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
-const MAX_PREROLL_CLIPS = 8;
+const MAX_PREPARED_CLIPS = 48;
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -86,10 +86,30 @@ function clipIntersectsWindow(clip: Clip, startSec: number, endSec: number): boo
   return clip.startSec <= endSec && clipEndSec(clip) >= startSec;
 }
 
-function nearestUpcomingClips(project: Project, timeSec: number): Clip[] {
-  return upcomingClips(project, timeSec, PREROLL_SEC)
-    .sort((first, second) => first.startSec - second.startSec)
-    .slice(0, MAX_PREROLL_CLIPS);
+function preparedClipScore(clip: Clip, timeSec: number, required: boolean): number {
+  if (required) return -1000 + clip.startSec * 0.001;
+  const endSec = clipEndSec(clip);
+  if (timeSec >= clip.startSec && timeSec <= endSec) return -100 + clip.startSec * 0.001;
+  if (clip.startSec > timeSec) return (clip.startSec - timeSec) + clip.startSec * 0.0001;
+  return PREPARE_FORWARD_SEC + (timeSec - endSec) + clip.startSec * 0.0001;
+}
+
+function preparedClipsForTime(project: Project, timeSec: number): Clip[] {
+  const activeFrame = resolveFrame(project, timeSec);
+  const requiredIds = new Set<string>();
+  for (const layer of [...activeFrame.videos, ...activeFrame.audios]) requiredIds.add(layer.clip.id);
+
+  const candidates = project.clips
+    .filter((clip) => clipIntersectsWindow(clip, timeSec - PREPARE_BACKWARD_SEC, timeSec + PREPARE_FORWARD_SEC))
+    .map((clip) => ({ clip, score: preparedClipScore(clip, timeSec, requiredIds.has(clip.id)) }))
+    .sort((first, second) => first.score - second.score);
+
+  const prepared = new Map<string, Clip>();
+  for (const candidate of candidates) {
+    if (prepared.size >= MAX_PREPARED_CLIPS && !requiredIds.has(candidate.clip.id)) continue;
+    prepared.set(candidate.clip.id, candidate.clip);
+  }
+  return [...prepared.values()];
 }
 
 function safeProjectFps(project: Pick<Project, 'fps'>): number {
@@ -463,6 +483,7 @@ export function PreviewPlayer() {
         existing.src = url;
         if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
         clipAssetRef.current.set(clip.id, mediaKey);
+        existing.load();
       }
       return existing;
     }
@@ -488,6 +509,7 @@ export function PreviewPlayer() {
       el = video;
     }
     clipAssetRef.current.set(clip.id, mediaKey);
+    el.load();
 
     try {
       const ctx = getAudioContext();
@@ -537,7 +559,7 @@ export function PreviewPlayer() {
           !latestAsset ||
           latestClip.assetId !== asset.id ||
           latestAsset.blobKey !== asset.blobKey ||
-          !clipIntersectsWindow(latestClip, latestTimeSec - MEDIA_KEEP_ALIVE_SEC, latestTimeSec + PREROLL_SEC)
+          !preparedClipsForTime(useProjectStore.getState().project, latestTimeSec).some((candidate) => candidate.id === latestClip.id)
         ) {
           if (ownsUrl && urlCache.current.get(mediaKey) === url) {
             URL.revokeObjectURL(url);
@@ -554,10 +576,8 @@ export function PreviewPlayer() {
 
   const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number) => {
     const clipsById = new Map(projectToPrune.clips.map((clip) => [clip.id, clip]));
-    const frame = resolveFrame(projectToPrune, timeSec);
     const keepIds = new Set<string>();
-    for (const layer of [...frame.videos, ...frame.audios]) keepIds.add(layer.clip.id);
-    for (const clip of nearestUpcomingClips(projectToPrune, timeSec)) keepIds.add(clip.id);
+    for (const clip of preparedClipsForTime(projectToPrune, timeSec)) keepIds.add(clip.id);
     const keepClip = (clipId: string) => {
       const clip = clipsById.get(clipId);
       if (!clip) return false;
@@ -715,10 +735,8 @@ export function PreviewPlayer() {
     }
 
     const timeSec = usePlaybackStore.getState().currentTimeSec;
-    const frame = resolveFrame(project, timeSec);
     const clipsToWarm = new Map<string, Clip>();
-    for (const layer of [...frame.videos, ...frame.audios]) clipsToWarm.set(layer.clip.id, layer.clip);
-    for (const clip of nearestUpcomingClips(project, timeSec)) clipsToWarm.set(clip.id, clip);
+    for (const clip of preparedClipsForTime(project, timeSec)) clipsToWarm.set(clip.id, clip);
     for (const clip of clipsToWarm.values()) {
       const asset = assetsById.get(clip.assetId);
       if (asset) ensureClipElement(clip, asset);
@@ -757,7 +775,7 @@ export function PreviewPlayer() {
       const audioFrame = resolveFrame(proj, t);
       const visualFrame = resolveFrame(proj, visualTime);
       const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
-      const upcoming = nearestUpcomingClips(proj, t);
+      const preparedClips = preparedClipsForTime(proj, t);
       const neededClipIds = new Set<string>();
       for (const layer of [...visualFrame.videos, ...audioFrame.audios]) {
         if (neededClipIds.has(layer.clip.id)) continue;
@@ -765,7 +783,7 @@ export function PreviewPlayer() {
         const asset = assetsById.get(layer.clip.assetId);
         if (asset) ensureClipElement(layer.clip, asset);
       }
-      for (const clip of upcoming) {
+      for (const clip of preparedClips) {
         if (neededClipIds.has(clip.id)) continue;
         neededClipIds.add(clip.id);
         const asset = assetsById.get(clip.assetId);
@@ -869,10 +887,12 @@ export function PreviewPlayer() {
 
       // Preroll: seek upcoming clips so their decoder buffer is warm.
       const hotPrimedIds = new Set<string>();
-      for (const clip of upcoming) {
+      const preparedClipIds = new Set(preparedClips.map((clip) => clip.id));
+      for (const clip of preparedClips) {
         const el = videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
         if (!el) continue;
         const timeUntilActive = clip.startSec - t;
+        if (timeUntilActive < 0) continue;
 
         if (!prerolledRef.current.has(clip.id) && el.readyState >= 1 && !el.seeking) {
           if (Math.abs(el.currentTime - clip.inSec) > 0.2) {
@@ -914,7 +934,7 @@ export function PreviewPlayer() {
       // Reset preroll markers for clips that moved out of the lookahead window.
       for (const id of prerolledRef.current) {
         const c = proj.clips.find((cl) => cl.id === id);
-        if (!c || c.startSec - t > PREROLL_SEC + 0.5 || t > c.startSec) {
+        if (!c || !preparedClipIds.has(id) || t > c.startSec) {
           prerolledRef.current.delete(id);
         }
       }
