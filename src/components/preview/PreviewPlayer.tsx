@@ -75,7 +75,7 @@ const HAVE_CURRENT_DATA = 2;
 const PREROLL_SEC = 2.0;
 const HOT_PRIMING_SEC = 0.3;
 const MEDIA_KEEP_ALIVE_SEC = 1.5;
-const POOL_PRUNE_INTERVAL_MS = 250;
+const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREROLL_CLIPS = 8;
 
 function clipEndSec(clip: Clip): number {
@@ -174,6 +174,27 @@ function applyVisualLayout(
   el.style.cursor = tf ? 'move' : 'default';
 }
 
+function captureFreezeFrame(
+  canvas: HTMLCanvasElement | null,
+  source: HTMLVideoElement | HTMLImageElement,
+  project: Pick<Project, 'width' | 'height'>,
+): boolean {
+  if (!canvas || project.width <= 0 || project.height <= 0) return false;
+  if (source instanceof HTMLVideoElement && source.readyState < HAVE_CURRENT_DATA) return false;
+  if (source instanceof HTMLImageElement && !source.complete) return false;
+  if (canvas.width !== project.width) canvas.width = project.width;
+  if (canvas.height !== project.height) canvas.height = project.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return false;
+  try {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function PreviewPlayer() {
   const project = useProjectStore((s) => s.project);
   const assets = useMediaStore((s) => s.assets);
@@ -187,6 +208,7 @@ export function PreviewPlayer() {
   const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
 
   const videoHostRef = useRef<HTMLDivElement | null>(null);
+  const freezeFrameCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
@@ -211,7 +233,7 @@ export function PreviewPlayer() {
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
   const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
-  const lastPoolPruneRef = useRef(0);
+  const hasFreezeFrameRef = useRef(false);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -480,8 +502,9 @@ export function PreviewPlayer() {
       const clip = clipsById.get(clipId);
       if (!clip) return false;
       const selectedForPlayback = keepIds.has(clipId);
-      const lastPainted = lastPaintedVisualRef.current?.clipId === clipId;
-      return selectedForPlayback || lastPainted || fadingOut.current.has(clipId) || fadingIn.current.has(clipId);
+      const closeEnoughToFade = (fadingOut.current.has(clipId) || fadingIn.current.has(clipId))
+        && clipIntersectsWindow(clip, timeSec - AUDIO_FADE_RETAIN_SEC, timeSec + AUDIO_FADE_RETAIN_SEC);
+      return selectedForPlayback || closeEnoughToFade;
     };
 
     for (const clipId of [...videoPool.current.keys()]) {
@@ -713,28 +736,29 @@ export function PreviewPlayer() {
       const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
       if (topPaintableLayer) {
         lastPaintedVisualRef.current = { clipId: topPaintableLayer.clip.id, ts };
+        const activeAsset = activeVisualAssetsByClipId.get(topPaintableLayer.clip.id);
+        const activeElement = activeAsset?.kind === 'image'
+          ? imagePool.current.get(topPaintableLayer.clip.id)
+          : videoPool.current.get(topPaintableLayer.clip.id);
+        if (activeElement && captureFreezeFrame(freezeFrameCanvasRef.current, activeElement as HTMLVideoElement | HTMLImageElement, proj)) {
+          hasFreezeFrameRef.current = true;
+        }
       }
-      const lastPaintedVisual = lastPaintedVisualRef.current;
-      const fallbackVisualClipId = !topPaintableLayer
-        && visualLayers.length > 0
-        && lastPaintedVisual
-        ? lastPaintedVisual.clipId
-        : null;
+      const showFreezeFrame = !topPaintableLayer && visualLayers.length > 0 && hasFreezeFrameRef.current;
+      if (freezeFrameCanvasRef.current) {
+        freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
+      }
       for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
         const activeLayer = activeVisualLayersByClipId.get(clipId);
         const activeAsset = activeVisualAssetsByClipId.get(clipId);
-        const isFallbackVisual = clipId === fallbackVisualClipId;
         if (activeLayer && activeAsset?.kind === 'video') {
           videoEl.style.display = '';
-          videoEl.style.visibility = paintableVisualClipIds.has(clipId) || isFallbackVisual
+          videoEl.style.visibility = paintableVisualClipIds.has(clipId)
             ? 'visible'
             : 'hidden';
           videoEl.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
           applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
-        } else if (isFallbackVisual) {
-          videoEl.style.display = '';
-          videoEl.style.visibility = 'visible';
         } else {
           hideVideoElement(videoEl);
         }
@@ -742,15 +766,11 @@ export function PreviewPlayer() {
       for (const [clipId, img] of imagePool.current) {
         const activeLayer = activeVisualLayersByClipId.get(clipId);
         const activeAsset = activeVisualAssetsByClipId.get(clipId);
-        const isFallbackVisual = clipId === fallbackVisualClipId;
         if (activeLayer && activeAsset?.kind === 'image') {
           img.style.display = '';
           img.style.visibility = 'visible';
           img.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
           applyVisualLayout(img, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
-        } else if (isFallbackVisual) {
-          img.style.display = '';
-          img.style.visibility = 'visible';
         } else {
           img.style.display = 'none';
           img.style.visibility = 'hidden';
@@ -924,10 +944,7 @@ export function PreviewPlayer() {
         if (state.playing && el.paused) el.play().catch(() => undefined);
       }
 
-      if (ts - lastPoolPruneRef.current > POOL_PRUNE_INTERVAL_MS) {
-        lastPoolPruneRef.current = ts;
-        pruneMediaElements(proj, t);
-      }
+      pruneMediaElements(proj, t);
 
       // ---- PUBLISH READINESS (throttled to ~4Hz; diff-guarded) ----
       if (ts - lastReadinessPublishRef.current > 250) {
@@ -1046,6 +1063,11 @@ export function PreviewPlayer() {
               ))}
             </defs>
           </svg>
+          <canvas
+            ref={freezeFrameCanvasRef}
+            className="pointer-events-none absolute inset-0 hidden h-full w-full"
+            aria-hidden
+          />
           <div ref={videoHostRef} className="absolute inset-0" />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
