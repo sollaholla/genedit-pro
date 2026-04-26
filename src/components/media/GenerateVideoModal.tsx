@@ -65,6 +65,7 @@ import {
 } from '@/lib/videoModels/capabilities';
 import { useMediaStore } from '@/state/mediaStore';
 import type { GenerateRecipe, MediaAsset } from '@/types';
+import { ModelSelect } from './ModelSelect';
 
 type Props = {
   open: boolean;
@@ -890,7 +891,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
           <div className="space-y-2 rounded-md border border-surface-700 bg-surface-900/70 p-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <PillSelect label="Model" value={model} onChange={setModel} options={selectableModels.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
+              <ModelSelect value={model} onChange={setModel} options={selectableModels} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
               <PillOptionGroup label="Aspect" value={aspect} options={selectedModel.capabilities.aspects.map((v) => ({ value: v, label: v }))} onChange={(v) => setAspect(v as Aspect)} />
               <PillOptionGroup label="Resolution" value={resolution} options={resolutionOptions.map((v) => ({ value: v, label: v }))} onChange={setResolution} />
               <PillOptionGroup label="Duration" value={duration} options={durationOptions.map((v) => ({ value: v, label: v }))} onChange={setDuration} />
@@ -1199,41 +1200,6 @@ function RecipePicker({
         </div>
       </div>
     </div>
-  );
-}
-
-function PillSelect({
-  label,
-  value,
-  options,
-  onChange,
-  loading = false,
-  disabled = false,
-  emptyLabel = 'No options',
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-  loading?: boolean;
-  disabled?: boolean;
-  emptyLabel?: string;
-}) {
-  const displayValue = options.some((option) => option.value === value) ? value : '';
-  return (
-    <label className="inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 pl-3 pr-2 text-xs text-slate-300 focus-within:border-brand-400">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
-      <select
-        value={displayValue}
-        onChange={(e) => onChange(e.target.value)}
-        className="max-w-[220px] bg-transparent text-xs text-slate-100 outline-none"
-        disabled={loading || disabled || options.length === 0}
-      >
-        {loading && <option>Loading...</option>}
-        {!loading && options.length === 0 && <option value="">{emptyLabel}</option>}
-        {!loading && options.map((option) => <option key={option.value} value={option.value} className="bg-surface-900">{option.label}</option>)}
-      </select>
-    </label>
   );
 }
 

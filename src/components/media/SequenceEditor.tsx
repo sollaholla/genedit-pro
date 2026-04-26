@@ -11,6 +11,7 @@ import {
 import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
+import { ModelSelect } from './ModelSelect';
 
 type Props = {
   assetId: string | null;
@@ -302,18 +303,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   className="min-h-[88px] resize-none rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
                 />
               </label>
-              <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Model
-                <select
+                <ModelSelect
                   value={selectedModel.id}
-                  onChange={(event) => changeModel(event.target.value)}
-                  className="rounded-md border border-surface-700 bg-surface-900 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
-                >
-                  {sequenceModels.map((model) => (
-                    <option key={model.id} value={model.id}>{model.label}</option>
-                  ))}
-                </select>
-              </label>
+                  onChange={changeModel}
+                  options={sequenceModels}
+                  showInlineLabel={false}
+                  className="w-full"
+                />
+              </div>
               <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Duration
                 <select

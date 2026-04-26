@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { CheckCircle2, Clapperboard, Cog, Download, FilePlus2, Loader2, Upload } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { useExportStore } from '@/state/exportStore';
@@ -23,18 +24,49 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
     : exportReady
       ? 'Export Ready'
       : 'Export';
+  const navRef = useRef<HTMLDivElement | null>(null);
+  const titleRef = useRef<HTMLDivElement | null>(null);
+  const naturalTitleWidthRef = useRef(0);
+  const [titleVisible, setTitleVisible] = useState(true);
+
+  useLayoutEffect(() => {
+    if (titleRef.current) {
+      const measured = titleRef.current.offsetWidth;
+      if (measured > 0) naturalTitleWidthRef.current = measured;
+    }
+  }, [titleVisible]);
+
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const evaluate = () => {
+      setTitleVisible((current) => {
+        if (current) return nav.scrollWidth <= nav.clientWidth;
+        const titleWidth = naturalTitleWidthRef.current;
+        if (titleWidth <= 0) return true;
+        const freeSpace = nav.clientWidth - nav.scrollWidth;
+        return freeSpace >= titleWidth + 16;
+      });
+    };
+    evaluate();
+    const observer = new ResizeObserver(evaluate);
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <header className="flex h-12 items-center justify-between border-b border-surface-700 bg-surface-900 px-4">
-      <div className="flex items-center gap-3">
+      <div ref={navRef} className="flex min-w-0 items-center gap-3">
         <button className="rounded p-1.5 text-slate-400 hover:bg-surface-800 hover:text-slate-100" onClick={onSettingsClick} title="Settings">
           <Cog size={14} />
         </button>
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-500 text-white">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand-500 text-white">
           <Clapperboard size={16} />
         </div>
-        <div className="text-sm font-semibold tracking-tight">GenEdit Pro</div>
-        <div className="h-5 w-px bg-surface-700" />
+        {titleVisible && (
+          <div ref={titleRef} className="whitespace-nowrap text-sm font-semibold tracking-tight">GenEdit Pro</div>
+        )}
+        <div className="h-5 w-px shrink-0 bg-surface-700" />
         <select
           value={project.id}
           onChange={(e) => switchProject(e.target.value)}

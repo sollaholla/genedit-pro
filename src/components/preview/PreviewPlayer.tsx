@@ -257,9 +257,7 @@ function activeMediaReadyForStartup(
   for (const layer of audioLayers) {
     const asset = assetsById.get(layer.clip.assetId);
     if (asset?.kind !== 'video' && asset?.kind !== 'audio') continue;
-    const el = asset.kind === 'video'
-      ? videoPool.get(layer.clip.id)
-      : audioPool.get(layer.clip.id);
+    const el = audioPool.get(layer.clip.id) ?? (asset.kind === 'video' ? videoPool.get(layer.clip.id) : undefined);
     if (!el || !mediaElementReadyForSourceTime(el, layer.sourceTimeSec, 0.08)) return false;
   }
 
@@ -577,10 +575,8 @@ export function PreviewPlayer() {
       (el as HTMLVideoElement).remove();
       videoPool.current.delete(clipId);
     }
-    clipAssetRef.current.delete(clipId);
     clipMediaTouchedAtRef.current.delete(clipId);
-    releaseAudioGraph(clipId);
-  }, [releaseAudioGraph]);
+  }, []);
 
   const removeAudioElement = useCallback((clipId: string) => {
     const el = audioPool.current.get(clipId);
@@ -632,39 +628,76 @@ export function PreviewPlayer() {
     }
 
     removeImageElement(clip.id);
-    const isAudio = asset.kind === 'audio';
-    const pool = isAudio ? audioPool.current : videoPool.current;
-    const existing = pool.get(clip.id);
+    if (asset.kind === 'video') {
+      let visualVideo = videoPool.current.get(clip.id) as HTMLVideoElement | undefined;
+      if (!visualVideo) {
+        visualVideo = document.createElement('video');
+        visualVideo.preload = 'auto';
+        visualVideo.playsInline = true;
+        visualVideo.muted = true;
+        visualVideo.className = 'absolute max-w-none object-contain';
+        visualVideo.style.display = 'none';
+        visualVideo.style.visibility = 'hidden';
+        videoHostRef.current?.appendChild(visualVideo);
+        videoPool.current.set(clip.id, visualVideo);
+      }
+
+      let audioEl = audioPool.current.get(clip.id);
+      if (!audioEl) {
+        const audioVideo = document.createElement('video');
+        audioVideo.preload = 'auto';
+        audioVideo.playsInline = true;
+        audioVideo.style.display = 'none';
+        audioVideo.style.visibility = 'hidden';
+        audioEl = audioVideo;
+        audioPool.current.set(clip.id, audioEl);
+      }
+
+      if (clipAssetRef.current.get(clip.id) !== mediaKey) {
+        visualVideo.src = url;
+        hideVideoElement(visualVideo);
+        visualVideo.load();
+        audioEl.src = url;
+        audioEl.load();
+      }
+
+      clipAssetRef.current.set(clip.id, mediaKey);
+      if (!sourceNodes.current.has(clip.id)) {
+        try {
+          const ctx = getAudioContext();
+          const source = ctx.createMediaElementSource(audioEl);
+          const gain = ctx.createGain();
+          gain.gain.value = 0;
+          const meter = createStereoAnalyserMeter();
+          source.connect(gain);
+          gain.connect(getMasterInput());
+          gain.connect(meter.input);
+          sourceNodes.current.set(clip.id, source);
+          gainNodes.current.set(clip.id, gain);
+          clipMeters.current.set(clip.id, meter);
+        } catch {
+          // Fallback: element won't route through Web Audio; volume stays at el.volume.
+        }
+      }
+
+      return visualVideo;
+    }
+
+    const existing = audioPool.current.get(clip.id);
     if (existing) {
       if (clipAssetRef.current.get(clip.id) !== mediaKey) {
         existing.src = url;
-        if (!isAudio) hideVideoElement(existing as HTMLVideoElement);
         clipAssetRef.current.set(clip.id, mediaKey);
         existing.load();
       }
       return existing;
     }
 
-    let el: HTMLMediaElement;
-    if (isAudio) {
-      const audio = new Audio();
-      audio.preload = 'auto';
-      audio.src = url;
-      pool.set(clip.id, audio);
-      el = audio;
-    } else {
-      const video = document.createElement('video');
-      video.preload = 'auto';
-      video.playsInline = true;
-      video.muted = true;
-      video.src = url;
-      video.className = 'absolute max-w-none object-contain';
-      video.style.display = 'none';
-      video.style.visibility = 'hidden';
-      videoHostRef.current?.appendChild(video);
-      pool.set(clip.id, video);
-      el = video;
-    }
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = url;
+    audioPool.current.set(clip.id, audio);
+    const el: HTMLMediaElement = audio;
     clipAssetRef.current.set(clip.id, mediaKey);
     el.load();
 
@@ -691,7 +724,11 @@ export function PreviewPlayer() {
     if (asset.kind === 'recipe' || asset.kind === 'sequence') return null;
     const mediaKey = `${asset.id}:${asset.blobKey}`;
     const existing = imagePool.current.get(clip.id) ?? videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
-    if (existing && clipAssetRef.current.get(clip.id) === mediaKey) return existing;
+    if (existing && clipAssetRef.current.get(clip.id) === mediaKey) {
+      if (asset.kind !== 'video' || (videoPool.current.has(clip.id) && audioPool.current.has(clip.id))) {
+        return existing;
+      }
+    }
 
     const cachedUrl = urlCache.current.get(mediaKey);
     if (cachedUrl) return attachClipElement(clip, asset, cachedUrl, mediaKey);
@@ -880,7 +917,10 @@ export function PreviewPlayer() {
       if (!asset) continue;
       if (asset.kind === 'image') wantedImageClipIds.add(clip.id);
       else if (asset.kind === 'audio') wantedAudioClipIds.add(clip.id);
-      else if (asset.kind === 'video') wantedVideoClipIds.add(clip.id);
+      else if (asset.kind === 'video') {
+        wantedVideoClipIds.add(clip.id);
+        wantedAudioClipIds.add(clip.id);
+      }
     }
 
     for (const clipId of new Set([
@@ -1082,7 +1122,7 @@ export function PreviewPlayer() {
       const hotPrimedIds = new Set<string>();
       const preparedClipIds = new Set(preparedClips.map((clip) => clip.id));
       for (const clip of preparedClips) {
-        const el = videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
+        const el = audioPool.current.get(clip.id) ?? videoPool.current.get(clip.id);
         if (!el) continue;
         const timeUntilActive = clip.startSec - t;
         if (timeUntilActive < 0) continue;
@@ -1120,7 +1160,7 @@ export function PreviewPlayer() {
           setPitchPreservingRate(el, clipSpeed(clip));
           const gn = gainNodes.current.get(clip.id);
           if (gn) gn.gain.value = 0;
-          if (videoPool.current.has(clip.id)) {
+          if (el === videoPool.current.get(clip.id)) {
             (el as HTMLVideoElement).muted = false;
           }
 
@@ -1204,10 +1244,8 @@ export function PreviewPlayer() {
       // ---- DRIVE ACTIVE AUDIO LAYERS ----
       for (const layer of audioFrame.audios) {
         const clipId = layer.clip.id;
-        const isVideoEl = videoPool.current.has(clipId);
-        const el = isVideoEl
-          ? videoPool.current.get(clipId)!
-          : audioPool.current.get(clipId);
+        const visualVideoEl = videoPool.current.get(clipId);
+        const el = audioPool.current.get(clipId) ?? visualVideoEl;
         if (!el) continue;
 
         const targetGain = Math.max(0, clipEffectiveGain(layer));
@@ -1236,11 +1274,11 @@ export function PreviewPlayer() {
           el.volume = Math.max(0, Math.min(1, targetGain));
         }
 
-        if (isVideoEl) (el as HTMLVideoElement).muted = false;
+        if (el === visualVideoEl) (el as HTMLVideoElement).muted = false;
         setPitchPreservingRate(el, clipSpeed(layer.clip));
 
         if (!mediaPlaying && !el.paused) el.pause();
-        if (!isVideoEl || !activeVisualLayersByClipId.has(clipId)) {
+        if (el !== visualVideoEl || !activeVisualLayersByClipId.has(clipId)) {
           seekIfNeeded(el, layer.sourceTimeSec, mediaPlaying, undefined, requestedSeekTargetsRef.current);
         }
         if (mediaPlaying && el.paused) el.play().catch(() => undefined);
