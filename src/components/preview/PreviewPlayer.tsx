@@ -888,10 +888,8 @@ export function PreviewPlayer() {
         }
       }
       const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
-      const topVisualLayer = visualLayers[0] ?? null;
-      const topVisualAsset = topVisualLayer ? activeVisualAssetsByClipId.get(topVisualLayer.clip.id) : null;
       playbackVideoBlockedRef.current = Boolean(
-        topVisualLayer && topVisualAsset?.kind === 'video' && !paintableVisualClipIds.has(topVisualLayer.clip.id),
+        visualLayers.length > 0 && !topPaintableLayer,
       );
       const previewClipKey = visualLayers.map((layer) => layer.clip.id).join('|');
       const previewFrameKey = `${previewFps}:${visualFrameIndex}:${previewClipKey}`;
@@ -1133,7 +1131,9 @@ export function PreviewPlayer() {
         setPitchPreservingRate(el, clipSpeed(layer.clip));
 
         if (!mediaPlaying && !el.paused) el.pause();
-        seekIfNeeded(el, layer.sourceTimeSec, mediaPlaying, undefined, requestedSeekTargetsRef.current);
+        if (!isVideoEl || !activeVisualLayersByClipId.has(clipId)) {
+          seekIfNeeded(el, layer.sourceTimeSec, mediaPlaying, undefined, requestedSeekTargetsRef.current);
+        }
         if (mediaPlaying && el.paused) el.play().catch(() => undefined);
       }
 
