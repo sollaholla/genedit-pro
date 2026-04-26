@@ -12,6 +12,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { GenerateVideoModal } from '@/components/media/GenerateVideoModal';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
+import { useExportStore } from '@/state/exportStore';
 import type { MediaAsset } from '@/types';
 import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
@@ -25,6 +26,18 @@ export default function App() {
   const [sequenceToGenerate, setSequenceToGenerate] = useState<MediaAsset | null>(null);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
   const reset = useProjectStore((s) => s.reset);
+  const exportStatus = useExportStore((s) => s.status);
+  const exportInProgress = exportStatus === 'preparing' || exportStatus === 'encoding';
+
+  useEffect(() => {
+    if (!exportInProgress) return undefined;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [exportInProgress]);
 
   useEffect(() => {
     if (!highlightedMediaAssetId) return undefined;
