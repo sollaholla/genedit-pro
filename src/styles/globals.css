@@ -46,13 +46,26 @@
     @apply bg-surface-900 border border-surface-700;
   }
   .no-select {
-    user-select: none;
     -webkit-user-select: none;
+    user-select: none;
   }
   .volume-slider {
     @apply h-1.5 w-full cursor-pointer appearance-none rounded bg-surface-600 accent-brand-500;
   }
   .volume-slider::-webkit-slider-thumb {
     @apply h-3.5 w-3.5 cursor-pointer appearance-none rounded-full bg-brand-500;
+  }
+  .export-progress {
+    @apply block h-2 w-full overflow-hidden rounded bg-surface-700;
+    appearance: none;
+  }
+  .export-progress::-webkit-progress-bar {
+    @apply bg-surface-700;
+  }
+  .export-progress::-webkit-progress-value {
+    @apply bg-brand-500 transition-all;
+  }
+  .export-progress::-moz-progress-bar {
+    @apply bg-brand-500;
   }
 }

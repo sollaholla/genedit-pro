@@ -71,6 +71,7 @@ type ImagePool = Map<string, HTMLImageElement>;
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const HAVE_CURRENT_DATA = 2;
+const VIDEO_HANDOFF_GRACE_MS = 500;
 
 function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
   const drift = Math.abs(el.currentTime - target);
@@ -81,8 +82,9 @@ function seekIfNeeded(el: HTMLMediaElement, target: number, playing: boolean) {
 }
 
 function canPaintSyncedVideo(el: HTMLVideoElement, target: number, playing: boolean) {
-  if (el.readyState < HAVE_CURRENT_DATA || el.seeking) return false;
-  const threshold = playing ? 0.15 : 0.015;
+  if (el.readyState < HAVE_CURRENT_DATA) return false;
+  if (el.seeking) return playing;
+  const threshold = playing ? 0.25 : 0.015;
   return Math.abs(el.currentTime - target) <= threshold;
 }
 
@@ -92,6 +94,7 @@ function hideVideoElement(el: HTMLVideoElement) {
   el.style.transform = '';
   el.style.filter = '';
   el.style.cursor = 'default';
+  el.style.zIndex = '';
 }
 
 function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
@@ -189,6 +192,7 @@ export function PreviewPlayer() {
   const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
   const prevHasVideoRef = useRef(false);
+  const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -573,38 +577,82 @@ export function PreviewPlayer() {
       const frame = resolveFrame(proj, t);
 
       // ---- VIDEO DISPLAY ----
-      const activeVideoLayer = frame.video;
-      const nextVideoClipId = activeVideoLayer?.clip.id ?? null;
-      const activeVisualAsset = activeVideoLayer
-        ? assetsRef.current.find((item) => item.id === activeVideoLayer.clip.assetId)
-        : undefined;
+      const visualLayers = frame.videos;
+      const activeVisualLayersByClipId = new Map(visualLayers.map((layer) => [layer.clip.id, layer]));
+      const activeVisualAssetsByClipId = new Map<string, MediaAsset>();
+      for (const layer of visualLayers) {
+        const asset = assetsRef.current.find((item) => item.id === layer.clip.assetId);
+        if (asset?.kind === 'video' || asset?.kind === 'image') activeVisualAssetsByClipId.set(layer.clip.id, asset);
+      }
+      const visualZIndexByClipId = new Map<string, number>();
+      visualLayers.forEach((layer, index) => visualZIndexByClipId.set(layer.clip.id, visualLayers.length - index));
+      const paintableVisualClipIds = new Set<string>();
+      for (const layer of visualLayers) {
+        const activeAsset = activeVisualAssetsByClipId.get(layer.clip.id);
+        if (activeAsset?.kind === 'image') {
+          paintableVisualClipIds.add(layer.clip.id);
+          continue;
+        }
+        if (activeAsset?.kind !== 'video') continue;
+        const videoEl = videoPool.current.get(layer.clip.id) as HTMLVideoElement | undefined;
+        if (!videoEl) continue;
+        seekIfNeeded(videoEl, layer.sourceTimeSec, state.playing);
+        if (canPaintSyncedVideo(videoEl, layer.sourceTimeSec, state.playing)) {
+          paintableVisualClipIds.add(layer.clip.id);
+        }
+      }
+      const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
+      if (topPaintableLayer) {
+        lastPaintedVisualRef.current = { clipId: topPaintableLayer.clip.id, ts };
+      }
+      const lastPaintedVisual = lastPaintedVisualRef.current;
+      const fallbackVisualClipId = !topPaintableLayer
+        && visualLayers.length > 0
+        && lastPaintedVisual
+        && ts - lastPaintedVisual.ts <= VIDEO_HANDOFF_GRACE_MS
+        ? lastPaintedVisual.clipId
+        : null;
       for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
-        if (clipId === nextVideoClipId && activeVideoLayer && activeVisualAsset?.kind === 'video') {
-          seekIfNeeded(videoEl, activeVideoLayer.sourceTimeSec, state.playing);
+        const activeLayer = activeVisualLayersByClipId.get(clipId);
+        const activeAsset = activeVisualAssetsByClipId.get(clipId);
+        const isFallbackVisual = clipId === fallbackVisualClipId;
+        if (activeLayer && activeAsset?.kind === 'video') {
           videoEl.style.display = '';
-          videoEl.style.visibility = canPaintSyncedVideo(videoEl, activeVideoLayer.sourceTimeSec, state.playing)
+          videoEl.style.visibility = paintableVisualClipIds.has(clipId) || isFallbackVisual
             ? 'visible'
             : 'hidden';
-          applyVisualLayout(videoEl, activeVisualAsset, activeVideoLayer.clip, proj, t, videoHostRef.current);
+          videoEl.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
+          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
+        } else if (isFallbackVisual) {
+          videoEl.style.display = '';
+          videoEl.style.visibility = 'visible';
         } else {
           hideVideoElement(videoEl);
         }
       }
       for (const [clipId, img] of imagePool.current) {
-        if (clipId === nextVideoClipId && activeVideoLayer && activeVisualAsset?.kind === 'image') {
+        const activeLayer = activeVisualLayersByClipId.get(clipId);
+        const activeAsset = activeVisualAssetsByClipId.get(clipId);
+        const isFallbackVisual = clipId === fallbackVisualClipId;
+        if (activeLayer && activeAsset?.kind === 'image') {
           img.style.display = '';
           img.style.visibility = 'visible';
-          applyVisualLayout(img, activeVisualAsset, activeVideoLayer.clip, proj, t, videoHostRef.current);
+          img.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
+          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, t, videoHostRef.current);
+        } else if (isFallbackVisual) {
+          img.style.display = '';
+          img.style.visibility = 'visible';
         } else {
           img.style.display = 'none';
           img.style.visibility = 'hidden';
           img.style.transform = '';
           img.style.filter = '';
           img.style.cursor = 'default';
+          img.style.zIndex = '';
         }
       }
-      const hasVideo = nextVideoClipId !== null;
+      const hasVideo = visualLayers.length > 0;
       if (hasVideo !== prevHasVideoRef.current) {
         prevHasVideoRef.current = hasVideo;
         setHasActiveVideo(hasVideo);

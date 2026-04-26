@@ -1,5 +1,6 @@
-import { Clapperboard, Cog, Download, FilePlus2, Upload } from 'lucide-react';
+import { CheckCircle2, Clapperboard, Cog, Download, FilePlus2, Loader2, Upload } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
+import { useExportStore } from '@/state/exportStore';
 
 type Props = {
   onImportClick: () => void;
@@ -11,6 +12,15 @@ type Props = {
 export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsClick }: Props) {
   const project = useProjectStore((s) => s.project);
   const rename = useProjectStore((s) => s.rename);
+  const exportStatus = useExportStore((s) => s.status);
+  const exportProgress = useExportStore((s) => s.progress);
+  const exportBusy = exportStatus === 'preparing' || exportStatus === 'encoding';
+  const exportReady = exportStatus === 'done';
+  const exportLabel = exportBusy
+    ? `Exporting ${Math.round(exportProgress * 100)}%`
+    : exportReady
+      ? 'Export Ready'
+      : 'Export';
 
   return (
     <header className="flex h-12 items-center justify-between border-b border-surface-700 bg-surface-900 px-4">
@@ -28,6 +38,7 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
           value={project.name}
           onChange={(e) => rename(e.target.value)}
           className="w-56 rounded bg-transparent px-2 py-1 text-sm text-slate-200 outline-none ring-1 ring-transparent transition-colors focus:bg-surface-800 focus:ring-surface-600"
+          title="Project name"
           spellCheck={false}
         />
       </div>
@@ -40,9 +51,9 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
           <Upload size={14} />
           Import
         </button>
-        <button className="btn-primary" onClick={onExportClick} title="Export video">
-          <Download size={14} />
-          Export
+        <button className="btn-primary" onClick={onExportClick} title={exportBusy ? 'Show background export' : 'Export video'}>
+          {exportBusy ? <Loader2 size={14} className="animate-spin" /> : exportReady ? <CheckCircle2 size={14} /> : <Download size={14} />}
+          {exportLabel}
         </button>
       </div>
     </header>
