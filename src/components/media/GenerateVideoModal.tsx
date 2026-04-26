@@ -712,30 +712,30 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-      <div className="w-[min(780px,94vw)] rounded-2xl border border-white/10 bg-[#0b1020] text-slate-100 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <div className="flex items-center gap-2 text-sm font-semibold"><Clapperboard size={16} /> Generate Video</div>
-          <button className="rounded-md p-1 text-slate-400 hover:bg-white/10" onClick={onClose} title="Close" aria-label="Close"><X size={16} /></button>
+      <div className="w-[min(780px,94vw)] rounded-lg border border-white/15 bg-surface-950 text-slate-100 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100"><Clapperboard size={16} className="text-brand-300" /> Generate Video</div>
+          <button className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white" onClick={onClose} title="Close" aria-label="Close"><X size={16} /></button>
         </div>
 
         <div className="space-y-3 p-4">
-          <div className="relative rounded-xl border border-white/10 bg-white/[0.04] p-2">
+          <div className="relative rounded-md border border-surface-700 bg-surface-900/70 p-2">
             <div className="flex flex-wrap items-center gap-2">
-            <button className="inline-flex items-center gap-1 rounded-full border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10" onClick={() => saveRecipe(false)}>
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => saveRecipe(false)}>
               <Save size={12} /> Save
             </button>
-            <button className="inline-flex items-center gap-1 rounded-full border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10" onClick={() => saveRecipe(true)}>
+            <button className="btn-ghost px-2 py-1 text-xs" onClick={() => saveRecipe(true)}>
               <Save size={12} /> Save as
             </button>
             <button
               type="button"
-              className="inline-flex max-w-full items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/10"
+              className="btn-ghost max-w-full px-2 py-1 text-xs"
               onClick={() => setRecipePickerOpen((v) => !v)}
             >
               <FolderOpen size={12} />
               <span>{loadedRecipeAsset ? 'Recipe' : 'Open recipe'}</span>
               {loadedRecipeAsset && <span className="max-w-[220px] truncate text-slate-400">{loadedRecipeAsset.name}</span>}
-              <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">{recipeAssets.length}</span>
+              <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{recipeAssets.length}</span>
             </button>
             </div>
             {recipePickerOpen && (
@@ -793,7 +793,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             />
           </div>
 
-          <div className="relative rounded-xl border border-white/10 bg-[#121833]">
+          <div className="relative rounded-md border border-surface-700 bg-surface-900 focus-within:border-brand-400">
             {promptMode === 'structured' && structuredPromptSupported ? (
               <StructuredPromptEditor
                 sections={structuredSections}
@@ -807,11 +807,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
                 value={prompt}
                 onChange={(e) => onPromptChange(e.target.value)}
                 placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
-                className="h-32 w-full resize-none rounded-xl bg-transparent px-3 pb-11 pt-3 text-sm text-slate-100 outline-none placeholder:text-slate-400"
+                className="h-32 w-full resize-none rounded-md bg-transparent px-3 pb-11 pt-3 text-sm text-slate-100 outline-none placeholder:text-slate-500"
               />
             )}
             {promptMode === 'freeform' && promptTokens.length > 0 && (
-              <div className="absolute inset-x-2 bottom-2 flex max-h-8 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-[#121833]/80 pr-1 backdrop-blur">
+              <div className="absolute inset-x-2 bottom-2 flex max-h-8 flex-wrap gap-1.5 overflow-y-auto rounded bg-surface-900/85 pr-1 backdrop-blur">
                 {promptTokens.map((m, i) => {
                   const key = m[1].toLowerCase();
                   const meta = referenceMap.get(key);
@@ -840,12 +840,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             )}
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-white/5 p-2.5">
+          <div className="rounded-md border border-surface-700 bg-surface-900/70 p-2.5">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs text-slate-400">Image references</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Image references</span>
               <button
                 disabled={!isReferencesFeatureSupported(selectedModel) || references.length >= imageReferenceLimit || Boolean(sourceVideo && isVeoModel(selectedModel))}
-                className="inline-flex items-center gap-1 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-xs hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className="btn-ghost px-2 py-1 text-xs"
                 onClick={() => {
                   setPickerMode('reference');
                   setShowMediaPicker(true);
@@ -879,7 +879,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             <div className="flex flex-wrap gap-2">
               {references.length === 0 && <span className="text-xs text-slate-500">No references selected.</span>}
               {references.map((ref) => (
-                <button key={ref.id} onClick={() => removeReference(ref.id)} className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2 py-1 text-xs hover:bg-white/10">
+                <button key={ref.id} onClick={() => removeReference(ref.id)} className="inline-flex items-center gap-1 rounded-md border border-surface-700 bg-surface-950 px-2 py-1 text-xs text-slate-200 hover:border-surface-500 hover:bg-surface-800">
                   {ref.thumbnail ? <img src={ref.thumbnail} alt="" className="h-4 w-4 rounded object-cover" /> : <ImageIcon size={12} />}
                   @{ref.token}
                   <X size={11} />
@@ -888,7 +888,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             </div>
           </div>
 
-          <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.04] p-2.5">
+          <div className="space-y-2 rounded-md border border-surface-700 bg-surface-900/70 p-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <PillSelect label="Model" value={model} onChange={setModel} options={selectableModels.map((m) => ({ value: m.id, label: m.label }))} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
               <PillOptionGroup label="Aspect" value={aspect} options={selectedModel.capabilities.aspects.map((v) => ({ value: v, label: v }))} onChange={(v) => setAspect(v as Aspect)} />
@@ -897,7 +897,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               <button
                 disabled={!isAudioFeatureSupported(selectedModel) || audioLockedOn}
                 title={audioLockedOn ? 'Audio is always on for this model.' : undefined}
-                className={`inline-flex h-8 items-center rounded-full border px-3 text-xs transition ${audioEnabled ? 'border-emerald-400/60 bg-emerald-500/10 text-emerald-200' : 'border-white/15 bg-white/5 text-slate-300 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
+                className={`inline-flex h-8 items-center rounded-md border px-3 text-xs transition ${audioEnabled ? 'border-emerald-400/60 bg-emerald-500/10 text-emerald-200' : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500 hover:bg-surface-800'} disabled:cursor-not-allowed disabled:opacity-60`}
                 onClick={() => {
                   if (audioLockedOn) return;
                   setAudioEnabled((v) => !v);
@@ -952,13 +952,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               type="button"
               onClick={generate}
               disabled={generateDisabled}
-              className="inline-flex h-9 items-center rounded-full bg-white px-4 text-sm font-semibold text-black transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-500"
+              className="btn-primary h-9 px-4 text-sm font-semibold"
             >
               {isGenerating ? 'Generating...' : (
                 <>
                   Generate
                   {estimatedCostUsd > 0 && (
-                    <span className="ml-1 text-[10px] font-medium text-slate-700">${estimatedCostUsd.toFixed(2)}</span>
+                    <span className="ml-1 text-[10px] font-medium text-white/80">${estimatedCostUsd.toFixed(2)}</span>
                   )}
                 </>
               )}
@@ -969,11 +969,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
       {mentionOpen && filteredMentionItems.length > 0 && (
         <div
-          className="fixed z-[60] w-52 rounded-md border border-white/15 bg-[#101735] p-1 shadow-2xl"
+          className="fixed z-[60] w-52 rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
           style={{ left: mentionPos.x, top: mentionPos.y }}
         >
           {filteredMentionItems.map((item) => (
-            <button key={item.key} className="block w-full rounded px-2 py-1 text-left text-xs text-slate-200 hover:bg-white/10" onClick={item.action}>
+            <button key={item.key} className="block w-full rounded px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700" onClick={item.action}>
               {item.label}
             </button>
           ))}
@@ -982,7 +982,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
       {hoveredToken && (
         <div
-          className="fixed z-[72] rounded-md border border-white/20 bg-[#111933] p-2 shadow-2xl"
+          className="fixed z-[72] rounded-md border border-surface-600 bg-surface-800 p-2 shadow-xl"
           style={{ left: hoverPos.x, top: hoverPos.y }}
         >
           <div className="mb-1 text-[11px] text-slate-400">@{hoveredToken.token}</div>
@@ -990,7 +990,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             {hoveredToken.thumbnail ? (
               <img src={hoveredToken.thumbnail} alt="" className="h-10 w-10 rounded object-cover" />
             ) : (
-              <div className="flex h-10 w-10 items-center justify-center rounded bg-black/25 text-[10px] text-slate-400">{hoveredToken.kind.toUpperCase()}</div>
+              <div className="flex h-10 w-10 items-center justify-center rounded bg-surface-950 text-[10px] text-slate-400">{hoveredToken.kind.toUpperCase()}</div>
             )}
             <div>
               <div className="max-w-[180px] truncate text-xs text-slate-100">{hoveredToken.name}</div>
@@ -1040,12 +1040,12 @@ function PromptModeSwatch({
   structuredSupported: boolean;
   onChange: (mode: PromptMode) => void;
 }) {
-  const buttonBase = 'inline-flex h-6 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium transition';
+  const buttonBase = 'inline-flex h-6 items-center gap-1 rounded px-2.5 text-[11px] font-medium transition';
   return (
-    <div className="inline-flex items-center rounded-full border border-white/15 bg-black/30 p-0.5 shadow-lg backdrop-blur">
+    <div className="inline-flex items-center rounded-md border border-surface-700 bg-surface-950 p-0.5">
       <button
         type="button"
-        className={`${buttonBase} ${mode === 'freeform' ? 'bg-white text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+        className={`${buttonBase} ${mode === 'freeform' ? 'bg-surface-700 text-slate-100' : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200'}`}
         onClick={() => onChange('freeform')}
       >
         Free
@@ -1054,7 +1054,7 @@ function PromptModeSwatch({
         type="button"
         disabled={!structuredSupported}
         title={structuredSupported ? 'Structured prompt mode' : 'Structured prompts are not available for this model'}
-        className={`${buttonBase} ${mode === 'structured' ? 'bg-emerald-400 text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-white'} disabled:cursor-not-allowed disabled:opacity-40`}
+        className={`${buttonBase} ${mode === 'structured' ? 'bg-brand-500 text-white' : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200'} disabled:cursor-not-allowed disabled:opacity-40`}
         onClick={() => onChange('structured')}
       >
         <ListChecks size={12} />
@@ -1085,14 +1085,14 @@ function StructuredPromptEditor({
           return (
             <label
               key={section.id}
-              className={`rounded-lg border bg-black/15 p-2.5 transition ${isMissing ? 'border-amber-300/55 bg-amber-500/5' : 'border-white/10 hover:border-white/20'}`}
+              className={`rounded-md border bg-surface-950 p-2.5 transition ${isMissing ? 'border-amber-300/55 bg-amber-500/5' : 'border-surface-700 hover:border-surface-500'}`}
             >
               <div className="mb-1.5 flex min-w-0 items-center gap-2">
-                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isMissing ? 'bg-amber-300/15 text-amber-200' : 'bg-white/10 text-slate-300'}`}>
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${isMissing ? 'bg-amber-300/15 text-amber-200' : 'bg-surface-800 text-slate-300'}`}>
                   <Icon size={13} />
                 </span>
                 <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-100">{section.label}</span>
-                <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${section.optional ? 'bg-white/10 text-slate-400' : 'bg-emerald-400/15 text-emerald-200'}`}>
+                <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${section.optional ? 'bg-surface-800 text-slate-400' : 'bg-emerald-400/15 text-emerald-200'}`}>
                   {section.optional ? 'Optional' : 'Required'}
                 </span>
               </div>
@@ -1101,7 +1101,7 @@ function StructuredPromptEditor({
                 onChange={(e) => onChange(section.id, e.target.value)}
                 placeholder={section.placeholder}
                 aria-invalid={isMissing}
-                className="h-[58px] w-full resize-none rounded-md border border-white/10 bg-[#0b1020] px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-300/70"
+                className="h-[58px] w-full resize-none rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-400"
               />
               <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{section.description}</div>
             </label>
@@ -1132,20 +1132,20 @@ function RecipePicker({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/45 p-4">
-      <div className="w-[min(820px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0d142d] shadow-2xl">
-        <div className="border-b border-white/10 p-3">
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-black/55 p-4">
+      <div className="w-[min(820px,94vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 shadow-2xl">
+        <div className="border-b border-surface-700 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <BookOpen size={15} />
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+              <BookOpen size={15} className="text-brand-300" />
               Recipe library
-              <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-normal text-slate-400">{totalCount}</span>
+              <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] font-normal text-slate-400">{totalCount}</span>
             </div>
-            <button className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
+            <button className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white" onClick={onClose} title="Close" aria-label="Close">
               <X size={14} />
             </button>
           </div>
-          <label className="flex h-9 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 text-xs text-slate-300">
+          <label className="flex h-9 items-center gap-2 rounded-md border border-surface-700 bg-surface-900 px-3 text-xs text-slate-300 focus-within:border-brand-400">
             <Search size={14} className="text-slate-500" />
             <input
               value={query}
@@ -1162,7 +1162,7 @@ function RecipePicker({
             <span>Recent first</span>
           </div>
           {recipes.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">
+            <div className="rounded-md border border-dashed border-surface-700 p-6 text-center text-xs text-slate-500">
               No recipes match this search.
             </div>
           ) : recipes.map((asset) => {
@@ -1172,17 +1172,17 @@ function RecipePicker({
             return (
               <button
                 key={asset.id}
-                className={`group mb-1 flex w-full items-start gap-3 rounded-lg border px-2.5 py-2 text-left transition ${selected ? 'border-brand-400/70 bg-brand-500/15' : 'border-transparent hover:border-white/10 hover:bg-white/5'}`}
+                className={`group mb-1 flex w-full items-start gap-3 rounded-md border px-2.5 py-2 text-left transition ${selected ? 'border-brand-400/70 bg-brand-500/15' : 'border-transparent hover:border-surface-700 hover:bg-surface-900/70'}`}
                 onClick={() => onPick(asset.id)}
               >
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-slate-300">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-surface-800 text-slate-300">
                   {selected ? <Check size={15} /> : <BookOpen size={15} />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="truncate text-sm font-medium text-slate-100">{asset.name}</span>
-                    <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.duration}</span>
-                    <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.aspect}</span>
+                    <span className="shrink-0 rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.duration}</span>
+                    <span className="shrink-0 rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{recipe.aspect}</span>
                   </div>
                   <div className="mt-0.5 truncate text-[11px] text-slate-400">{recipePreviewText(recipe) || 'No prompt text'}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
@@ -1221,8 +1221,8 @@ function PillSelect({
 }) {
   const displayValue = options.some((option) => option.value === value) ? value : '';
   return (
-    <label className="inline-flex h-8 max-w-full items-center gap-2 rounded-full border border-white/15 bg-black/20 pl-3 pr-2 text-xs text-slate-300">
-      <span className="text-slate-500">{label}</span>
+    <label className="inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 pl-3 pr-2 text-xs text-slate-300 focus-within:border-brand-400">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <select
         value={displayValue}
         onChange={(e) => onChange(e.target.value)}
@@ -1231,7 +1231,7 @@ function PillSelect({
       >
         {loading && <option>Loading...</option>}
         {!loading && options.length === 0 && <option value="">{emptyLabel}</option>}
-        {!loading && options.map((option) => <option key={option.value} value={option.value} className="bg-slate-900">{option.label}</option>)}
+        {!loading && options.map((option) => <option key={option.value} value={option.value} className="bg-surface-900">{option.label}</option>)}
       </select>
     </label>
   );
@@ -1249,15 +1249,15 @@ function PillOptionGroup({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="inline-flex min-h-8 flex-wrap items-center gap-1 rounded-full border border-white/15 bg-black/20 px-1 py-1">
-      <span className="px-2 text-xs text-slate-500">{label}</span>
+    <div className="inline-flex min-h-8 flex-wrap items-center gap-1 rounded-md border border-surface-700 bg-surface-950 px-1 py-1">
+      <span className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       {options.map((option) => {
         const selected = option.value === value;
         return (
           <button
             key={option.value}
             type="button"
-            className={`h-6 rounded-full px-2.5 text-xs transition ${selected ? 'bg-white text-slate-950' : 'text-slate-300 hover:bg-white/10 hover:text-slate-100'}`}
+            className={`h-6 rounded px-2.5 text-xs transition ${selected ? 'bg-surface-700 text-slate-100' : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200'}`}
             onClick={() => onChange(option.value)}
           >
             {option.label}
@@ -1282,12 +1282,12 @@ function FrameRefButton({
   onClear: () => void;
 }) {
   return (
-    <div className={`rounded-xl border border-dashed border-white/20 bg-white/5 p-2 ${disabled ? 'opacity-50' : ''}`}>
-      <div className="mb-2 flex items-center justify-between text-xs text-slate-400">
+    <div className={`rounded-md border border-dashed border-surface-700 bg-surface-900/70 p-2 ${disabled ? 'opacity-50' : ''}`}>
+      <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-500">
         <span>{label}</span>
-        {value && <button className="text-slate-300 hover:text-white" onClick={onClear}>Clear</button>}
+        {value && <button className="font-normal normal-case tracking-normal text-slate-400 hover:text-slate-100" onClick={onClear}>Clear</button>}
       </div>
-      <button disabled={disabled} className="flex w-full items-center gap-2 rounded-lg border border-white/10 bg-[#111833] px-2 py-2 text-xs hover:bg-[#1a2345] disabled:cursor-not-allowed" onClick={onClick}>
+      <button disabled={disabled} className="flex w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-xs text-slate-100 hover:border-surface-500 hover:bg-surface-800 disabled:cursor-not-allowed" onClick={onClick}>
         {value?.thumbnailDataUrl ? <img src={value.thumbnailDataUrl} alt="" className="h-8 w-8 rounded object-cover" /> : value?.kind === 'video' ? <Film size={14} /> : <ImageIcon size={14} />}
         <span className="truncate">{value ? value.name : 'Choose from media or import'}</span>
       </button>
@@ -1343,17 +1343,17 @@ function MediaPicker({
   const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
-      <div className="w-[min(960px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
-        <div className="border-b border-white/10 p-3">
+      <div className="w-[min(960px,94vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 shadow-2xl">
+        <div className="border-b border-surface-700 p-3">
         <div className="mb-2 flex items-center justify-between">
           <div>
-            <div className="text-sm font-semibold">{title}</div>
+            <div className="text-sm font-semibold text-slate-100">{title}</div>
             <div className="text-xs text-slate-400">{helperText}</div>
           </div>
-          <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close"><X size={16} /></button>
+          <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white" onClick={onClose} title="Close" aria-label="Close"><X size={16} /></button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex h-9 min-w-[260px] flex-1 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 text-xs text-slate-300">
+          <label className="flex h-9 min-w-[260px] flex-1 items-center gap-2 rounded-md border border-surface-700 bg-surface-900 px-3 text-xs text-slate-300 focus-within:border-brand-400">
             <Search size={14} className="text-slate-500" />
             <input
               value={query}
@@ -1364,7 +1364,7 @@ function MediaPicker({
             />
           </label>
           <SortPills value={sortKey} onChange={setSortKey} />
-          <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs hover:bg-white/20" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
+          <button className="btn-ghost h-9 px-3 text-xs" onClick={onImportFromComputer}><Upload size={12} /> Import</button>
         </div>
         </div>
         <div className="max-h-[min(640px,70vh)] overflow-auto p-2">
@@ -1376,7 +1376,7 @@ function MediaPicker({
           {filteredAssets.map((asset) => (
             <MediaPickerAssetTile key={asset.id} asset={asset} onPick={onPick} />
           ))}
-          {filteredAssets.length === 0 && <div className="col-span-full rounded-lg border border-dashed border-white/15 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
+          {filteredAssets.length === 0 && <div className="col-span-full rounded-md border border-dashed border-surface-700 p-6 text-center text-xs text-slate-500">No matching media assets found.</div>}
           </div>
         </div>
       </div>
@@ -1444,7 +1444,7 @@ function MediaPickerAssetTile({
   return (
     <button
       type="button"
-      className="group relative aspect-square min-w-0 overflow-hidden rounded-lg border border-white/10 bg-black text-left transition hover:border-brand-300/70 hover:shadow-[0_0_0_1px_rgba(129,140,248,0.35)] focus-visible:border-brand-300 focus-visible:outline-none"
+      className="group relative aspect-square min-w-0 overflow-hidden rounded-md border border-surface-700 bg-black text-left transition hover:border-brand-300/70 hover:shadow-[0_0_0_1px_rgba(124,140,255,0.35)] focus-visible:border-brand-300 focus-visible:outline-none"
       onClick={() => onPick(asset)}
       onMouseEnter={startPreview}
       onMouseLeave={stopPreview}
@@ -1509,11 +1509,11 @@ function SortPills({
     { value: 'duration', label: 'Length' },
   ];
   return (
-    <div className="inline-flex h-9 items-center gap-1 rounded-full border border-white/10 bg-black/20 px-1">
+    <div className="inline-flex h-9 items-center gap-1 rounded-md border border-surface-700 bg-surface-950 px-1">
       {options.map((option) => (
         <button
           key={option.value}
-          className={`h-7 rounded-full px-2.5 text-xs ${value === option.value ? 'bg-white text-slate-950' : 'text-slate-400 hover:bg-white/10 hover:text-slate-100'}`}
+          className={`h-7 rounded px-2.5 text-xs ${value === option.value ? 'bg-surface-700 text-slate-100' : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200'}`}
           onClick={() => onChange(option.value)}
           type="button"
         >

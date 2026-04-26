@@ -79,6 +79,7 @@ const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
 const RECENT_MEDIA_RETAIN_MS = 30_000;
 const MAX_RECENT_MEDIA_RETAINED = 24;
+const STARTUP_DECODER_SYNC_TIMEOUT_MS = 1000;
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -215,10 +216,54 @@ function canPaintSyncedVideo(
   target: number,
   tolerance: number | VideoSyncWindow,
 ) {
-  if (el.readyState < 1 || el.videoWidth <= 0 || el.videoHeight <= 0) return false;
+  if (el.readyState < 2 || el.videoWidth <= 0 || el.videoHeight <= 0) return false;
   if (el.currentTime < Math.max(0, clip.inSec - 0.015)) return false;
   if (el.currentTime > clip.outSec + 0.05) return false;
   return !outsideSyncWindow(el.currentTime, target, tolerance);
+}
+
+function mediaElementReadyForSourceTime(el: HTMLMediaElement, target: number, toleranceSec: number): boolean {
+  if (el.readyState < 2 || el.seeking) return false;
+  return Math.abs(el.currentTime - target) <= toleranceSec;
+}
+
+function activeMediaReadyForStartup(
+  visualLayers: ActiveLayer[],
+  audioLayers: ActiveLayer[],
+  assetsById: Map<string, MediaAsset>,
+  timelineTimeSec: number,
+  previewFps: number,
+  videoPool: ElementPool,
+  imagePool: ImagePool,
+  audioPool: ElementPool,
+): boolean {
+  for (const layer of visualLayers) {
+    const asset = assetsById.get(layer.clip.assetId);
+    if (asset?.kind === 'image') {
+      const image = imagePool.get(layer.clip.id);
+      if (!image?.complete) return false;
+      continue;
+    }
+    if (asset?.kind !== 'video') continue;
+    const video = videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
+    if (!video || video.seeking) return false;
+    const layerTimelineTimeSec = layerVisualTimelineTime(layer, timelineTimeSec, previewFps, false);
+    const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
+    if (!canPaintSyncedVideo(video, layer.clip, layerSourceTimeSec, videoSyncWindow(layer.clip, previewFps, false))) {
+      return false;
+    }
+  }
+
+  for (const layer of audioLayers) {
+    const asset = assetsById.get(layer.clip.assetId);
+    if (asset?.kind !== 'video' && asset?.kind !== 'audio') continue;
+    const el = asset.kind === 'video'
+      ? videoPool.get(layer.clip.id)
+      : audioPool.get(layer.clip.id);
+    if (!el || !mediaElementReadyForSourceTime(el, layer.sourceTimeSec, 0.08)) return false;
+  }
+
+  return true;
 }
 
 function hideVideoElement(el: HTMLVideoElement) {
@@ -398,6 +443,8 @@ export function PreviewPlayer() {
   const previewTopologySignatureRef = useRef('');
   const lastPlayingStateRef = useRef(false);
   const prevHasVideoRef = useRef(false);
+  const needsDecoderSyncOnPlayRef = useRef(false);
+  const startupDecoderSyncStartedAtRef = useRef<number | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -448,6 +495,8 @@ export function PreviewPlayer() {
 
   const resetTransientPlaybackState = useCallback(() => {
     requestedSeekTargetsRef.current = new WeakMap();
+    needsDecoderSyncOnPlayRef.current = false;
+    startupDecoderSyncStartedAtRef.current = null;
     prerolledRef.current.clear();
     hotPrimedSeekRef.current.clear();
     fadingOut.current.clear();
@@ -881,7 +930,10 @@ export function PreviewPlayer() {
       const frameSec = 1 / previewFps;
       const previousTimelineTime = lastTimelineTimeRef.current;
       const timelineDelta = previousTimelineTime === null ? 0 : state.currentTimeSec - previousTimelineTime;
-      const playStateChanged = lastPlayingStateRef.current !== state.playing;
+      const wasPlaying = lastPlayingStateRef.current;
+      const playStateChanged = wasPlaying !== state.playing;
+      const startingPlayback = !wasPlaying && state.playing;
+      const needsDecoderSyncBeforeReset = needsDecoderSyncOnPlayRef.current;
       const pausedPlayheadChanged = previousTimelineTime !== null
         && !state.playing
         && Math.abs(timelineDelta) > frameSec * 0.5;
@@ -893,18 +945,36 @@ export function PreviewPlayer() {
         playbackClockTimeRef.current = state.currentTimeSec;
         lastTickRef.current = ts;
       }
+      if (pausedPlayheadChanged || jumpedBackward || jumpedFar) {
+        needsDecoderSyncOnPlayRef.current = true;
+        if (state.playing) startupDecoderSyncStartedAtRef.current = ts;
+      }
+      if (startingPlayback && needsDecoderSyncOnPlayRef.current) {
+        startupDecoderSyncStartedAtRef.current = ts;
+      } else if (startingPlayback && needsDecoderSyncBeforeReset) {
+        needsDecoderSyncOnPlayRef.current = true;
+        startupDecoderSyncStartedAtRef.current = ts;
+      }
+      if (!state.playing) {
+        startupDecoderSyncStartedAtRef.current = null;
+      }
       lastPlayingStateRef.current = state.playing;
 
-      const mediaPlaying = state.playing;
+      const startupDecoderSyncActive = state.playing && startupDecoderSyncStartedAtRef.current !== null;
+      const mediaPlaying = state.playing && !startupDecoderSyncActive;
 
       if (state.playing) {
         resumeAudioContext();
         const dt = (ts - (lastTickRef.current ?? ts)) / 1000;
-        const clockTime = playbackClockTimeRef.current ?? state.currentTimeSec;
-        const nextContinuous = Math.min(total, clockTime + dt);
-        playbackClockTimeRef.current = nextContinuous;
-        state.setCurrentTime(nextContinuous, { snapMode: 'floor' });
-        if (total > 0 && nextContinuous >= total) pause();
+        if (startupDecoderSyncActive) {
+          playbackClockTimeRef.current = state.currentTimeSec;
+        } else {
+          const clockTime = playbackClockTimeRef.current ?? state.currentTimeSec;
+          const nextContinuous = Math.min(total, clockTime + dt);
+          playbackClockTimeRef.current = nextContinuous;
+          state.setCurrentTime(nextContinuous, { snapMode: 'floor' });
+          if (total > 0 && nextContinuous >= total) pause();
+        }
       } else {
         playbackClockTimeRef.current = state.currentTimeSec;
       }
@@ -958,7 +1028,10 @@ export function PreviewPlayer() {
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
-        if (mediaPlaying && videoEl.paused) videoEl.play().catch(() => undefined);
+        if (mediaPlaying && videoEl.paused) {
+          videoEl.muted = true;
+          videoEl.play().catch(() => undefined);
+        }
       }
       if (visualLayers.length > 0) {
         renderPreviewCanvas(
@@ -1171,6 +1244,27 @@ export function PreviewPlayer() {
           seekIfNeeded(el, layer.sourceTimeSec, mediaPlaying, undefined, requestedSeekTargetsRef.current);
         }
         if (mediaPlaying && el.paused) el.play().catch(() => undefined);
+      }
+
+      if (state.playing && startupDecoderSyncStartedAtRef.current !== null) {
+        const startupReady = activeMediaReadyForStartup(
+          visualFrame.videos,
+          audioFrame.audios,
+          assetsById,
+          t,
+          previewFps,
+          videoPool.current,
+          imagePool.current,
+          audioPool.current,
+        );
+        const startupTimedOut = ts - startupDecoderSyncStartedAtRef.current >= STARTUP_DECODER_SYNC_TIMEOUT_MS;
+        if (startupReady || startupTimedOut) {
+          needsDecoderSyncOnPlayRef.current = false;
+          startupDecoderSyncStartedAtRef.current = null;
+          requestedSeekTargetsRef.current = new WeakMap();
+          playbackClockTimeRef.current = t;
+          lastTickRef.current = ts;
+        }
       }
 
       pruneMediaElements(proj, t, ts);
