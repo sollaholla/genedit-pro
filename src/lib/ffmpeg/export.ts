@@ -287,7 +287,7 @@ async function detectFfmpegFilterSupport(
     try {
       const code = await ffmpeg.exec(['-hide_banner', '-filters']);
       if (code !== 0) return false;
-      return filterLines.some((line) => new RegExp(`\b${filterName}\b`).test(line));
+      return filterLines.some((line) => new RegExp(`\\b${filterName}\\b`).test(line));
     } finally {
       ffmpeg.off('log', filterLogHandler);
     }

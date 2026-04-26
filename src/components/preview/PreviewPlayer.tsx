@@ -78,9 +78,7 @@ const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
-const PREVIEW_RENDER_DEBOUNCE_MS = 900;
 const PREVIEW_RENDER_CHUNK_SEC = 5;
-const PREVIEW_RENDER_EDGE_REFRESH_SEC = 0;
 
 type FfmpegPreviewState = {
   status: 'idle' | 'rendering' | 'ready' | 'error';
@@ -94,6 +92,16 @@ type FfmpegPreviewState = {
   width?: number;
   height?: number;
   signature?: string;
+};
+
+type FfmpegPreviewChunk = FfmpegPreviewState & {
+  id: string;
+  signature: string;
+};
+
+type PreviewRenderJob = {
+  id: string;
+  abortController: AbortController;
 };
 
 function cloneForPreviewRender<T>(value: T): T {
@@ -158,16 +166,17 @@ function previewRenderWindowForTime(timeSec: number, visualDurationSec: number):
   return { startSec, endSec: Math.min(visualDurationSec, startSec + PREVIEW_RENDER_CHUNK_SEC) };
 }
 
-function previewStateCoversTime(
-  preview: FfmpegPreviewState,
-  signature: string,
-  timeSec: number,
-): boolean {
-  if (preview.signature !== signature) return false;
-  if (preview.status !== 'ready' && preview.status !== 'rendering') return false;
-  if (preview.endSec <= preview.startSec) return false;
-  if (timeSec < preview.startSec - 0.05) return false;
-  return timeSec <= preview.endSec - PREVIEW_RENDER_EDGE_REFRESH_SEC;
+function previewRenderWindows(visualDurationSec: number): Array<{ id: string; startSec: number; endSec: number }> {
+  const windows: Array<{ id: string; startSec: number; endSec: number }> = [];
+  for (let startSec = 0; startSec < visualDurationSec; startSec += PREVIEW_RENDER_CHUNK_SEC) {
+    const endSec = Math.min(visualDurationSec, startSec + PREVIEW_RENDER_CHUNK_SEC);
+    windows.push({ id: previewChunkId(startSec, endSec), startSec, endSec });
+  }
+  return windows;
+}
+
+function previewChunkId(startSec: number, endSec: number): string {
+  return `${startSec.toFixed(3)}-${endSec.toFixed(3)}`;
 }
 
 function previewRenderSignature(project: Project, assets: MediaAsset[]): string {
@@ -182,6 +191,69 @@ function previewRenderSignature(project: Project, assets: MediaAsset[]): string 
       height: asset.height,
       activeIterationId: asset.editTrail?.activeIterationId,
     })),
+  });
+}
+
+function previewChunkSignature(
+  project: Project,
+  assets: MediaAsset[],
+  startSec: number,
+  endSec: number,
+): string {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
+  const visualTracks = project.tracks
+    .filter((track) => track.kind === 'video')
+    .map((track) => ({ id: track.id, index: track.index, hidden: track.hidden }));
+  const clips = project.clips
+    .filter((clip) => {
+      const track = tracksById.get(clip.trackId);
+      const asset = assetsById.get(clip.assetId);
+      return !!track
+        && !!asset
+        && track.kind === 'video'
+        && !track.hidden
+        && (asset.kind === 'video' || asset.kind === 'image')
+        && clipIntersectsWindow(clip, startSec, endSec);
+    })
+    .sort((first, second) => first.startSec - second.startSec || first.id.localeCompare(second.id))
+    .map((clip) => {
+      const asset = assetsById.get(clip.assetId)!;
+      return {
+        clip: {
+          id: clip.id,
+          assetId: clip.assetId,
+          trackId: clip.trackId,
+          startSec: clip.startSec,
+          inSec: clip.inSec,
+          outSec: clip.outSec,
+          speed: clip.speed,
+          scale: clip.scale,
+          transform: clip.transform,
+          components: clip.components,
+        },
+        asset: {
+          id: asset.id,
+          name: asset.name,
+          kind: asset.kind,
+          blobKey: asset.blobKey,
+          durationSec: asset.durationSec,
+          width: asset.width,
+          height: asset.height,
+          transform: activeEditTransform(asset),
+        },
+      };
+    });
+
+  return JSON.stringify({
+    width: project.width,
+    height: project.height,
+    fps: project.fps,
+    scale: PREVIEW_RENDER_SCALE,
+    startSec,
+    endSec,
+    visualTracks,
+    clips,
   });
 }
 
@@ -446,8 +518,8 @@ export function PreviewPlayer() {
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
   const ffmpegPreviewVideoRef = useRef<HTMLVideoElement | null>(null);
-  const ffmpegPreviewUrlRef = useRef<string | null>(null);
-  const ffmpegPreviewSeqRef = useRef(0);
+  const ffmpegPreviewCacheRef = useRef<Map<string, FfmpegPreviewChunk>>(new Map());
+  const ffmpegPreviewRenderJobRef = useRef<PreviewRenderJob | null>(null);
   const ffmpegPreviewStateRef = useRef<FfmpegPreviewState>({
     status: 'idle',
     progress: 0,
@@ -508,12 +580,28 @@ export function PreviewPlayer() {
     endSec: 0,
     durationSec: 0,
   });
+  const [ffmpegPreviewCacheVersion, setFfmpegPreviewCacheVersion] = useState(0);
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
   const frameRatePreset = frameRateOptionForFps(project.fps);
   const previewAspectRatio = PROJECT_ASPECTS[aspectPreset];
   const ffmpegPreviewSignature = useMemo(() => previewRenderSignature(project, assets), [project, assets]);
   const ffmpegPreviewDuration = useMemo(() => visualPreviewDurationSec(project, assets), [project, assets]);
+  const ffmpegPreviewWindows = useMemo(() => previewRenderWindows(ffmpegPreviewDuration), [ffmpegPreviewDuration]);
+  const ffmpegPreviewBufferChunks = useMemo(() => ffmpegPreviewWindows.map((window) => {
+    const signature = previewChunkSignature(project, assets, window.startSec, window.endSec);
+    const chunk = ffmpegPreviewCacheRef.current.get(window.id);
+    if (chunk?.signature === signature) return chunk;
+    return {
+      id: window.id,
+      signature,
+      status: 'idle' as const,
+      progress: 0,
+      startSec: window.startSec,
+      endSec: window.endSec,
+      durationSec: Math.max(0, window.endSec - window.startSec),
+    };
+  }), [assets, ffmpegPreviewCacheVersion, ffmpegPreviewWindows, project]);
   const ffmpegPreviewVisible = ffmpegPreview.status === 'ready'
     && !!ffmpegPreview.url
     && currentTime >= ffmpegPreview.startSec - 0.05
@@ -546,114 +634,146 @@ export function PreviewPlayer() {
   }, [ffmpegPreview]);
 
   useEffect(() => {
-    const currentPreview = ffmpegPreviewStateRef.current;
+    const bumpCacheVersion = () => setFfmpegPreviewCacheVersion((version) => version + 1);
+    const cache = ffmpegPreviewCacheRef.current;
     const noVisualAtPlayhead = ffmpegPreviewDuration <= 0 || currentTime > ffmpegPreviewDuration + 0.05;
 
-    if (noVisualAtPlayhead) {
-      if (currentPreview.status !== 'idle' || currentPreview.signature !== ffmpegPreviewSignature) {
-        ffmpegPreviewSeqRef.current += 1;
-        if (ffmpegPreviewUrlRef.current) {
-          URL.revokeObjectURL(ffmpegPreviewUrlRef.current);
-          ffmpegPreviewUrlRef.current = null;
-        }
-        setFfmpegPreview({
-          status: 'idle',
-          progress: 0,
-          startSec: 0,
-          endSec: 0,
-          durationSec: 0,
-          signature: ffmpegPreviewSignature,
-        });
+    let cacheChanged = false;
+    for (const [chunkId, chunk] of [...cache.entries()]) {
+      const currentSignature = previewChunkSignature(project, assets, chunk.startSec, chunk.endSec);
+      const stillExists = ffmpegPreviewWindows.some((window) => window.id === chunkId);
+      if (!stillExists || chunk.signature !== currentSignature) {
+        if (chunk.url) URL.revokeObjectURL(chunk.url);
+        cache.delete(chunkId);
+        cacheChanged = true;
       }
+    }
+    if (cacheChanged) bumpCacheVersion();
+
+    if (noVisualAtPlayhead) {
+      setFfmpegPreview({
+        status: 'idle',
+        progress: 0,
+        startSec: 0,
+        endSec: 0,
+        durationSec: 0,
+        signature: ffmpegPreviewSignature,
+      });
       return undefined;
     }
 
-    if (previewStateCoversTime(currentPreview, ffmpegPreviewSignature, currentTime)) {
-      return undefined;
+    const activeWindow = previewRenderWindowForTime(currentTime, ffmpegPreviewDuration);
+    const activeChunkId = previewChunkId(activeWindow.startSec, activeWindow.endSec);
+    const activeSignature = previewChunkSignature(project, assets, activeWindow.startSec, activeWindow.endSec);
+    const activeChunk = cache.get(activeChunkId);
+    const activeIsValid = activeChunk?.signature === activeSignature;
+    setFfmpegPreview(activeIsValid ? activeChunk : {
+      status: 'idle',
+      progress: 0,
+      startSec: activeWindow.startSec,
+      endSec: activeWindow.endSec,
+      durationSec: Math.max(0, activeWindow.endSec - activeWindow.startSec),
+      signature: activeSignature,
+    });
+
+    const activeNeedsRender = !activeIsValid || (activeChunk.status !== 'ready' && activeChunk.status !== 'rendering');
+    const currentRenderJob = ffmpegPreviewRenderJobRef.current;
+    if (currentRenderJob) {
+      if (!activeNeedsRender || currentRenderJob.id === activeChunkId) return undefined;
+      currentRenderJob.abortController.abort();
+      ffmpegPreviewRenderJobRef.current = null;
     }
 
-    const { startSec, endSec } = previewRenderWindowForTime(currentTime, ffmpegPreviewDuration);
-    const durationSec = Math.max(0, endSec - startSec);
+    const activeWindowIndex = ffmpegPreviewWindows.findIndex((window) => window.id === activeChunkId);
+    const orderedWindows = activeWindowIndex >= 0
+      ? ffmpegPreviewWindows.slice(activeWindowIndex)
+      : ffmpegPreviewWindows;
+    const nextWindow = activeNeedsRender ? { ...activeWindow, id: activeChunkId } : orderedWindows.find((window) => {
+      const signature = previewChunkSignature(project, assets, window.startSec, window.endSec);
+      const chunk = cache.get(window.id);
+      return chunk?.signature !== signature || (chunk.status !== 'ready' && chunk.status !== 'rendering');
+    });
+    if (!nextWindow) return undefined;
+
+    const signature = previewChunkSignature(project, assets, nextWindow.startSec, nextWindow.endSec);
+    const durationSec = Math.max(0, nextWindow.endSec - nextWindow.startSec);
     if (durationSec <= 0) return undefined;
 
-    const currentUrl = ffmpegPreviewUrlRef.current;
-    ffmpegPreviewSeqRef.current += 1;
-    const seq = ffmpegPreviewSeqRef.current;
-
-    if (currentUrl) {
-      URL.revokeObjectURL(currentUrl);
-      ffmpegPreviewUrlRef.current = null;
-    }
-
-    setFfmpegPreview({
+    const abortController = new AbortController();
+    const renderingChunk: FfmpegPreviewChunk = {
+      id: nextWindow.id,
       status: 'rendering',
       progress: 0,
-      startSec,
-      endSec,
+      startSec: nextWindow.startSec,
+      endSec: nextWindow.endSec,
       durationSec,
-      signature: ffmpegPreviewSignature,
+      signature,
       message: 'Preparing preview...',
-    });
+    };
+    cache.set(nextWindow.id, renderingChunk);
+    ffmpegPreviewRenderJobRef.current = { id: nextWindow.id, abortController };
+    bumpCacheVersion();
+    if (nextWindow.id === activeChunkId) setFfmpegPreview(renderingChunk);
 
     const projectSnapshot = cloneForPreviewRender(project);
     const assetsSnapshot = cloneForPreviewRender(assets);
-    const abortController = new AbortController();
-    let cancelled = false;
-
-    const timeout = window.setTimeout(() => {
-      void renderProjectPreview(projectSnapshot, assetsSnapshot, {
-        onStatus: (message) => {
-          if (!cancelled && ffmpegPreviewSeqRef.current === seq) {
-            setFfmpegPreview((prev) => ({ ...prev, message }));
-          }
-        },
-        onProgress: (progress) => {
-          if (!cancelled && ffmpegPreviewSeqRef.current === seq) {
-            setFfmpegPreview((prev) => ({ ...prev, progress }));
-          }
-        },
-      }, { startSec, endSec, signal: abortController.signal }).then((result) => {
-        if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
-        const url = URL.createObjectURL(result.blob);
-        ffmpegPreviewUrlRef.current = url;
-        setFfmpegPreview({
-          status: 'ready',
-          progress: 1,
-          startSec: result.startSec,
-          endSec: result.endSec,
-          durationSec: result.durationSec,
-          message: 'Preview ready',
-          url,
-          width: result.width,
-          height: result.height,
-          signature: ffmpegPreviewSignature,
-        });
-      }).catch((error) => {
-        if (cancelled || ffmpegPreviewSeqRef.current !== seq) return;
-        setFfmpegPreview({
-          status: 'error',
-          progress: 0,
-          startSec,
-          endSec,
-          durationSec,
-          error: error instanceof Error ? error.message : String(error),
-          signature: ffmpegPreviewSignature,
-        });
+    void renderProjectPreview(projectSnapshot, assetsSnapshot, {
+      onStatus: (message) => {
+        const chunk = cache.get(nextWindow.id);
+        if (!chunk || chunk.signature !== signature || abortController.signal.aborted) return;
+        cache.set(nextWindow.id, { ...chunk, message });
+        bumpCacheVersion();
+      },
+      onProgress: (progress) => {
+        const chunk = cache.get(nextWindow.id);
+        if (!chunk || chunk.signature !== signature || abortController.signal.aborted) return;
+        cache.set(nextWindow.id, { ...chunk, progress });
+        bumpCacheVersion();
+      },
+    }, { startSec: nextWindow.startSec, endSec: nextWindow.endSec, signal: abortController.signal }).then((result) => {
+      if (abortController.signal.aborted) return;
+      const chunk = cache.get(nextWindow.id);
+      if (!chunk || chunk.signature !== signature) return;
+      if (chunk.url) URL.revokeObjectURL(chunk.url);
+      const url = URL.createObjectURL(result.blob);
+      cache.set(nextWindow.id, {
+        ...chunk,
+        status: 'ready',
+        progress: 1,
+        startSec: result.startSec,
+        endSec: result.endSec,
+        durationSec: result.durationSec,
+        message: 'Preview ready',
+        url,
+        width: result.width,
+        height: result.height,
       });
-    }, PREVIEW_RENDER_DEBOUNCE_MS);
+      if (ffmpegPreviewRenderJobRef.current?.id === nextWindow.id) ffmpegPreviewRenderJobRef.current = null;
+      bumpCacheVersion();
+    }).catch((error) => {
+      if (abortController.signal.aborted) return;
+      const chunk = cache.get(nextWindow.id);
+      if (!chunk || chunk.signature !== signature) return;
+      cache.set(nextWindow.id, {
+        ...chunk,
+        status: 'error',
+        progress: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (ffmpegPreviewRenderJobRef.current?.id === nextWindow.id) ffmpegPreviewRenderJobRef.current = null;
+      bumpCacheVersion();
+    });
 
-    return () => {
-      cancelled = true;
-      abortController.abort();
-      window.clearTimeout(timeout);
-    };
-  }, [assets, currentTime, ffmpegPreviewDuration, ffmpegPreviewSignature, project]);
+    return undefined;
+  }, [assets, currentTime, ffmpegPreviewCacheVersion, ffmpegPreviewDuration, ffmpegPreviewSignature, ffmpegPreviewWindows, project]);
 
   useEffect(() => () => {
-    if (ffmpegPreviewUrlRef.current) {
-      URL.revokeObjectURL(ffmpegPreviewUrlRef.current);
-      ffmpegPreviewUrlRef.current = null;
+    ffmpegPreviewRenderJobRef.current?.abortController.abort();
+    ffmpegPreviewRenderJobRef.current = null;
+    for (const chunk of ffmpegPreviewCacheRef.current.values()) {
+      if (chunk.url) URL.revokeObjectURL(chunk.url);
     }
+    ffmpegPreviewCacheRef.current.clear();
   }, []);
 
   const previewStageStyle = useMemo(() => {
@@ -1530,15 +1650,58 @@ export function PreviewPlayer() {
               aria-hidden
             />
           )}
-          {ffmpegPreview.status === 'rendering' && (
-            <div className="pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded border border-surface-700 bg-surface-950/85 px-2 py-1 text-[11px] text-slate-300 shadow-lg">
-              <Loader2 size={12} className="animate-spin text-brand-300" />
-              <span className="font-mono tabular-nums">
-                {Math.round(PREVIEW_RENDER_SCALE * 100)}% / {Math.round(ffmpegPreview.progress * 100)}%
-              </span>
+          {ffmpegPreviewDuration > 0 && (
+            <div className="pointer-events-none absolute bottom-2 left-2 right-2 z-40 rounded border border-surface-700 bg-surface-950/85 px-2 py-1 shadow-lg">
+              <div className="mb-1 flex h-3 items-center gap-1 text-[10px] text-slate-300">
+                {ffmpegPreviewBufferChunks.some((chunk) => chunk.status === 'rendering') && (
+                  <Loader2 size={11} className="animate-spin text-brand-300" />
+                )}
+                <span className="font-mono tabular-nums">
+                  {ffmpegPreviewBufferChunks.filter((chunk) => chunk.status === 'ready').length}/{ffmpegPreviewBufferChunks.length}
+                </span>
+              </div>
+              <svg
+                className="block h-2 w-full overflow-hidden rounded bg-surface-800"
+                viewBox={`0 0 ${Math.max(1, ffmpegPreviewDuration)} 1`}
+                preserveAspectRatio="none"
+                aria-hidden
+              >
+                <rect x="0" y="0" width={Math.max(1, ffmpegPreviewDuration)} height="1" className="fill-surface-700" />
+                {ffmpegPreviewBufferChunks.map((chunk) => (
+                  <rect
+                    key={`${chunk.id}-base`}
+                    x={chunk.startSec}
+                    y="0"
+                    width={Math.max(0, chunk.endSec - chunk.startSec)}
+                    height="1"
+                    className={chunk.status === 'ready'
+                      ? 'fill-brand-500'
+                      : chunk.status === 'error'
+                        ? 'fill-red-500'
+                        : 'fill-surface-600'}
+                  />
+                ))}
+                {ffmpegPreviewBufferChunks.filter((chunk) => chunk.status === 'rendering').map((chunk) => (
+                  <rect
+                    key={`${chunk.id}-progress`}
+                    x={chunk.startSec}
+                    y="0"
+                    width={Math.max(0, (chunk.endSec - chunk.startSec) * chunk.progress)}
+                    height="1"
+                    className="fill-amber-400"
+                  />
+                ))}
+                <rect
+                  x={Math.max(0, Math.min(ffmpegPreviewDuration, currentTime))}
+                  y="0"
+                  width={Math.max(0.035, ffmpegPreviewDuration / 600)}
+                  height="1"
+                  className="fill-white"
+                />
+              </svg>
             </div>
           )}
-          {ffmpegPreview.status === 'error' && (
+          {ffmpegPreview.status === 'error' && !ffmpegPreviewBufferChunks.some((chunk) => chunk.status === 'error') && (
             <div
               className="pointer-events-none absolute bottom-2 left-2 z-40 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-200"
               title={ffmpegPreview.error}
