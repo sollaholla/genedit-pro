@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
-import { PREVIEW_RENDER_SCALE, renderProjectPreview } from '@/lib/ffmpeg/export';
 import type { Clip, MediaAsset, Project } from '@/types';
 import { clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
@@ -78,36 +76,6 @@ const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
-const PREVIEW_RENDER_CHUNK_SEC = 5;
-
-type FfmpegPreviewState = {
-  status: 'idle' | 'rendering' | 'ready' | 'error';
-  progress: number;
-  startSec: number;
-  endSec: number;
-  durationSec: number;
-  message?: string;
-  error?: string;
-  url?: string;
-  width?: number;
-  height?: number;
-  signature?: string;
-};
-
-type FfmpegPreviewChunk = FfmpegPreviewState & {
-  id: string;
-  signature: string;
-};
-
-type PreviewRenderJob = {
-  id: string;
-  abortController: AbortController;
-};
-
-function cloneForPreviewRender<T>(value: T): T {
-  if (typeof structuredClone === 'function') return structuredClone(value);
-  return JSON.parse(JSON.stringify(value)) as T;
-}
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -141,120 +109,6 @@ function preparedClipsForTime(project: Project, timeSec: number): Clip[] {
     prepared.set(candidate.clip.id, candidate.clip);
   }
   return [...prepared.values()];
-}
-
-function visualPreviewDurationSec(project: Project, assets: MediaAsset[]): number {
-  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
-  return project.clips.reduce((maxDuration, clip) => {
-    const asset = assetsById.get(clip.assetId);
-    const track = tracksById.get(clip.trackId);
-    if (!asset || !track) return maxDuration;
-    if (track.kind !== 'video' || track.hidden) return maxDuration;
-    if (asset.kind !== 'video' && asset.kind !== 'image') return maxDuration;
-    return Math.max(maxDuration, clipEndSec(clip));
-  }, 0);
-}
-
-function previewRenderWindowForTime(timeSec: number, visualDurationSec: number): { startSec: number; endSec: number } {
-  const clampedTimeSec = Math.max(0, Math.min(visualDurationSec, timeSec));
-  const chunkTimeSec = clampedTimeSec >= visualDurationSec
-    ? Math.max(0, visualDurationSec - 1e-6)
-    : clampedTimeSec;
-  const chunkIndex = Math.floor(chunkTimeSec / PREVIEW_RENDER_CHUNK_SEC);
-  const startSec = chunkIndex * PREVIEW_RENDER_CHUNK_SEC;
-  return { startSec, endSec: Math.min(visualDurationSec, startSec + PREVIEW_RENDER_CHUNK_SEC) };
-}
-
-function previewRenderWindows(visualDurationSec: number): Array<{ id: string; startSec: number; endSec: number }> {
-  const windows: Array<{ id: string; startSec: number; endSec: number }> = [];
-  for (let startSec = 0; startSec < visualDurationSec; startSec += PREVIEW_RENDER_CHUNK_SEC) {
-    const endSec = Math.min(visualDurationSec, startSec + PREVIEW_RENDER_CHUNK_SEC);
-    windows.push({ id: previewChunkId(startSec, endSec), startSec, endSec });
-  }
-  return windows;
-}
-
-function previewChunkId(startSec: number, endSec: number): string {
-  return `${startSec.toFixed(3)}-${endSec.toFixed(3)}`;
-}
-
-function previewRenderSignature(project: Project, assets: MediaAsset[]): string {
-  return JSON.stringify({
-    project,
-    assets: assets.map((asset) => ({
-      id: asset.id,
-      kind: asset.kind,
-      blobKey: asset.blobKey,
-      durationSec: asset.durationSec,
-      width: asset.width,
-      height: asset.height,
-      activeIterationId: asset.editTrail?.activeIterationId,
-    })),
-  });
-}
-
-function previewChunkSignature(
-  project: Project,
-  assets: MediaAsset[],
-  startSec: number,
-  endSec: number,
-): string {
-  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
-  const visualTracks = project.tracks
-    .filter((track) => track.kind === 'video')
-    .map((track) => ({ id: track.id, index: track.index, hidden: track.hidden }));
-  const clips = project.clips
-    .filter((clip) => {
-      const track = tracksById.get(clip.trackId);
-      const asset = assetsById.get(clip.assetId);
-      return !!track
-        && !!asset
-        && track.kind === 'video'
-        && !track.hidden
-        && (asset.kind === 'video' || asset.kind === 'image')
-        && clipIntersectsWindow(clip, startSec, endSec);
-    })
-    .sort((first, second) => first.startSec - second.startSec || first.id.localeCompare(second.id))
-    .map((clip) => {
-      const asset = assetsById.get(clip.assetId)!;
-      return {
-        clip: {
-          id: clip.id,
-          assetId: clip.assetId,
-          trackId: clip.trackId,
-          startSec: clip.startSec,
-          inSec: clip.inSec,
-          outSec: clip.outSec,
-          speed: clip.speed,
-          scale: clip.scale,
-          transform: clip.transform,
-          components: clip.components,
-        },
-        asset: {
-          id: asset.id,
-          name: asset.name,
-          kind: asset.kind,
-          blobKey: asset.blobKey,
-          durationSec: asset.durationSec,
-          width: asset.width,
-          height: asset.height,
-          transform: activeEditTransform(asset),
-        },
-      };
-    });
-
-  return JSON.stringify({
-    width: project.width,
-    height: project.height,
-    fps: project.fps,
-    scale: PREVIEW_RENDER_SCALE,
-    startSec,
-    endSec,
-    visualTracks,
-    clips,
-  });
 }
 
 function safeProjectFps(project: Pick<Project, 'fps'>): number {
@@ -351,36 +205,6 @@ function setPitchPreservingRate(el: HTMLMediaElement, speed: number) {
   maybe.preservesPitch = true;
   maybe.mozPreservesPitch = true;
   maybe.webkitPreservesPitch = true;
-}
-
-function syncRenderedPreviewVideo(
-  el: HTMLVideoElement | null,
-  targetTimeSec: number,
-  playing: boolean,
-  active: boolean,
-  startSec: number,
-  durationSec: number,
-) {
-  if (!el) return;
-  if (!active || durationSec <= 0) {
-    el.style.display = 'none';
-    if (!el.paused) el.pause();
-    return;
-  }
-
-  const target = Math.max(0, Math.min(durationSec, targetTimeSec - startSec));
-  el.style.display = 'block';
-  el.muted = true;
-  el.playbackRate = 1;
-  const threshold = playing ? 0.14 : 0.025;
-  if (Math.abs(el.currentTime - target) > threshold && !el.seeking) {
-    try { el.currentTime = target; } catch { /* noop */ }
-  }
-  if (playing) {
-    if (el.paused) el.play().catch(() => undefined);
-  } else if (!el.paused) {
-    el.pause();
-  }
 }
 
 function resolvedTransform(clip: ActiveLayer['clip'], timelineTimeSec: number) {
@@ -517,16 +341,6 @@ export function PreviewPlayer() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
-  const ffmpegPreviewVideoRef = useRef<HTMLVideoElement | null>(null);
-  const ffmpegPreviewCacheRef = useRef<Map<string, FfmpegPreviewChunk>>(new Map());
-  const ffmpegPreviewRenderJobRef = useRef<PreviewRenderJob | null>(null);
-  const ffmpegPreviewStateRef = useRef<FfmpegPreviewState>({
-    status: 'idle',
-    progress: 0,
-    startSec: 0,
-    endSec: 0,
-    durationSec: 0,
-  });
 
   // Pools keyed by CLIP id (not asset id). Each clip needs its own element so
   // overlapping same-asset clips don't fight over currentTime.
@@ -573,39 +387,10 @@ export function PreviewPlayer() {
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
-  const [ffmpegPreview, setFfmpegPreview] = useState<FfmpegPreviewState>({
-    status: 'idle',
-    progress: 0,
-    startSec: 0,
-    endSec: 0,
-    durationSec: 0,
-  });
-  const [ffmpegPreviewCacheVersion, setFfmpegPreviewCacheVersion] = useState(0);
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
   const frameRatePreset = frameRateOptionForFps(project.fps);
   const previewAspectRatio = PROJECT_ASPECTS[aspectPreset];
-  const ffmpegPreviewSignature = useMemo(() => previewRenderSignature(project, assets), [project, assets]);
-  const ffmpegPreviewDuration = useMemo(() => visualPreviewDurationSec(project, assets), [project, assets]);
-  const ffmpegPreviewWindows = useMemo(() => previewRenderWindows(ffmpegPreviewDuration), [ffmpegPreviewDuration]);
-  const ffmpegPreviewBufferChunks = useMemo(() => ffmpegPreviewWindows.map((window) => {
-    const signature = previewChunkSignature(project, assets, window.startSec, window.endSec);
-    const chunk = ffmpegPreviewCacheRef.current.get(window.id);
-    if (chunk?.signature === signature) return chunk;
-    return {
-      id: window.id,
-      signature,
-      status: 'idle' as const,
-      progress: 0,
-      startSec: window.startSec,
-      endSec: window.endSec,
-      durationSec: Math.max(0, window.endSec - window.startSec),
-    };
-  }), [assets, ffmpegPreviewCacheVersion, ffmpegPreviewWindows, project]);
-  const ffmpegPreviewVisible = ffmpegPreview.status === 'ready'
-    && !!ffmpegPreview.url
-    && currentTime >= ffmpegPreview.startSec - 0.05
-    && currentTime <= ffmpegPreview.endSec + 0.05;
 
   const updateAspectPreset = (value: string) => {
     if (!isProjectAspectPreset(value)) return;
@@ -628,153 +413,6 @@ export function PreviewPlayer() {
   useEffect(() => {
     assetsRef.current = assets;
   }, [assets]);
-
-  useEffect(() => {
-    ffmpegPreviewStateRef.current = ffmpegPreview;
-  }, [ffmpegPreview]);
-
-  useEffect(() => {
-    const bumpCacheVersion = () => setFfmpegPreviewCacheVersion((version) => version + 1);
-    const cache = ffmpegPreviewCacheRef.current;
-    const noVisualAtPlayhead = ffmpegPreviewDuration <= 0 || currentTime > ffmpegPreviewDuration + 0.05;
-
-    let cacheChanged = false;
-    for (const [chunkId, chunk] of [...cache.entries()]) {
-      const currentSignature = previewChunkSignature(project, assets, chunk.startSec, chunk.endSec);
-      const stillExists = ffmpegPreviewWindows.some((window) => window.id === chunkId);
-      if (!stillExists || chunk.signature !== currentSignature) {
-        if (chunk.url) URL.revokeObjectURL(chunk.url);
-        cache.delete(chunkId);
-        cacheChanged = true;
-      }
-    }
-    if (cacheChanged) bumpCacheVersion();
-
-    if (noVisualAtPlayhead) {
-      setFfmpegPreview({
-        status: 'idle',
-        progress: 0,
-        startSec: 0,
-        endSec: 0,
-        durationSec: 0,
-        signature: ffmpegPreviewSignature,
-      });
-      return undefined;
-    }
-
-    const activeWindow = previewRenderWindowForTime(currentTime, ffmpegPreviewDuration);
-    const activeChunkId = previewChunkId(activeWindow.startSec, activeWindow.endSec);
-    const activeSignature = previewChunkSignature(project, assets, activeWindow.startSec, activeWindow.endSec);
-    const activeChunk = cache.get(activeChunkId);
-    const activeIsValid = activeChunk?.signature === activeSignature;
-    setFfmpegPreview(activeIsValid ? activeChunk : {
-      status: 'idle',
-      progress: 0,
-      startSec: activeWindow.startSec,
-      endSec: activeWindow.endSec,
-      durationSec: Math.max(0, activeWindow.endSec - activeWindow.startSec),
-      signature: activeSignature,
-    });
-
-    const activeNeedsRender = !activeIsValid || (activeChunk.status !== 'ready' && activeChunk.status !== 'rendering');
-    const currentRenderJob = ffmpegPreviewRenderJobRef.current;
-    if (currentRenderJob) {
-      if (!activeNeedsRender || currentRenderJob.id === activeChunkId) return undefined;
-      currentRenderJob.abortController.abort();
-      ffmpegPreviewRenderJobRef.current = null;
-    }
-
-    const activeWindowIndex = ffmpegPreviewWindows.findIndex((window) => window.id === activeChunkId);
-    const orderedWindows = activeWindowIndex >= 0
-      ? ffmpegPreviewWindows.slice(activeWindowIndex)
-      : ffmpegPreviewWindows;
-    const nextWindow = activeNeedsRender ? { ...activeWindow, id: activeChunkId } : orderedWindows.find((window) => {
-      const signature = previewChunkSignature(project, assets, window.startSec, window.endSec);
-      const chunk = cache.get(window.id);
-      return chunk?.signature !== signature || (chunk.status !== 'ready' && chunk.status !== 'rendering');
-    });
-    if (!nextWindow) return undefined;
-
-    const signature = previewChunkSignature(project, assets, nextWindow.startSec, nextWindow.endSec);
-    const durationSec = Math.max(0, nextWindow.endSec - nextWindow.startSec);
-    if (durationSec <= 0) return undefined;
-
-    const abortController = new AbortController();
-    const renderingChunk: FfmpegPreviewChunk = {
-      id: nextWindow.id,
-      status: 'rendering',
-      progress: 0,
-      startSec: nextWindow.startSec,
-      endSec: nextWindow.endSec,
-      durationSec,
-      signature,
-      message: 'Preparing preview...',
-    };
-    cache.set(nextWindow.id, renderingChunk);
-    ffmpegPreviewRenderJobRef.current = { id: nextWindow.id, abortController };
-    bumpCacheVersion();
-    if (nextWindow.id === activeChunkId) setFfmpegPreview(renderingChunk);
-
-    const projectSnapshot = cloneForPreviewRender(project);
-    const assetsSnapshot = cloneForPreviewRender(assets);
-    void renderProjectPreview(projectSnapshot, assetsSnapshot, {
-      onStatus: (message) => {
-        const chunk = cache.get(nextWindow.id);
-        if (!chunk || chunk.signature !== signature || abortController.signal.aborted) return;
-        cache.set(nextWindow.id, { ...chunk, message });
-        bumpCacheVersion();
-      },
-      onProgress: (progress) => {
-        const chunk = cache.get(nextWindow.id);
-        if (!chunk || chunk.signature !== signature || abortController.signal.aborted) return;
-        cache.set(nextWindow.id, { ...chunk, progress });
-        bumpCacheVersion();
-      },
-    }, { startSec: nextWindow.startSec, endSec: nextWindow.endSec, signal: abortController.signal }).then((result) => {
-      if (abortController.signal.aborted) return;
-      const chunk = cache.get(nextWindow.id);
-      if (!chunk || chunk.signature !== signature) return;
-      if (chunk.url) URL.revokeObjectURL(chunk.url);
-      const url = URL.createObjectURL(result.blob);
-      cache.set(nextWindow.id, {
-        ...chunk,
-        status: 'ready',
-        progress: 1,
-        startSec: result.startSec,
-        endSec: result.endSec,
-        durationSec: result.durationSec,
-        message: 'Preview ready',
-        url,
-        width: result.width,
-        height: result.height,
-      });
-      if (ffmpegPreviewRenderJobRef.current?.id === nextWindow.id) ffmpegPreviewRenderJobRef.current = null;
-      bumpCacheVersion();
-    }).catch((error) => {
-      if (abortController.signal.aborted) return;
-      const chunk = cache.get(nextWindow.id);
-      if (!chunk || chunk.signature !== signature) return;
-      cache.set(nextWindow.id, {
-        ...chunk,
-        status: 'error',
-        progress: 0,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      if (ffmpegPreviewRenderJobRef.current?.id === nextWindow.id) ffmpegPreviewRenderJobRef.current = null;
-      bumpCacheVersion();
-    });
-
-    return undefined;
-  }, [assets, currentTime, ffmpegPreviewCacheVersion, ffmpegPreviewDuration, ffmpegPreviewSignature, ffmpegPreviewWindows, project]);
-
-  useEffect(() => () => {
-    ffmpegPreviewRenderJobRef.current?.abortController.abort();
-    ffmpegPreviewRenderJobRef.current = null;
-    for (const chunk of ffmpegPreviewCacheRef.current.values()) {
-      if (chunk.url) URL.revokeObjectURL(chunk.url);
-    }
-    ffmpegPreviewCacheRef.current.clear();
-  }, []);
 
   const previewStageStyle = useMemo(() => {
     if (!previewFrameSize || previewFrameSize.width <= 0 || previewFrameSize.height <= 0) {
@@ -1167,12 +805,7 @@ export function PreviewPlayer() {
       const state = usePlaybackStore.getState();
       const proj = useProjectStore.getState().project;
       const total = projectDurationSec(proj);
-      const ffmpegPreviewSnapshot = ffmpegPreviewStateRef.current;
-      const renderedPreviewActive = ffmpegPreviewSnapshot.status === 'ready'
-        && !!ffmpegPreviewSnapshot.url
-        && state.currentTimeSec >= ffmpegPreviewSnapshot.startSec - 0.05
-        && state.currentTimeSec <= ffmpegPreviewSnapshot.endSec + 0.05;
-      const mediaPlaybackBlocked = state.playing && !renderedPreviewActive && playbackVideoBlockedRef.current;
+      const mediaPlaybackBlocked = state.playing && playbackVideoBlockedRef.current;
       const mediaPlaying = state.playing && !mediaPlaybackBlocked;
 
       if (state.playing) {
@@ -1194,14 +827,6 @@ export function PreviewPlayer() {
       }
 
       const t = usePlaybackStore.getState().currentTimeSec;
-      syncRenderedPreviewVideo(
-        ffmpegPreviewVideoRef.current,
-        t,
-        mediaPlaying,
-        renderedPreviewActive,
-        ffmpegPreviewSnapshot.startSec,
-        ffmpegPreviewSnapshot.durationSec,
-      );
       const previewFps = safeProjectFps(proj);
       const visualTime = state.playing ? projectFrameTime(t, previewFps) : t;
       const visualFrameIndex = projectFrameIndex(t, previewFps);
@@ -1298,9 +923,9 @@ export function PreviewPlayer() {
       }
       const hasCurrentFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewFrameRef.current === previewFrameKey;
       const hasSameClipFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewClipKeyRef.current === previewClipKey;
-      const showFreezeFrame = visualLayers.length > 0 && (state.playing
-        ? hasCurrentFreezeFrame || (!topPaintableLayer && hasSameClipFreezeFrame)
-        : !topPaintableLayer && (hasCurrentFreezeFrame || hasSameClipFreezeFrame));
+      const showFreezeFrame = visualLayers.length > 0
+        && !topPaintableLayer
+        && (hasCurrentFreezeFrame || hasSameClipFreezeFrame);
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
       }

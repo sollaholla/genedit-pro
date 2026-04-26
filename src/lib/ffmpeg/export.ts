@@ -9,7 +9,6 @@ import { activeEditTransform } from '@/lib/media/editTrail';
 import { getFFmpeg, resetFFmpeg } from './client';
 
 const SOURCE_MOUNT_DIR = '/source-media';
-export const PREVIEW_RENDER_SCALE = 0.8;
 
 let ffmpegJobQueue: Promise<unknown> = Promise.resolve();
 const filterSupportCache = new Map<string, Promise<boolean>>();
@@ -26,22 +25,6 @@ export type ExportCallbacks = {
   onStatus?: (message: string) => void;
   onProgress?: (value: number) => void;
   onLog?: (line: string) => void;
-};
-
-export type PreviewRenderResult = {
-  blob: Blob;
-  width: number;
-  height: number;
-  startSec: number;
-  endSec: number;
-  durationSec: number;
-  scale: number;
-};
-
-export type PreviewRenderOptions = {
-  startSec?: number;
-  endSec?: number;
-  signal?: AbortSignal;
 };
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -70,58 +53,12 @@ function filterNumber(value: number): string {
   return safeValue.toFixed(5);
 }
 
-function evenDimension(value: number): number {
-  return Math.max(2, Math.floor(Math.max(2, value) / 2) * 2);
-}
-
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
 }
 
 function clipSourceDurationSec(clip: Clip): number {
   return Math.max(0.001, clip.outSec - clip.inSec);
-}
-
-function shiftTransformKeyframes<T extends { timeSec: number }>(points: T[] | undefined, offsetSec: number): T[] {
-  return (points ?? []).map((point) => ({ ...point, timeSec: point.timeSec - offsetSec }));
-}
-
-function trimClipToPreviewWindow(clip: Clip, windowStartSec: number, windowEndSec: number): Clip | null {
-  const originalEndSec = clipEndSec(clip);
-  const overlapStartSec = Math.max(clip.startSec, windowStartSec);
-  const overlapEndSec = Math.min(originalEndSec, windowEndSec);
-  if (overlapEndSec <= overlapStartSec) return null;
-
-  const speed = clipSpeed(clip);
-  const skippedTimelineSec = Math.max(0, overlapStartSec - clip.startSec);
-  const timelineDurationSec = Math.max(0.001, overlapEndSec - overlapStartSec);
-  const nextInSec = clip.inSec + skippedTimelineSec * speed;
-  const nextOutSec = Math.min(clip.outSec, nextInSec + timelineDurationSec * speed);
-
-  return {
-    ...clip,
-    startSec: overlapStartSec - windowStartSec,
-    inSec: nextInSec,
-    outSec: nextOutSec,
-    transform: clip.transform ? {
-      ...clip.transform,
-      keyframes: shiftTransformKeyframes(clip.transform.keyframes, skippedTimelineSec),
-    } : clip.transform,
-    components: clip.components?.map((component) => {
-      if (component.type !== 'transform') return component;
-      return {
-        ...component,
-        data: {
-          ...component.data,
-          keyframes: {
-            scale: shiftTransformKeyframes(component.data.keyframes.scale, skippedTimelineSec),
-            offsetX: shiftTransformKeyframes(component.data.keyframes.offsetX, skippedTimelineSec),
-            offsetY: shiftTransformKeyframes(component.data.keyframes.offsetY, skippedTimelineSec),
-          },
-        },
-      };
-    }),
-  };
 }
 
 function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
@@ -495,171 +432,6 @@ function shouldRenderAudio(input: TimelineInput, hasAudioByAssetId: Map<string, 
   if (!hasAudioByAssetId.get(input.asset.id)) return false;
   if (input.track.kind === 'audio') return !input.track.muted;
   return input.track.kind === 'video' && !input.track.hidden;
-}
-
-function shouldRenderPreviewVisual(input: TimelineInput): boolean {
-  return input.track.kind === 'video' && !input.track.hidden && (input.asset.kind === 'video' || input.asset.kind === 'image');
-}
-
-function previewVisualDurationSec(project: Project, assetsById: Map<string, MediaAsset>): number {
-  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
-  return project.clips.reduce((maxDuration, clip) => {
-    const track = tracksById.get(clip.trackId);
-    const asset = assetsById.get(clip.assetId);
-    if (!track || !asset) return maxDuration;
-    if (track.kind !== 'video' || track.hidden) return maxDuration;
-    if (asset.kind !== 'video' && asset.kind !== 'image') return maxDuration;
-    return Math.max(maxDuration, clipEndSec(clip));
-  }, 0);
-}
-
-export async function renderProjectPreview(
-  project: Project,
-  assets: MediaAsset[],
-  callbacks: ExportCallbacks = {},
-  options: PreviewRenderOptions = {},
-): Promise<PreviewRenderResult> {
-  return runFfmpegJob(() => renderProjectPreviewInternal(project, assets, callbacks, options), options.signal);
-}
-
-async function renderProjectPreviewInternal(
-  project: Project,
-  assets: MediaAsset[],
-  callbacks: ExportCallbacks,
-  options: PreviewRenderOptions,
-): Promise<PreviewRenderResult> {
-  const { onStatus, onProgress, onLog } = callbacks;
-  const assetById = new Map(assets.map((asset) => [asset.id, asset]));
-  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
-  const visualDurationSec = previewVisualDurationSec(project, assetById);
-  if (visualDurationSec <= 0) throw new Error('No visible video clips to render.');
-
-  const windowStartSec = Math.max(0, Math.min(visualDurationSec, options.startSec ?? 0));
-  const requestedEndSec = options.endSec ?? visualDurationSec;
-  const windowEndSec = Math.max(windowStartSec, Math.min(visualDurationSec, requestedEndSec));
-  const totalDuration = windowEndSec - windowStartSec;
-  if (totalDuration <= 0) throw new Error('Preview render window is empty.');
-
-  const renderWidth = evenDimension(project.width * PREVIEW_RENDER_SCALE);
-  const renderHeight = evenDimension(project.height * PREVIEW_RENDER_SCALE);
-  const previewProject: Project = { ...project, clips: [] };
-  const recentLogs: string[] = [];
-  let sourceMounted = false;
-  const temporaryFiles = new Set<string>();
-  let resetEncoder = false;
-
-  throwIfAborted(options.signal);
-  onStatus?.('Loading preview renderer...');
-  const ffmpeg = await getFFmpeg();
-
-  const previewInputs: TimelineInput[] = [];
-  const sourceAssetsById = new Map<string, MediaAsset>();
-  for (const clip of project.clips) {
-    const track = tracksById.get(clip.trackId);
-    const asset = assetById.get(clip.assetId);
-    if (!track || !asset) continue;
-    const trimmedClip = trimClipToPreviewWindow(clip, windowStartSec, windowEndSec);
-    if (!trimmedClip) continue;
-    const timelineDurationSec = clipTimelineDurationSec(trimmedClip);
-    if (timelineDurationSec <= 0) continue;
-    const input: TimelineInput = {
-      inputIndex: previewInputs.length,
-      clip: trimmedClip,
-      track,
-      asset,
-      timelineDurationSec,
-    };
-    if (!shouldRenderPreviewVisual(input)) continue;
-    previewInputs.push(input);
-    previewProject.clips.push(trimmedClip);
-    sourceAssetsById.set(asset.id, asset);
-  }
-
-  const sourceAssets = [...sourceAssetsById.values()];
-  const logHandler = ({ message }: { message: string }) => {
-    recentLogs.push(message);
-    if (recentLogs.length > 40) recentLogs.shift();
-    onLog?.(message);
-  };
-  const progressHandler = (progressEvent: { progress: number }) => {
-    onProgress?.(Math.min(0.98, Math.max(0, progressEvent.progress) * 0.98));
-  };
-
-  try {
-    throwIfAborted(options.signal);
-    onStatus?.('Preparing preview media...');
-    if (sourceAssets.length > 0) {
-      await mountSourceAssets(ffmpeg, sourceAssets);
-      sourceMounted = true;
-    }
-
-    throwIfAborted(options.signal);
-    const supportsPerChannelColor = await detectFfmpegFilterSupport(ffmpeg, 'lutrgb');
-
-    const args: string[] = [];
-    for (const input of previewInputs) {
-      if (input.asset.kind === 'image') {
-        args.push('-loop', '1', '-framerate', String(project.fps), '-t', seconds(input.timelineDurationSec));
-      } else {
-        args.push('-ss', seconds(input.clip.inSec), '-t', seconds(clipSourceDurationSec(input.clip)));
-      }
-      args.push('-i', vfsNameForAsset(input.asset));
-    }
-
-    args.push('-f', 'lavfi', '-t', seconds(totalDuration),
-      '-i', `color=c=black:s=${renderWidth}x${renderHeight}:r=${project.fps}`);
-    const backgroundInputIndex = previewInputs.length;
-
-    const outputFile = 'preview-output.mp4';
-    temporaryFiles.add(outputFile);
-
-    args.push('-filter_complex', buildTimelineFilterGraph(
-      previewProject,
-      totalDuration,
-      previewInputs,
-      [],
-      backgroundInputIndex,
-      null,
-      supportsPerChannelColor,
-      { renderScale: PREVIEW_RENDER_SCALE, includeAudio: false },
-    ));
-    args.push('-map', '[vout]', '-an');
-    args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35', '-pix_fmt', 'yuv420p', '-r', String(project.fps));
-    args.push('-t', seconds(totalDuration), '-video_track_timescale', '90000');
-    args.push('-y', outputFile);
-
-    ffmpeg.on('progress', progressHandler);
-    ffmpeg.on('log', logHandler);
-    throwIfAborted(options.signal);
-    onStatus?.('Rendering preview...');
-    await execOrThrow(ffmpeg, args, 'preview render', recentLogs);
-    throwIfAborted(options.signal);
-
-    const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
-    onProgress?.(1);
-    onStatus?.('Preview ready');
-
-    return {
-      blob: new Blob([data.slice().buffer], { type: 'video/mp4' }),
-      width: renderWidth,
-      height: renderHeight,
-      startSec: windowStartSec,
-      endSec: windowEndSec,
-      durationSec: totalDuration,
-      scale: PREVIEW_RENDER_SCALE,
-    };
-  } catch (error) {
-    resetEncoder = isFfmpegMemoryError(error);
-    throw new Error(exportErrorMessage(error));
-  } finally {
-    ffmpeg.off('progress', progressHandler);
-    ffmpeg.off('log', logHandler);
-    for (const file of temporaryFiles) {
-      await ffmpeg.deleteFile(file).catch(() => undefined);
-    }
-    if (sourceMounted) await unmountDir(ffmpeg, SOURCE_MOUNT_DIR);
-    if (resetEncoder) resetFFmpeg();
-  }
 }
 
 export async function exportProject(
