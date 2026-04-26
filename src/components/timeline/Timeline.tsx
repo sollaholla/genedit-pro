@@ -723,6 +723,8 @@ export function Timeline() {
                   {(keyframeLanesByTrack.get(t.id) ?? []).map((lane, index) => (
                     <KeyframeSidebarLane
                       key={`h-keyframes-${lane.clip.id}`}
+                      clip={lane.clip}
+                      currentTimeSec={currentTime}
                       rows={lane.rows}
                       showTitle={index === 0}
                       onHideTrackKeyframes={() => hideTrackKeyframes(t.id)}

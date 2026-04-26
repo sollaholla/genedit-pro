@@ -123,6 +123,18 @@ function projectFrameTime(timeSec: number, fps: number): number {
   return projectFrameIndex(timeSec, fps) / fps;
 }
 
+function layerVisualTimelineTime(layer: ActiveLayer, timelineTimeSec: number, fps: number, playing: boolean): number {
+  if (!playing) return timelineTimeSec;
+  const localTimeSec = Math.max(0, timelineTimeSec - layer.clip.startSec);
+  return layer.clip.startSec + projectFrameTime(localTimeSec, fps);
+}
+
+function layerSourceTimeAt(layer: ActiveLayer, timelineTimeSec: number): number {
+  const durationSec = clipTimelineDurationSec(layer.clip);
+  const localTimeSec = Math.max(0, Math.min(durationSec, timelineTimeSec - layer.clip.startSec));
+  return layer.clip.inSec + localTimeSec * clipSpeed(layer.clip);
+}
+
 type VideoSyncWindow = {
   beforeSec: number;
   afterSec: number;
@@ -276,6 +288,7 @@ function renderPreviewCanvas(
     source: HTMLVideoElement | HTMLImageElement;
     asset: MediaAsset;
     clip: Clip;
+    timelineTimeSec: number;
   }> = [];
 
   for (const layer of [...visualLayers].reverse()) {
@@ -285,12 +298,14 @@ function renderPreviewCanvas(
       ? imagePool.get(layer.clip.id)
       : videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
     if (!source) return false;
+    const layerTimelineTimeSec = layerVisualTimelineTime(layer, timelineTimeSec, previewFps, playing);
+    const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
     if (source instanceof HTMLVideoElement) {
       const tolerance = videoSyncWindow(layer.clip, previewFps, playing);
-      if (!canPaintSyncedVideo(source, layer.clip, layer.sourceTimeSec, tolerance)) return false;
+      if (!canPaintSyncedVideo(source, layer.clip, layerSourceTimeSec, tolerance)) return false;
     }
     if (source instanceof HTMLImageElement && !source.complete) return false;
-    drawItems.push({ source, asset, clip: layer.clip });
+    drawItems.push({ source, asset, clip: layer.clip, timelineTimeSec: layerTimelineTimeSec });
   }
 
   if (drawItems.length === 0) return false;
@@ -302,8 +317,8 @@ function renderPreviewCanvas(
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    for (const { source, asset, clip } of drawItems) {
-      const tf = resolvedTransform(clip, timelineTimeSec);
+    for (const { source, asset, clip, timelineTimeSec: layerTimelineTimeSec } of drawItems) {
+      const tf = resolvedTransform(clip, layerTimelineTimeSec);
       const mediaTransform = activeEditTransform(asset);
       const sourceWidth = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
       const sourceHeight = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
@@ -313,7 +328,7 @@ function renderPreviewCanvas(
       const y = project.height / 2 + (tf.offsetY + mediaTransform.offsetY);
       const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
       ctx.save();
-      ctx.filter = canvasFilterForClip(clip, timelineTimeSec);
+      ctx.filter = canvasFilterForClip(clip, layerTimelineTimeSec);
       ctx.translate(x, y);
       ctx.scale(visualScale, visualScale);
       ctx.drawImage(source, -mediaWidth / 2, -mediaHeight / 2, mediaWidth, mediaHeight);
@@ -863,10 +878,8 @@ export function PreviewPlayer() {
       }
 
       const t = usePlaybackStore.getState().currentTimeSec;
-      const visualTime = state.playing ? projectFrameTime(t, previewFps) : t;
-      const visualFrameIndex = projectFrameIndex(t, previewFps);
       const audioFrame = resolveFrame(proj, t);
-      const visualFrame = resolveFrame(proj, visualTime);
+      const visualFrame = resolveFrame(proj, t);
       const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
       const preparedClips = preparedClipsForTime(proj, t);
       const neededClipIds = new Set<string>();
@@ -904,11 +917,13 @@ export function PreviewPlayer() {
         const videoEl = videoPool.current.get(layer.clip.id) as HTMLVideoElement | undefined;
         if (!videoEl) continue;
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
-        seekIfNeeded(videoEl, layer.sourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
+        const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
+        const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
+        seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
         const canPaint = canPaintSyncedVideo(
           videoEl,
           layer.clip,
-          layer.sourceTimeSec,
+          layerSourceTimeSec,
           tolerance,
         );
         const canKeepSameClipVisible = lastPaintedVisualRef.current?.clipId === layer.clip.id
@@ -917,7 +932,7 @@ export function PreviewPlayer() {
           && videoEl.videoHeight > 0
           && videoEl.currentTime >= Math.max(0, layer.clip.inSec - 0.015)
           && videoEl.currentTime <= layer.clip.outSec + 0.05
-          && !outsideSyncWindow(videoEl.currentTime, layer.sourceTimeSec, tolerance);
+          && !outsideSyncWindow(videoEl.currentTime, layerSourceTimeSec, tolerance);
         if (canPaint || canKeepSameClipVisible) {
           paintableVisualClipIds.add(layer.clip.id);
         }
@@ -927,7 +942,9 @@ export function PreviewPlayer() {
         visualLayers.length > 0 && !topPaintableLayer,
       );
       const previewClipKey = visualLayers.map((layer) => layer.clip.id).join('|');
-      const previewFrameKey = `${previewFps}:${visualFrameIndex}:${previewClipKey}`;
+      const previewFrameKey = `${previewFps}:${visualLayers.map((layer) => (
+        `${layer.clip.id}:${projectFrameIndex(Math.max(0, t - layer.clip.startSec), previewFps)}`
+      )).join('|')}`;
       if (visualLayers.length > 0 && (state.playing || topPaintableLayer)) {
         if (previewFrameKey !== lastRenderedPreviewFrameRef.current) {
           const rendered = renderPreviewCanvas(
@@ -935,9 +952,9 @@ export function PreviewPlayer() {
             visualLayers,
             assetsById,
             proj,
-            visualTime,
+            t,
             previewFps,
-            mediaPlaying,
+            state.playing,
             videoPool.current,
             imagePool.current,
           );
@@ -967,12 +984,13 @@ export function PreviewPlayer() {
         const activeLayer = activeVisualLayersByClipId.get(clipId);
         const activeAsset = activeVisualAssetsByClipId.get(clipId);
         if (activeLayer && activeAsset?.kind === 'video') {
+          const layerTimelineTimeSec = layerVisualTimelineTime(activeLayer, t, previewFps, state.playing);
           videoEl.style.display = '';
           videoEl.style.visibility = paintableVisualClipIds.has(clipId)
             ? 'visible'
             : 'hidden';
           videoEl.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, visualTime, videoHostRef.current);
+          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, layerTimelineTimeSec, videoHostRef.current);
         } else {
           hideVideoElement(videoEl);
         }
@@ -981,10 +999,11 @@ export function PreviewPlayer() {
         const activeLayer = activeVisualLayersByClipId.get(clipId);
         const activeAsset = activeVisualAssetsByClipId.get(clipId);
         if (activeLayer && activeAsset?.kind === 'image') {
+          const layerTimelineTimeSec = layerVisualTimelineTime(activeLayer, t, previewFps, state.playing);
           img.style.display = '';
           img.style.visibility = 'visible';
           img.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, visualTime, videoHostRef.current);
+          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, layerTimelineTimeSec, videoHostRef.current);
         } else {
           img.style.display = 'none';
           img.style.visibility = 'hidden';
@@ -1249,19 +1268,25 @@ export function PreviewPlayer() {
 
   // Playback keyboard shortcuts.
   useEffect(() => {
+    const stepFrame = (direction: -1 | 1) => {
+      const fps = Math.max(1, project.fps);
+      const latestTime = usePlaybackStore.getState().currentTimeSec;
+      const currentFrame = Math.round(latestTime * fps);
+      setCurrentTime(Math.max(0, Math.min(duration, (currentFrame + direction) / fps)));
+    };
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (e.code === 'Space') { e.preventDefault(); usePlaybackStore.getState().toggle(); }
       else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0); }
       else if (e.key === 'End') { e.preventDefault(); setCurrentTime(duration); }
-      else if (e.key === ',' || e.key === '<') { e.preventDefault(); setCurrentTime(Math.max(0, currentTime - 1 / project.fps)); }
-      else if (e.key === '.' || e.key === '>') { e.preventDefault(); setCurrentTime(Math.min(duration, currentTime + 1 / project.fps)); }
+      else if (e.key === ',' || e.key === '<') { e.preventDefault(); stepFrame(-1); }
+      else if (e.key === '.' || e.key === '>') { e.preventDefault(); stepFrame(1); }
       else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFullscreen(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [currentTime, duration, project.fps, setCurrentTime]);
+  }, [duration, project.fps, setCurrentTime]);
 
   return (
     <div

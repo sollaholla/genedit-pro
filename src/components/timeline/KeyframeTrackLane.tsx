@@ -245,16 +245,21 @@ export function KeyframeTrackLane({
 }
 
 export function KeyframeSidebarLane({
+  clip,
+  currentTimeSec,
   rows,
   showTitle = true,
   onHideTrackKeyframes,
 }: {
+  clip: Clip;
+  currentTimeSec: number;
   rows: KeyframePropertyRow[];
   showTitle?: boolean;
   onHideTrackKeyframes?: () => void;
 }) {
   if (rows.length === 0) return null;
   const groupedRows = groupRows(rows);
+  const localTimeSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), currentTimeSec - clip.startSec));
   return (
     <div
       className="border-b border-surface-800 bg-surface-950/80 px-2"
@@ -291,10 +296,13 @@ export function KeyframeSidebarLane({
           {group.rows.map((row) => (
             <div
               key={row.label}
-              className="flex items-center border-x border-t border-surface-800/80 bg-surface-900/45 px-2 pl-4 text-[11px] text-slate-400 last:border-b"
+              className="flex items-center justify-between gap-2 border-x border-t border-surface-800/80 bg-surface-900/45 px-2 pl-4 text-[11px] text-slate-400 last:border-b"
               style={{ height: KEYFRAME_PROPERTY_ROW_HEIGHT_PX }}
             >
-              {row.label.split('.').at(-1)}
+              <span className="min-w-0 truncate">{row.label.split('.').at(-1)}</span>
+              <span className="shrink-0 font-mono tabular-nums text-slate-300">
+                {formatSidebarKeyframeValue(evalSidebarKeyframeValue(row.points, localTimeSec), row.property)}
+              </span>
             </div>
           ))}
         </div>
@@ -355,4 +363,23 @@ function findSelectedFrame(rows: KeyframePropertyRow[], selected: KeyframeSelect
   ));
   const point = row?.points.find((candidate) => candidate.id === selected.keyframeId);
   return point ? Math.round(point.timeSec * Math.max(1, fps)) : null;
+}
+
+function evalSidebarKeyframeValue(points: KeyframePropertyRow['points'], timeSec: number): number {
+  if (points.length === 0) return 0;
+  const sorted = [...points].sort((first, second) => first.timeSec - second.timeSec);
+  if (timeSec <= sorted[0]!.timeSec) return sorted[0]!.value;
+  const last = sorted[sorted.length - 1]!;
+  if (timeSec >= last.timeSec) return last.value;
+  const nextIndex = sorted.findIndex((point) => point.timeSec >= timeSec);
+  const before = sorted[Math.max(0, nextIndex - 1)]!;
+  const after = sorted[nextIndex]!;
+  const span = Math.max(1e-6, after.timeSec - before.timeSec);
+  const alpha = (timeSec - before.timeSec) / span;
+  return before.value + (after.value - before.value) * alpha;
+}
+
+function formatSidebarKeyframeValue(value: number, property: KeyframePropertyRow['property']): string {
+  const decimals = property === 'scale' ? 3 : 1;
+  return Number(value.toFixed(decimals)).toString();
 }
