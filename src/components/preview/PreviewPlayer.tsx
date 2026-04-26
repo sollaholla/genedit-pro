@@ -973,9 +973,10 @@ export function PreviewPlayer() {
       }
       const hasCurrentFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewFrameRef.current === previewFrameKey;
       const hasSameClipFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewClipKeyRef.current === previewClipKey;
+      const canReuseSameClipFreezeFrame = state.playing && hasSameClipFreezeFrame;
       const showFreezeFrame = visualLayers.length > 0
         && !topPaintableLayer
-        && (hasCurrentFreezeFrame || hasSameClipFreezeFrame);
+        && (hasCurrentFreezeFrame || canReuseSameClipFreezeFrame);
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
       }
