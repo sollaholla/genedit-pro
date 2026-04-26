@@ -260,37 +260,6 @@ function previewPixelScale(stage: HTMLElement | null, project: Pick<Project, 'wi
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-function applyVisualLayout(
-  el: HTMLVideoElement | HTMLImageElement,
-  asset: MediaAsset | undefined,
-  clip: Clip,
-  project: Project,
-  timelineTimeSec: number,
-  stage: HTMLElement | null,
-) {
-  const stageRect = stage?.getBoundingClientRect();
-  if (!stageRect || stageRect.width <= 0 || stageRect.height <= 0) return;
-
-  const tf = resolvedTransform(clip, timelineTimeSec);
-  const mediaTransform = asset ? activeEditTransform(asset) : { scale: 1, offsetX: 0, offsetY: 0 };
-  const mediaWidth = Math.max(1, asset?.width ?? ('videoWidth' in el ? el.videoWidth : el.naturalWidth) ?? project.width);
-  const mediaHeight = Math.max(1, asset?.height ?? ('videoHeight' in el ? el.videoHeight : el.naturalHeight) ?? project.height);
-  const scale = previewPixelScale(stage, project);
-  const x = project.width / 2 + (tf.offsetX + mediaTransform.offsetX);
-  const y = project.height / 2 + (tf.offsetY + mediaTransform.offsetY);
-  const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
-
-  el.style.left = `${x * scale}px`;
-  el.style.top = `${y * scale}px`;
-  el.style.width = `${mediaWidth * scale}px`;
-  el.style.height = `${mediaHeight * scale}px`;
-  el.style.transform = `translate(-50%, -50%) scale(${visualScale})`;
-  el.style.transformOrigin = 'center center';
-  el.style.filter = colorCorrectionCssFilter(clip, timelineTimeSec);
-  el.style.opacity = String(clipOpacityAtTimelineTime(clip, timelineTimeSec));
-  el.style.cursor = tf ? 'move' : 'default';
-}
-
 function canvasFilterForClip(clip: Clip, timelineTimeSec: number): string {
   return colorCorrectionCssFilter(clip, timelineTimeSec)
     .replace(/url\([^)]*\)\s*/g, '')
@@ -408,7 +377,6 @@ export function PreviewPlayer() {
   const pendingClipLoadsRef = useRef<Set<string>>(new Set());
   const clipMediaTouchedAtRef = useRef<Map<string, number>>(new Map());
   const requestedSeekTargetsRef = useRef<WeakMap<HTMLMediaElement, number>>(new WeakMap());
-  const playbackVideoBlockedRef = useRef(false);
   const assetsRef = useRef(assets);
   const lastTickRef = useRef<number | null>(null);
   const lastTimelineTimeRef = useRef<number | null>(null);
@@ -416,10 +384,6 @@ export function PreviewPlayer() {
   const previewTopologySignatureRef = useRef('');
   const lastPlayingStateRef = useRef(false);
   const prevHasVideoRef = useRef(false);
-  const lastPaintedVisualRef = useRef<{ clipId: string; ts: number } | null>(null);
-  const hasFreezeFrameRef = useRef(false);
-  const lastRenderedPreviewFrameRef = useRef<string | null>(null);
-  const lastRenderedPreviewClipKeyRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -470,11 +434,6 @@ export function PreviewPlayer() {
 
   const resetTransientPlaybackState = useCallback(() => {
     requestedSeekTargetsRef.current = new WeakMap();
-    playbackVideoBlockedRef.current = false;
-    lastPaintedVisualRef.current = null;
-    hasFreezeFrameRef.current = false;
-    lastRenderedPreviewFrameRef.current = null;
-    lastRenderedPreviewClipKeyRef.current = null;
     prerolledRef.current.clear();
     hotPrimedSeekRef.current.clear();
     fadingOut.current.clear();
@@ -791,8 +750,8 @@ export function PreviewPlayer() {
     const selectedId = selectedClipIds[0]!;
     const frame = resolveFrame(project, currentTime);
     if (frame.video?.clip.id !== selectedId || getTransformComponents(frame.video.clip).length === 0) return;
-    const el = (videoPool.current.get(selectedId) as HTMLVideoElement | undefined) ?? imagePool.current.get(selectedId);
-    if (!el) return;
+    const stage = previewStageRef.current;
+    if (!stage) return;
 
     const onDown = (event: Event) => {
       const e = event as MouseEvent;
@@ -808,7 +767,7 @@ export function PreviewPlayer() {
       const resolved = resolveTransformComponentAtTime(clip, active, currentTime);
       const baseX = resolved.offsetX;
       const baseY = resolved.offsetY;
-      const pixelScale = previewPixelScale(videoHostRef.current, useProjectStore.getState().project);
+      const pixelScale = previewPixelScale(previewStageRef.current, useProjectStore.getState().project);
       beginTx();
 
       const onMove = (ev: MouseEvent) => {
@@ -836,8 +795,12 @@ export function PreviewPlayer() {
       window.addEventListener('mouseup', onUp);
     };
 
-    el.addEventListener('mousedown', onDown);
-    return () => el.removeEventListener('mousedown', onDown);
+    stage.addEventListener('mousedown', onDown);
+    stage.style.cursor = 'move';
+    return () => {
+      stage.removeEventListener('mousedown', onDown);
+      stage.style.cursor = '';
+    };
   }, [project, currentTime, selectedClipIds, updateSilent, beginTx, activeTransformComponentId]);
 
   // Reconcile the lazy media pools. Elements are created on demand for the
@@ -918,21 +881,16 @@ export function PreviewPlayer() {
       }
       lastPlayingStateRef.current = state.playing;
 
-      const mediaPlaybackBlocked = state.playing && playbackVideoBlockedRef.current;
-      const mediaPlaying = state.playing && !mediaPlaybackBlocked;
+      const mediaPlaying = state.playing;
 
       if (state.playing) {
         resumeAudioContext();
         const dt = (ts - (lastTickRef.current ?? ts)) / 1000;
-        if (!mediaPlaybackBlocked) {
-          const clockTime = playbackClockTimeRef.current ?? state.currentTimeSec;
-          const nextContinuous = Math.min(total, clockTime + dt);
-          playbackClockTimeRef.current = nextContinuous;
-          state.setCurrentTime(nextContinuous, { snapMode: 'floor' });
-          if (total > 0 && nextContinuous >= total) pause();
-        } else {
-          playbackClockTimeRef.current = state.currentTimeSec;
-        }
+        const clockTime = playbackClockTimeRef.current ?? state.currentTimeSec;
+        const nextContinuous = Math.min(total, clockTime + dt);
+        playbackClockTimeRef.current = nextContinuous;
+        state.setCurrentTime(nextContinuous, { snapMode: 'floor' });
+        if (total > 0 && nextContinuous >= total) pause();
       } else {
         playbackClockTimeRef.current = state.currentTimeSec;
       }
@@ -975,15 +933,8 @@ export function PreviewPlayer() {
         const asset = assetsById.get(layer.clip.assetId);
         if (asset?.kind === 'video' || asset?.kind === 'image') activeVisualAssetsByClipId.set(layer.clip.id, asset);
       }
-      const visualZIndexByClipId = new Map<string, number>();
-      visualLayers.forEach((layer, index) => visualZIndexByClipId.set(layer.clip.id, visualLayers.length - index));
-      const paintableVisualClipIds = new Set<string>();
       for (const layer of visualLayers) {
         const activeAsset = activeVisualAssetsByClipId.get(layer.clip.id);
-        if (activeAsset?.kind === 'image') {
-          paintableVisualClipIds.add(layer.clip.id);
-          continue;
-        }
         if (activeAsset?.kind !== 'video') continue;
         const videoEl = videoPool.current.get(layer.clip.id) as HTMLVideoElement | undefined;
         if (!videoEl) continue;
@@ -991,103 +942,35 @@ export function PreviewPlayer() {
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
-        const canPaint = canPaintSyncedVideo(
-          videoEl,
-          layer.clip,
-          layerSourceTimeSec,
-          tolerance,
+      }
+      if (visualLayers.length > 0) {
+        renderPreviewCanvas(
+          freezeFrameCanvasRef.current,
+          visualLayers,
+          assetsById,
+          proj,
+          t,
+          previewFps,
+          state.playing,
+          videoPool.current,
+          imagePool.current,
         );
-        const canKeepSameClipVisible = lastPaintedVisualRef.current?.clipId === layer.clip.id
-          && videoEl.readyState >= 1
-          && videoEl.videoWidth > 0
-          && videoEl.videoHeight > 0
-          && videoEl.currentTime >= Math.max(0, layer.clip.inSec - 0.015)
-          && videoEl.currentTime <= layer.clip.outSec + 0.05
-          && !outsideSyncWindow(videoEl.currentTime, layerSourceTimeSec, tolerance);
-        if (canPaint || canKeepSameClipVisible) {
-          paintableVisualClipIds.add(layer.clip.id);
-        }
       }
-      const topPaintableLayer = visualLayers.find((layer) => paintableVisualClipIds.has(layer.clip.id)) ?? null;
-      const canUseFreezeFallback = state.playing && hasFreezeFrameRef.current;
-      playbackVideoBlockedRef.current = Boolean(
-        visualLayers.length > 0 && !topPaintableLayer && !canUseFreezeFallback,
-      );
-      const previewClipKey = visualLayers.map((layer) => `${layer.track.id}:${layer.track.index}:${layer.clip.id}`).join('|');
-      const previewFrameKey = `${previewFps}:${visualLayers.map((layer) => (
-        `${layer.track.id}:${layer.track.index}:${layer.clip.id}:${projectFrameIndex(Math.max(0, t - layer.clip.startSec), previewFps)}`
-      )).join('|')}`;
-      if (visualLayers.length > 0 && (state.playing || topPaintableLayer)) {
-        if (previewFrameKey !== lastRenderedPreviewFrameRef.current) {
-          const rendered = renderPreviewCanvas(
-            freezeFrameCanvasRef.current,
-            visualLayers,
-            assetsById,
-            proj,
-            t,
-            previewFps,
-            state.playing,
-            videoPool.current,
-            imagePool.current,
-          );
-          if (rendered) {
-            hasFreezeFrameRef.current = true;
-            lastRenderedPreviewFrameRef.current = previewFrameKey;
-            lastRenderedPreviewClipKeyRef.current = previewClipKey;
-          }
-        }
-      } else {
-        if (visualLayers.length === 0) hasFreezeFrameRef.current = false;
-        lastRenderedPreviewFrameRef.current = null;
-        lastRenderedPreviewClipKeyRef.current = null;
-      }
-      if (topPaintableLayer) {
-        lastPaintedVisualRef.current = { clipId: topPaintableLayer.clip.id, ts };
-      }
-      const hasCurrentFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewFrameRef.current === previewFrameKey;
-      const hasSameClipFreezeFrame = hasFreezeFrameRef.current && lastRenderedPreviewClipKeyRef.current === previewClipKey;
-      const canReuseSameClipFreezeFrame = state.playing && hasSameClipFreezeFrame;
-      const canReuseTransitionFreezeFrame = state.playing && hasFreezeFrameRef.current;
-      const showFreezeFrame = visualLayers.length > 0
-        && !topPaintableLayer
-        && (hasCurrentFreezeFrame || canReuseSameClipFreezeFrame || canReuseTransitionFreezeFrame);
       if (freezeFrameCanvasRef.current) {
-        freezeFrameCanvasRef.current.style.display = showFreezeFrame ? 'block' : 'none';
+        freezeFrameCanvasRef.current.style.display = visualLayers.length > 0 ? 'block' : 'none';
       }
-      for (const [clipId, el] of videoPool.current) {
+      for (const el of videoPool.current.values()) {
         const videoEl = el as HTMLVideoElement;
-        const activeLayer = activeVisualLayersByClipId.get(clipId);
-        const activeAsset = activeVisualAssetsByClipId.get(clipId);
-        if (activeLayer && activeAsset?.kind === 'video') {
-          const layerTimelineTimeSec = layerVisualTimelineTime(activeLayer, t, previewFps, state.playing);
-          videoEl.style.display = '';
-          videoEl.style.visibility = paintableVisualClipIds.has(clipId)
-            ? 'visible'
-            : 'hidden';
-          videoEl.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(videoEl, activeAsset, activeLayer.clip, proj, layerTimelineTimeSec, videoHostRef.current);
-        } else {
-          hideVideoElement(videoEl);
-        }
+        hideVideoElement(videoEl);
       }
-      for (const [clipId, img] of imagePool.current) {
-        const activeLayer = activeVisualLayersByClipId.get(clipId);
-        const activeAsset = activeVisualAssetsByClipId.get(clipId);
-        if (activeLayer && activeAsset?.kind === 'image') {
-          const layerTimelineTimeSec = layerVisualTimelineTime(activeLayer, t, previewFps, state.playing);
-          img.style.display = '';
-          img.style.visibility = 'visible';
-          img.style.zIndex = String(visualZIndexByClipId.get(clipId) ?? 1);
-          applyVisualLayout(img, activeAsset, activeLayer.clip, proj, layerTimelineTimeSec, videoHostRef.current);
-        } else {
-          img.style.display = 'none';
-          img.style.visibility = 'hidden';
-          img.style.transform = '';
-          img.style.filter = '';
-          img.style.opacity = '';
-          img.style.cursor = 'default';
-          img.style.zIndex = '';
-        }
+      for (const img of imagePool.current.values()) {
+        img.style.display = 'none';
+        img.style.visibility = 'hidden';
+        img.style.transform = '';
+        img.style.filter = '';
+        img.style.opacity = '';
+        img.style.cursor = 'default';
+        img.style.zIndex = '';
       }
       const hasVideo = visualLayers.length > 0;
       if (hasVideo !== prevHasVideoRef.current) {
@@ -1398,7 +1281,7 @@ export function PreviewPlayer() {
             className="pointer-events-none absolute inset-0 z-20 hidden h-full w-full"
             aria-hidden
           />
-          <div ref={videoHostRef} className="absolute inset-0 z-10" />
+          <div ref={videoHostRef} className="pointer-events-none absolute inset-0 z-0 overflow-hidden opacity-0" aria-hidden />
           {!hasActiveVideo && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-500">
               {ready ? 'No clip at playhead' : 'Loading…'}
