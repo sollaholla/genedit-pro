@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Clapperboard, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Volume2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Clapperboard, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, UserRound, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
@@ -25,7 +25,7 @@ import {
   type TransformProperty,
 } from '@/lib/components/transform';
 
-const kindIcon = { video: Film, audio: Music, image: ImageIcon, recipe: BookOpen, sequence: Clapperboard };
+const kindIcon = { video: Film, audio: Music, image: ImageIcon, character: UserRound, recipe: BookOpen, sequence: Clapperboard };
 const SPEED_SLIDER_MIN = 0.25;
 const SPEED_SLIDER_MAX = 3;
 

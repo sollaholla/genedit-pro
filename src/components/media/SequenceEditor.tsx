@@ -9,6 +9,7 @@ import {
   type VideoModelDefinition,
 } from '@/lib/videoModels/capabilities';
 import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
+import { isReferenceImageAsset } from '@/lib/media/characterReferences';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
 import { ModelSelect } from './ModelSelect';
@@ -42,7 +43,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const sequence = storedAsset?.sequence ?? draftSequence;
   const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
   const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
-  const imageAssets = useMemo(() => assets.filter((candidate) => candidate.kind === 'image'), [assets]);
+  const imageAssets = useMemo(() => assets.filter(isReferenceImageAsset), [assets]);
+  const characterTokensByAssetId = useMemo(() => new Map(assets
+    .filter((candidate) => candidate.kind === 'character' && candidate.character?.characterId)
+    .map((candidate) => [candidate.id, candidate.character!.characterId])), [assets]);
   const sortedMarkers = useMemo(() => sortedSequenceMarkers(sequence), [sequence]);
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(sortedMarkers[0]?.id ?? null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -61,7 +65,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
   const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
-  const composedPrompt = useMemo(() => composeSequencePrompt(sequence), [sequence]);
+  const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
 
   useEffect(() => {
     if (isDraft) return;

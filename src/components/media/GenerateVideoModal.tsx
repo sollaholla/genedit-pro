@@ -21,7 +21,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
   PIAPI_API_KEY_STORAGE,
@@ -30,6 +30,7 @@ import {
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { composeSequencePrompt, sequenceReferenceAssetIds } from '@/lib/media/sequence';
+import { characterTokenForAsset, isReferenceImageAsset, resolveCharacterReferences } from '@/lib/media/characterReferences';
 import { isBillingErrorText, VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
@@ -82,7 +83,7 @@ type RefToken = {
   token: string;
   assetId: string;
   name: string;
-  kind: 'image' | 'video' | 'audio';
+  kind: 'image' | 'character' | 'video' | 'audio';
   thumbnail?: string;
 };
 
@@ -168,6 +169,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const [mentionPos, setMentionPos] = useState({ x: 0, y: 0 });
   const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const mentionMenuRef = useRef<HTMLDivElement | null>(null);
+  const hoverCardRef = useRef<HTMLDivElement | null>(null);
   const initialRecipeLoadKeyRef = useRef<string | null>(null);
   const initialSequenceLoadKeyRef = useRef<string | null>(null);
 
@@ -194,8 +197,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
   const audioLockedOn = isAudioLockedOnModel(selectedModel);
-  const referencesIgnoredByFrameMode = Boolean((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame) && references.length > 0);
-  const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && references.length > 0);
+  const promptCharacterReferences = useMemo(() => resolveCharacterReferences(activePrompt, assets), [activePrompt, assets]);
+  const explicitReferenceAssets = useMemo(() => references
+    .map((ref) => assets.find((asset) => asset.id === ref.assetId))
+    .filter((asset): asset is MediaAsset => asset !== undefined)
+    .filter(isReferenceImageAsset), [assets, references]);
+  const referenceImageAssets = useMemo(() => uniqueReferenceAssets([...explicitReferenceAssets, ...promptCharacterReferences]), [explicitReferenceAssets, promptCharacterReferences]);
+  const activeReferenceCount = referenceImageAssets.length;
+  const referencesIgnoredByFrameMode = Boolean((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame) && activeReferenceCount > 0);
+  const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && activeReferenceCount > 0);
   const generateDisabled = isGenerating ||
     !providerCredentialsAvailable ||
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
@@ -213,7 +223,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const sourceVideoSupported = selectedModel.capabilities.assetInputs.videoExtension;
   const frameInputsSupported = selectedModel.capabilities.assetInputs.startFrame;
   const constrainedByEightSecondGeneration = Boolean(
-    isPiApiVeoModel(selectedModel) && references.length > 0,
+    isPiApiVeoModel(selectedModel) && activeReferenceCount > 0,
   );
   const durationOptions = useMemo(
     () => (constrainedByEightSecondGeneration
@@ -225,10 +235,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     () => selectedModel.capabilities.resolutions,
     [selectedModel.capabilities.resolutions],
   );
-  const referenceImageAssets = useMemo(() => references
-    .map((ref) => assets.find((asset) => asset.id === ref.assetId))
-    .filter((asset): asset is MediaAsset => asset !== undefined)
-    .filter((asset) => asset.kind === 'image'), [assets, references]);
   const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
     !((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame)) &&
     !(isVeoModel(selectedModel) && sourceVideo);
@@ -263,6 +269,20 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       window.removeEventListener('storage', refreshConnections);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    const menu = mentionMenuRef.current;
+    if (!mentionOpen || !menu) return;
+    menu.style.left = `${mentionPos.x}px`;
+    menu.style.top = `${mentionPos.y}px`;
+  }, [mentionOpen, mentionPos]);
+
+  useLayoutEffect(() => {
+    const card = hoverCardRef.current;
+    if (!hoveredToken || !card) return;
+    card.style.left = `${hoverPos.x}px`;
+    card.style.top = `${hoverPos.y}px`;
+  }, [hoverPos, hoveredToken]);
 
   useEffect(() => {
     if (!open || selectableModels.length === 0) return;
@@ -299,10 +319,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const selectedRefs = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
-      .filter((a) => a.kind === 'image')
+      .filter(isReferenceImageAsset)
       .map((asset, index) => ({
         id: `${asset.id}-${Date.now()}-${index}`,
-        token: `${asset.kind}${index + 1}`,
+        token: referenceTokenForAsset(asset, index),
         assetId: asset.id,
         name: asset.name,
         kind: asset.kind as RefToken['kind'],
@@ -320,7 +340,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     if (initialSequenceLoadKeyRef.current === initialSequenceAsset.id) return;
     initialSequenceLoadKeyRef.current = initialSequenceAsset.id;
     const sequence = initialSequenceAsset.sequence;
-    const imageAssetIds = new Set(assets.filter((asset) => asset.kind === 'image').map((asset) => asset.id));
+    const imageAssetIds = new Set(assets.filter(isReferenceImageAsset).map((asset) => asset.id));
+    const characterTokensByAssetId = new Map(assets
+      .filter((asset) => asset.kind === 'character' && asset.character?.characterId)
+      .map((asset) => [asset.id, asset.character!.characterId]));
     const sequenceModel = models.find((candidate) => candidate.id === sequence.model) ?? DEFAULT_VIDEO_MODELS.find((candidate) => candidate.id === sequence.model);
     const maxImages = sequenceModel?.capabilities.assetInputs.imageReferencesMax ?? 12;
     const referenceAssetIds = sequenceReferenceAssetIds(sequence, { availableImageAssetIds: imageAssetIds, maxImages });
@@ -328,7 +351,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setRecipePickerOpen(false);
     setRecipeQuery('');
     setModel(sequence.model);
-    setPrompt(composeSequencePrompt(sequence, { availableImageAssetIds: imageAssetIds, maxImages }));
+    setPrompt(composeSequencePrompt(sequence, { availableImageAssetIds: imageAssetIds, characterTokensByAssetId, maxImages }));
     setPromptMode('freeform');
     setStructuredPrompt({});
     setDuration(`${sequence.durationSec}s`);
@@ -337,14 +360,14 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setEndFrame(null);
     setSourceVideo(null);
     setReferences(referenceAssetIds
-      .map((assetId) => assets.find((asset) => asset.id === assetId && asset.kind === 'image'))
+      .map((assetId) => assets.find((asset) => asset.id === assetId && isReferenceImageAsset(asset)))
       .filter((asset): asset is MediaAsset => Boolean(asset))
       .map((asset, index) => ({
         id: `${initialSequenceAsset.id}-${asset.id}-${index}`,
-        token: `image${index + 1}`,
+        token: referenceTokenForAsset(asset, index),
         assetId: asset.id,
         name: asset.name,
-        kind: 'image' as const,
+        kind: asset.kind as RefToken['kind'],
         thumbnail: asset.thumbnailDataUrl,
       })));
   }, [open, initialSequenceAsset, assets]);
@@ -400,6 +423,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     ...(endFrame ? [{ key: 'end-frame', label: '@end-frame', action: () => insertToken('@end-frame') }] : []),
     ...(sourceVideoToken ? [{ key: sourceVideoToken.id, label: '@video1', action: () => insertToken('@video1') }] : []),
     ...references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) })),
+    ...assets
+      .filter((asset) => asset.kind === 'character' && asset.character?.characterId && asset.generation?.status !== 'generating')
+      .map((asset) => {
+        const token = characterTokenForAsset(asset) ?? '';
+        return { key: asset.id, label: token, action: () => insertToken(token) };
+      }),
   ];
 
   const filteredMentionItems = mentionQuery.trim()
@@ -409,11 +438,22 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const referenceMap = useMemo(() => {
     const out = new Map<string, RefToken | 'start' | 'end'>();
     for (const ref of references) out.set(ref.token.toLowerCase(), ref);
+    for (const asset of assets) {
+      if (asset.kind !== 'character' || !asset.character?.characterId || asset.generation?.status === 'generating') continue;
+      out.set(asset.character.characterId.toLowerCase(), {
+        id: asset.id,
+        token: asset.character.characterId,
+        assetId: asset.id,
+        name: asset.name,
+        kind: 'character',
+        thumbnail: asset.thumbnailDataUrl,
+      });
+    }
     if (sourceVideoToken) out.set(sourceVideoToken.token.toLowerCase(), sourceVideoToken);
     if (startFrame) out.set('start-frame', 'start');
     if (endFrame) out.set('end-frame', 'end');
     return out;
-  }, [references, sourceVideoToken, startFrame, endFrame]);
+  }, [assets, references, sourceVideoToken, startFrame, endFrame]);
 
   const promptTokens = useMemo(
     () => Array.from(prompt.matchAll(/@([a-z0-9-]+)/gi)),
@@ -450,12 +490,14 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   }
 
   function addReferenceAsset(asset: MediaAsset) {
-    if (asset.kind !== 'image') return;
+    if (!isReferenceImageAsset(asset)) return;
     if (imageReferenceLimit <= 0) return;
     if (references.length >= imageReferenceLimit) return;
     const kind = asset.kind as RefToken['kind'];
     const countForKind = references.filter((r) => r.kind === kind).length;
-    const token = buildToken(kind, countForKind);
+    const token = asset.kind === 'character'
+      ? asset.character?.characterId ?? buildToken(kind, countForKind)
+      : buildToken(kind, countForKind);
     const entry: RefToken = {
       id: `${asset.id}-${Date.now()}`,
       token,
@@ -697,10 +739,10 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const selectedRefs = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
-      .filter((a) => a.kind === 'image')
+      .filter(isReferenceImageAsset)
       .map((refAsset, index) => ({
         id: `${refAsset.id}-${Date.now()}-${index}`,
-        token: `${refAsset.kind}${index + 1}`,
+        token: referenceTokenForAsset(refAsset, index),
         assetId: refAsset.id,
         name: refAsset.name,
         kind: refAsset.kind as RefToken['kind'],
@@ -970,8 +1012,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
       {mentionOpen && filteredMentionItems.length > 0 && (
         <div
+          ref={mentionMenuRef}
           className="fixed z-[60] w-52 rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
-          style={{ left: mentionPos.x, top: mentionPos.y }}
         >
           {filteredMentionItems.map((item) => (
             <button key={item.key} className="block w-full rounded px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700" onClick={item.action}>
@@ -983,8 +1025,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
       {hoveredToken && (
         <div
+          ref={hoverCardRef}
           className="fixed z-[72] rounded-md border border-surface-600 bg-surface-800 p-2 shadow-xl"
-          style={{ left: hoverPos.x, top: hoverPos.y }}
         >
           <div className="mb-1 text-[11px] text-slate-400">@{hoveredToken.token}</div>
           <div className="flex items-center gap-2">
@@ -1101,7 +1143,6 @@ function StructuredPromptEditor({
                 value={values[section.id] ?? ''}
                 onChange={(e) => onChange(section.id, e.target.value)}
                 placeholder={section.placeholder}
-                aria-invalid={isMissing}
                 className="h-[58px] w-full resize-none rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-400"
               />
               <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{section.description}</div>
@@ -1279,7 +1320,7 @@ function MediaPicker({
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<'recent' | 'name' | 'duration'>('recent');
   const visibleAssets = pickerMode === 'reference'
-    ? assets.filter((a) => a.kind === 'image')
+    ? assets.filter(isReferenceImageAsset)
     : pickerMode === 'source-video'
       ? assets.filter((a) => a.kind === 'video' && isSourceVideoReferenceValid(selectedModel, a))
       : assets.filter((a) => a.kind === 'image');
@@ -1302,11 +1343,11 @@ function MediaPicker({
       });
   }, [query, sortKey, visibleAssets]);
   const helperText = pickerMode === 'reference'
-    ? 'Choose image references supported by the selected model.'
+    ? 'Choose image or character references supported by the selected model.'
     : pickerMode === 'source-video'
       ? 'Choose one video reference.'
       : 'Only image assets are valid for frame slots.';
-  const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick image references' : 'Pick frame image';
+  const title = pickerMode === 'source-video' ? 'Pick video reference' : pickerMode === 'reference' ? 'Pick references' : 'Pick frame image';
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
       <div className="w-[min(960px,94vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 shadow-2xl">
@@ -1365,7 +1406,7 @@ function MediaPickerAssetTile({
   const isVideo = asset.kind === 'video';
 
   useEffect(() => {
-    if (asset.kind !== 'image') {
+    if (asset.kind !== 'image' && asset.kind !== 'character') {
       setImagePreviewUrl(null);
       return;
     }
@@ -1504,7 +1545,24 @@ function formatShortDate(timestamp: number) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function referenceTokenForAsset(asset: MediaAsset, index: number): string {
+  if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
+  return `image${index + 1}`;
+}
+
+function uniqueReferenceAssets(assets: MediaAsset[]): MediaAsset[] {
+  const seen = new Set<string>();
+  const out: MediaAsset[] = [];
+  for (const asset of assets) {
+    if (seen.has(asset.id)) continue;
+    seen.add(asset.id);
+    out.push(asset);
+  }
+  return out;
+}
+
 function mediaAssetBadgeLabel(asset: MediaAsset): string {
+  if (asset.kind === 'character') return 'character';
   const trimmed = asset.name.trim();
   const lastDot = trimmed.lastIndexOf('.');
   if (lastDot > 0 && lastDot < trimmed.length - 1) return trimmed.slice(lastDot + 1);

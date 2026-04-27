@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, SequenceAssetData } from '@/types';
+import type { CharacterAssetData, EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, MediaKind, SequenceAssetData } from '@/types';
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
+import { isImageLikeAsset } from '@/lib/media/characterReferences';
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
@@ -14,6 +15,28 @@ const PROJECT_MEDIA_MIGRATED_KEY = 'genedit-pro:projects:media-migrated';
 const PROJECT_MEDIA_PREFIX = 'genedit-pro:projects:media:';
 
 export type MediaFolder = { id: string; name: string };
+
+type GeneratedAssetOptions = {
+  kind?: Extract<MediaKind, 'video' | 'image' | 'character'>;
+  mimeType?: string;
+  durationSec?: number;
+  character?: CharacterAssetData;
+};
+
+type GeneratedEditTrailMetadata = {
+  prompt?: string;
+  model?: string;
+  estimatedCostUsd?: number;
+  actualCostUsd?: number;
+  provider?: string;
+  providerTaskId?: string;
+  providerTaskEndpoint?: string;
+  providerTaskStatus?: string;
+  providerTaskCreatedAt?: number;
+  providerArtifactUri?: string;
+  providerArtifactExpiresAt?: number;
+  character?: Partial<CharacterAssetData>;
+};
 
 function projectAssetsKey(projectId: string): string {
   return `${PROJECT_MEDIA_PREFIX}${projectId}:assets`;
@@ -107,7 +130,7 @@ type MediaState = {
   createFolder: (name: string) => void;
   renameFolder: (id: string, name: string) => void;
   removeFolder: (id: string, removeAssets: boolean) => Promise<void>;
-  addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number, recipe?: GenerateRecipe) => string;
+  addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number, recipe?: GenerateRecipe, options?: GeneratedAssetOptions) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
   updateGenerationTask: (
     id: string,
@@ -130,6 +153,7 @@ type MediaState = {
       providerArtifactExpiresAt?: number;
     },
   ) => Promise<void>;
+  addGeneratedEditTrailIteration: (assetId: string, file: File, metadata: GeneratedEditTrailMetadata) => Promise<void>;
   failGeneratedAsset: (
     id: string,
     failure?: {
@@ -138,6 +162,7 @@ type MediaState = {
       errorType?: GenerationErrorType;
     },
   ) => void;
+  updateCharacterAsset: (id: string, patch: Partial<CharacterAssetData>) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
   createSequenceAsset: (folderId?: string | null) => string;
   updateSequenceAsset: (id: string, sequence: SequenceAssetData) => void;
@@ -182,10 +207,11 @@ function activeBlobKey(asset: MediaAsset): string {
 }
 
 function originalIterationFor(asset: MediaAsset): EditTrailIteration {
+  const generated = asset.generation?.status === 'done' ? asset.generation : null;
   return {
     id: nanoid(10),
-    label: 'Original',
-    source: 'original',
+    label: generated ? 'Generated 1' : 'Original',
+    source: generated ? 'generated' : 'original',
     blobKey: asset.blobKey,
     thumbnailDataUrl: asset.thumbnailDataUrl,
     mimeType: asset.mimeType,
@@ -193,6 +219,21 @@ function originalIterationFor(asset: MediaAsset): EditTrailIteration {
     height: asset.height,
     durationSec: asset.durationSec,
     transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
+    generation: generated ? {
+      prompt: asset.character?.generatedPrompt ?? asset.character?.prompt ?? asset.recipe?.prompt,
+      model: asset.character?.model ?? asset.recipe?.model,
+      estimatedCostUsd: generated.estimatedCostUsd,
+      actualCostUsd: generated.actualCostUsd,
+      provider: generated.provider,
+      providerTaskId: generated.providerTaskId,
+      providerTaskEndpoint: generated.providerTaskEndpoint,
+      providerTaskStatus: generated.providerTaskStatus,
+      providerTaskCreatedAt: generated.providerTaskCreatedAt,
+      providerArtifactUri: generated.providerArtifactUri,
+      providerArtifactExpiresAt: generated.providerArtifactExpiresAt,
+      costAccountedUsd: generated.costAccountedUsd,
+      costAccountedAt: generated.costAccountedAt,
+    } : undefined,
     createdAt: asset.createdAt,
   };
 }
@@ -219,6 +260,29 @@ function applyIterationToAsset(asset: MediaAsset, iteration: EditTrailIteration)
     height: iteration.height,
     durationSec: iteration.durationSec,
   };
+}
+
+function canUseEditTrail(asset: MediaAsset): boolean {
+  return isImageLikeAsset(asset) || asset.kind === 'video';
+}
+
+function defaultGeneratedMimeType(kind: Extract<MediaKind, 'video' | 'image' | 'character'>): string {
+  if (kind === 'video') return 'video/mp4';
+  return 'image/png';
+}
+
+function defaultGeneratedDuration(kind: Extract<MediaKind, 'video' | 'image' | 'character'>): number {
+  return kind === 'video' ? 8 : 5;
+}
+
+function displayKindAfterProbe(existing: MediaAsset | undefined, probedKind: MediaKind): MediaKind {
+  if (existing?.kind === 'character') return 'character';
+  return probedKind;
+}
+
+function accountGenerationCost(projectId: string, amountUsd: number | undefined) {
+  if (!Number.isFinite(amountUsd) || (amountUsd ?? 0) <= 0) return;
+  useProjectStore.getState().recordGenerationCostForProject(projectId, amountUsd ?? 0);
 }
 
 async function buildManualEditIteration(
@@ -377,7 +441,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
   addEditTrailIteration: async (assetId, file, transform, thumbnailDataUrl) => {
     const asset = get().assets.find((item) => item.id === assetId);
-    if (!asset || !asset.blobKey || (asset.kind !== 'image' && asset.kind !== 'video')) return;
+    if (!asset || !asset.blobKey || !canUseEditTrail(asset)) return;
 
     const base = withEditTrail(asset);
     const label = `Edit ${base.editTrail.iterations.length}`;
@@ -399,7 +463,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
   saveEditTrailIteration: async (assetId, file, transform, thumbnailDataUrl) => {
     const asset = get().assets.find((item) => item.id === assetId);
-    if (!asset || !asset.blobKey || (asset.kind !== 'image' && asset.kind !== 'video')) return;
+    if (!asset || !asset.blobKey || !canUseEditTrail(asset)) return;
 
     const base = withEditTrail(asset);
     const active = base.editTrail.iterations.find((iteration) => iteration.id === base.editTrail.activeIterationId);
@@ -520,19 +584,21 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     set({ folders: nextFolders, assets: nextAssets });
   },
 
-  addGeneratedAsset: (name, folderId = null, estimatedCostUsd, recipe) => {
+  addGeneratedAsset: (name, folderId = null, estimatedCostUsd, recipe, options = {}) => {
     const projectId = get().activeProjectId;
     const id = nanoid(10);
+    const kind = options.kind ?? 'video';
     const asset: MediaAsset = {
       id,
       name,
-      kind: 'video',
-      durationSec: 8,
-      mimeType: 'video/mp4',
+      kind,
+      durationSec: options.durationSec ?? defaultGeneratedDuration(kind),
+      mimeType: options.mimeType ?? defaultGeneratedMimeType(kind),
       blobKey: '',
       folderId,
       generation: { status: 'generating' as const, progress: 0, estimatedCostUsd },
       recipe,
+      character: options.character,
       createdAt: Date.now(),
     };
     const next = [...get().assets, asset];
@@ -579,6 +645,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
     const sourceAssets = get().activeProjectId === projectId ? get().assets : loadAssets(projectId);
     const existing = sourceAssets.find((a) => a.id === id);
+    const displayKind = displayKindAfterProbe(existing, probed.kind);
     const accountedAt = existing?.generation?.costAccountedAt;
     const actualCostUsd = metadata.actualCostUsd ?? existing?.generation?.estimatedCostUsd;
     const shouldAccountCost = Boolean(
@@ -592,9 +659,9 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     updateAssetsForProject(get, set, projectId, (assets) => assets.map((a) => (a.id === id
       ? {
           ...a,
-          name: file.name,
-          kind: probed.kind,
-          durationSec: probed.durationSec || a.durationSec,
+          name: a.kind === 'character' ? a.name : file.name,
+          kind: displayKind,
+          durationSec: displayKind === 'character' ? 5 : probed.durationSec || a.durationSec,
           width: probed.width,
           height: probed.height,
           mimeType: file.type || a.mimeType,
@@ -619,8 +686,73 @@ export const useMediaStore = create<MediaState>((set, get) => ({
         }
       : a)));
     if (shouldAccountCost) {
-      useProjectStore.getState().recordGenerationCostForProject(projectId, actualCostUsd ?? 0);
+      accountGenerationCost(projectId, actualCostUsd);
     }
+  },
+
+  addGeneratedEditTrailIteration: async (assetId, file, metadata) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    const sourceAssets = get().activeProjectId === projectId ? get().assets : loadAssets(projectId);
+    const asset = sourceAssets.find((item) => item.id === assetId);
+    if (!asset || !asset.blobKey || !canUseEditTrail(asset)) return;
+
+    const probed = await probe(file);
+    const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
+    const blobKey = `blob_${nanoid(12)}`;
+    await putBlob(blobKey, file, file.name);
+
+    const base = withEditTrail(asset);
+    const actualCostUsd = metadata.actualCostUsd ?? metadata.estimatedCostUsd;
+    const now = Date.now();
+    const iteration: EditTrailIteration = {
+      id: nanoid(10),
+      label: `Generated ${base.editTrail.iterations.filter((candidate) => candidate.source === 'generated').length + 1}`,
+      source: 'generated',
+      blobKey,
+      thumbnailDataUrl: thumbnail || asset.thumbnailDataUrl,
+      mimeType: file.type || asset.mimeType,
+      width: probed.width ?? asset.width,
+      height: probed.height ?? asset.height,
+      durationSec: asset.kind === 'character' ? 5 : probed.durationSec || asset.durationSec,
+      transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
+      generation: {
+        prompt: metadata.prompt,
+        model: metadata.model,
+        estimatedCostUsd: metadata.estimatedCostUsd,
+        actualCostUsd,
+        provider: metadata.provider,
+        providerTaskId: metadata.providerTaskId,
+        providerTaskEndpoint: metadata.providerTaskEndpoint,
+        providerTaskStatus: metadata.providerTaskStatus,
+        providerTaskCreatedAt: metadata.providerTaskCreatedAt,
+        providerArtifactUri: metadata.providerArtifactUri,
+        providerArtifactExpiresAt: metadata.providerArtifactExpiresAt,
+        costAccountedUsd: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? actualCostUsd : undefined,
+        costAccountedAt: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? now : undefined,
+      },
+      createdAt: now,
+    };
+
+    revokeCachedUrl(assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((item) => {
+      if (item.id !== assetId) return item;
+      const trailed = withEditTrail(item);
+      const editTrail = {
+        activeIterationId: iteration.id,
+        iterations: [...trailed.editTrail.iterations, iteration],
+      };
+      const nextCharacter = item.character
+        ? {
+            ...item.character,
+            ...metadata.character,
+            prompt: metadata.character?.prompt ?? metadata.prompt ?? item.character.prompt,
+            model: metadata.character?.model ?? metadata.model ?? item.character.model,
+            updatedAt: now,
+          }
+        : undefined;
+      return applyIterationToAsset({ ...trailed, editTrail, character: nextCharacter }, iteration);
+    }));
+    accountGenerationCost(projectId, actualCostUsd);
   },
 
   failGeneratedAsset: (id, failure = {}) => {
@@ -640,6 +772,21 @@ export const useMediaStore = create<MediaState>((set, get) => ({
           },
         }
       : a)));
+  },
+
+  updateCharacterAsset: (id, patch) => {
+    const next = get().assets.map((asset) => (asset.id === id && asset.character
+      ? {
+          ...asset,
+          character: {
+            ...asset.character,
+            ...patch,
+            updatedAt: Date.now(),
+          },
+        }
+      : asset));
+    saveAssets(next, get().activeProjectId);
+    set({ assets: next });
   },
 
   saveRecipeAsset: (name, recipe, existingId = null) => {

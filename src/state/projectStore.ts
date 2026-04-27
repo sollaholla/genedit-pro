@@ -471,7 +471,7 @@ function legacyGenerationSpendFromStoredAssets(): number {
       };
     }>;
     const total = assets.reduce((sum, asset) => {
-      if ((asset.kind !== 'video' && asset.kind !== 'image') || asset.generation?.status !== 'done') return sum;
+      if ((asset.kind !== 'video' && asset.kind !== 'image' && asset.kind !== 'character') || asset.generation?.status !== 'done') return sum;
       const cost = asset.generation.actualCostUsd ?? asset.generation.estimatedCostUsd ?? 0;
       return Number.isFinite(cost) ? sum + cost : sum;
     }, 0);

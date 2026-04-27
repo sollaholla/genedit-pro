@@ -2,6 +2,7 @@ import type { SequenceAssetData, SequenceMarker } from '@/types';
 
 type SequenceReferenceOptions = {
   availableImageAssetIds?: Set<string>;
+  characterTokensByAssetId?: Map<string, string>;
   maxImages?: number;
 };
 
@@ -38,8 +39,9 @@ export function composeSequencePrompt(sequence: SequenceAssetData, options: Sequ
       imageIndex < maxImages &&
       (!options.availableImageAssetIds || options.availableImageAssetIds.has(marker.imageAssetId)),
     );
-    if (hasImage) imageIndex += 1;
-    const token = hasImage ? ` @image${imageIndex}` : '';
+    const characterToken = marker.imageAssetId ? options.characterTokensByAssetId?.get(marker.imageAssetId) : undefined;
+    if (hasImage && !characterToken) imageIndex += 1;
+    const token = hasImage ? ` @${characterToken ?? `image${imageIndex}`}` : '';
     const prompt = marker.prompt.trim() || 'Shot beat';
     lines.push(`[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${token}`);
   }

@@ -1,7 +1,8 @@
 import { type ComponentType, type DragEvent, type MouseEvent, type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Clapperboard, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { BookOpen, Clapperboard, Copy, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
+import { characterTokenForAsset } from '@/lib/media/characterReferences';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
 import { PIAPI_BILLING_URL } from '@/lib/videoGeneration/piapi';
 import { type MediaFolder, useMediaStore } from '@/state/mediaStore';
@@ -15,6 +16,8 @@ import { SequenceEditor } from './SequenceEditor';
 type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
+  onCreateCharacter: (folderId: string | null) => void;
+  onOpenCharacter: (asset: MediaAsset) => void;
   onOpenRecipe: (asset: MediaAsset) => void;
   onGenerateFromSequence: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
@@ -24,6 +27,7 @@ const kindIcon = {
   video: Film,
   audio: Music,
   image: ImageIcon,
+  character: UserRound,
   recipe: BookOpen,
   sequence: Clapperboard,
 };
@@ -33,7 +37,7 @@ const MEDIA_CONTEXT_MENU_WIDTH_PX = 210;
 const MEDIA_CONTEXT_MENU_MAX_HEIGHT_PX = 270;
 const MEDIA_CONTEXT_MENU_MARGIN_PX = 8;
 
-export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
+export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, onOpenCharacter, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
@@ -94,7 +98,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
     .filter((asset) => asset.thumbnailDataUrl)
     .slice(0, 4);
   const addAssetToTimeline = (asset: MediaAsset) => {
-    if (asset.kind === 'recipe' || asset.kind === 'sequence' || asset.generation?.status === 'generating') return;
+    if (asset.kind === 'recipe' || asset.kind === 'sequence' || asset.kind === 'character' || asset.generation?.status === 'generating') return;
     const targetKind = asset.kind === 'audio' ? 'audio' : 'video';
     const track = sortedTracks(project).find((candidate) => candidate.kind === targetKind);
     if (!track) return;
@@ -194,6 +198,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
         <div className="flex items-center gap-1.5">
           <ToolbarIconButton icon={Clapperboard} label="New sequence" onClick={createSequence} />
+          <ToolbarIconButton icon={UserRound} label="New character" onClick={() => onCreateCharacter(activeFolderId)} />
           <ToolbarIconButton icon={Sparkles} label="Generate video" onClick={onGenerateClick} />
           <ToolbarIconButton icon={Upload} label={importing ? 'Importing…' : 'Import media'} onClick={onImportClick} disabled={importing} />
         </div>
@@ -299,7 +304,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
                 asset={asset}
                 onDelete={() => removeAsset(asset.id)}
                 onRename={(name) => renameAsset(asset.id, name)}
-                onOpenEdit={() => setEditingAssetId(asset.id)}
+                onOpenEdit={() => {
+                  if (asset.kind === 'character') onOpenCharacter(asset);
+                  else setEditingAssetId(asset.id);
+                }}
                 onOpenRecipe={() => onOpenRecipe(asset)}
                 onOpenSequence={() => setSequenceEditor({ kind: 'edit', assetId: asset.id })}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
@@ -598,6 +606,20 @@ function FolderTile({
     }
   }, [renaming, folder.name]);
 
+  const interactiveProps = renaming
+    ? { tabIndex: -1 }
+    : {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick: onOpen,
+        onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onOpen();
+          }
+        },
+      };
+
   return (
     <li
       data-folder-id={folder.id}
@@ -619,19 +641,8 @@ function FolderTile({
       }}
     >
       <div
-        role="button"
-        tabIndex={renaming ? -1 : 0}
-        className="flex w-full cursor-pointer flex-col text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
-        onClick={() => {
-          if (!renaming) onOpen();
-        }}
-        onKeyDown={(event) => {
-          if (renaming) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onOpen();
-          }
-        }}
+        {...interactiveProps}
+        className={`flex w-full flex-col text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 ${renaming ? 'cursor-default' : 'cursor-pointer'}`}
         title={`Open ${folder.name}`}
       >
         <div className="relative aspect-video overflow-hidden bg-surface-900">
@@ -824,7 +835,7 @@ function LightboxMedia({ asset, url }: { asset: MediaAsset; url: string }) {
       </div>
     );
   }
-  if (asset.kind === 'image') {
+  if (asset.kind === 'image' || asset.kind === 'character') {
     return (
       <img
         src={url}
@@ -889,7 +900,7 @@ function MediaTile({
   const failureTooltipPositionRef = useRef({ x: 12, y: 12 });
   const skipRenameCommitRef = useRef(false);
   const pointerButtonRef = useRef(0);
-  const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && asset.generation?.status !== 'generating';
+  const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && asset.kind !== 'character' && asset.generation?.status !== 'generating';
   const canEdit = isEditableMedia(asset);
   const canReusePrompt = Boolean(asset.recipe) &&
     asset.kind !== 'recipe' &&
@@ -1105,7 +1116,7 @@ function MediaTile({
             <Sparkles size={11} />
           </span>
         )}
-        {asset.kind !== 'recipe' && asset.generation?.status !== 'generating' && (
+        {canInsert && (
           <button
             type="button"
             className="absolute left-1 top-1 flex h-6 w-6 items-center justify-center rounded bg-black/65 text-white opacity-0 transition-opacity hover:bg-brand-500 group-hover:opacity-100"
@@ -1219,7 +1230,20 @@ function MediaTile({
               }}
             >
               <SlidersHorizontal size={12} />
-              Edit
+              {asset.kind === 'character' ? 'Edit Character' : 'Edit'}
+            </button>
+          )}
+          {asset.kind === 'character' && (
+            <button
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+              onClick={() => {
+                const token = characterTokenForAsset(asset);
+                if (token) void navigator.clipboard?.writeText(token);
+                onMenuClose();
+              }}
+            >
+              <Copy size={12} />
+              Copy Reference
             </button>
           )}
           <button
@@ -1273,6 +1297,7 @@ function clampMediaMenuPosition(
 }
 
 function assetBadgeLabel(asset: MediaAsset): string {
+  if (asset.kind === 'character') return 'Character';
   if (asset.kind === 'recipe') return 'Recipe';
   if (asset.kind === 'sequence') return 'Sequence';
   const extension = splitFilename(asset.name).extension;
@@ -1325,17 +1350,24 @@ function ToolbarIconButton({
 }
 
 function MouseFollowTooltip({ x, y, label }: { x: number; y: number; label: string }) {
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const tooltip = tooltipRef.current;
+    if (!tooltip) return;
+    const offsetX = 14;
+    const offsetY = 18;
+    const maxWidth = 240;
+    const left = Math.min(x + offsetX, window.innerWidth - maxWidth - 8);
+    const top = Math.min(y + offsetY, window.innerHeight - 32);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  }, [x, y]);
   if (typeof document === 'undefined') return null;
-  const offsetX = 14;
-  const offsetY = 18;
-  const maxWidth = 240;
-  const left = Math.min(x + offsetX, window.innerWidth - maxWidth - 8);
-  const top = Math.min(y + offsetY, window.innerHeight - 32);
   return createPortal(
     <div
+      ref={tooltipRef}
       role="tooltip"
-      className="pointer-events-none fixed z-[200] whitespace-nowrap rounded-md border border-white/10 bg-surface-950/95 px-2 py-1 text-[11px] text-slate-100 shadow-lg"
-      style={{ left, top, maxWidth }}
+      className="pointer-events-none fixed z-[200] max-w-[240px] whitespace-nowrap rounded-md border border-white/10 bg-surface-950/95 px-2 py-1 text-[11px] text-slate-100 shadow-lg"
     >
       {label}
     </div>,

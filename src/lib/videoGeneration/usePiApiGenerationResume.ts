@@ -8,6 +8,8 @@ import { decryptSecret } from '@/lib/settings/crypto';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset } from '@/types';
 import { downloadGeneratedVideoFile } from './download';
+import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
+import { generatedPiApiImageFromTask, getPiApiImageTask, PIAPI_IMAGE_ARTIFACT_TTL_MS } from '@/lib/imageGeneration/piapi';
 import {
   generatedPiApiVideoFromTask,
   getPiApiVideoTask,
@@ -28,9 +30,10 @@ export function usePiApiGenerationResume() {
 
       const assets = useMediaStore.getState().assets;
       for (const asset of assets) {
-        if (!isResumablePiApiGeneration(asset) || inFlight.has(asset.id)) continue;
+        if ((!isResumablePiApiGeneration(asset) && !isResumablePiApiImageGeneration(asset)) || inFlight.has(asset.id)) continue;
         inFlight.add(asset.id);
-        void resumePiApiGeneration(asset, apiKey)
+        const resume = isResumablePiApiImageGeneration(asset) ? resumePiApiImageGeneration : resumePiApiGeneration;
+        void resume(asset, apiKey)
           .catch((error) => {
             if (error instanceof VideoGenerationProviderError) {
               useMediaStore.getState().failGeneratedAsset(asset.id, {
@@ -53,6 +56,38 @@ export function usePiApiGenerationResume() {
       window.clearInterval(intervalId);
     };
   }, []);
+}
+
+async function resumePiApiImageGeneration(asset: MediaAsset, apiKey: string): Promise<void> {
+  const generation = asset.generation;
+  const taskId = generation?.providerTaskId;
+  if (!taskId) return;
+
+  const task = await getPiApiImageTask(taskId, { apiKey });
+  const store = useMediaStore.getState();
+  store.updateGenerationTask(asset.id, {
+    provider: 'piapi-gemini',
+    providerTaskId: task.task_id ?? taskId,
+    providerTaskEndpoint: `/api/v1/task/${task.task_id ?? taskId}`,
+    providerTaskStatus: task.status,
+  });
+
+  const generatedImage = generatedPiApiImageFromTask(task);
+  if (generatedImage.url) {
+    const file = await downloadGeneratedImageFile(generatedImage.url, (progress) => {
+      useMediaStore.getState().updateGenerationProgress(asset.id, progress);
+    });
+    await useMediaStore.getState().finalizeGeneratedAssetWithBlob(asset.id, file, {
+      actualCostUsd: generation?.actualCostUsd ?? generation?.estimatedCostUsd,
+      provider: 'piapi-gemini',
+      providerArtifactUri: generatedImage.url,
+      providerArtifactExpiresAt: Date.now() + PIAPI_IMAGE_ARTIFACT_TTL_MS,
+    });
+    return;
+  }
+
+  const currentProgress = generation?.progress ?? 5;
+  store.updateGenerationProgress(asset.id, Math.min(95, Math.max(10, currentProgress + 2)));
 }
 
 function formatProviderError(error: VideoGenerationProviderError): string {
@@ -100,6 +135,12 @@ async function resumePiApiGeneration(asset: MediaAsset, apiKey: string): Promise
 function isResumablePiApiGeneration(asset: MediaAsset): boolean {
   return asset.generation?.status === 'generating' &&
     asset.generation.provider === 'piapi' &&
+    Boolean(asset.generation.providerTaskId);
+}
+
+function isResumablePiApiImageGeneration(asset: MediaAsset): boolean {
+  return asset.generation?.status === 'generating' &&
+    asset.generation.provider === 'piapi-gemini' &&
     Boolean(asset.generation.providerTaskId);
 }
 

@@ -1,6 +1,18 @@
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 
-export type MediaKind = 'video' | 'audio' | 'image' | 'recipe' | 'sequence';
+export type MediaKind = 'video' | 'audio' | 'image' | 'character' | 'recipe' | 'sequence';
+
+export type CharacterAssetData = {
+  characterId: string;
+  description: string;
+  prompt: string;
+  generatedPrompt?: string;
+  model: string;
+  aspectRatio: string;
+  resolution: string;
+  updatedAt: number;
+  sourceImageAssetIds?: string[];
+};
 
 export type SequenceMarker = {
   id: string;
@@ -33,6 +45,21 @@ export type EditTrailIteration = {
   height?: number;
   durationSec: number;
   transform: EditTrailTransform;
+  generation?: {
+    prompt?: string;
+    model?: string;
+    estimatedCostUsd?: number;
+    actualCostUsd?: number;
+    provider?: string;
+    providerTaskId?: string;
+    providerTaskEndpoint?: string;
+    providerTaskStatus?: string;
+    providerTaskCreatedAt?: number;
+    providerArtifactUri?: string;
+    providerArtifactExpiresAt?: number;
+    costAccountedUsd?: number;
+    costAccountedAt?: number;
+  };
   createdAt: number;
 };
 
@@ -88,6 +115,7 @@ export type MediaAsset = {
   };
   recipe?: GenerateRecipe;
   sequence?: SequenceAssetData;
+  character?: CharacterAssetData;
   createdAt: number;
 };
 

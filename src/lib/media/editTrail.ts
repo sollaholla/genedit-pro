@@ -1,4 +1,5 @@
 import type { EditTrailIteration, EditTrailTransform, MediaAsset } from '@/types';
+import { isImageLikeAsset } from '@/lib/media/characterReferences';
 
 export const DEFAULT_EDIT_TRAIL_TRANSFORM: EditTrailTransform = {
   scale: 1,
@@ -7,7 +8,7 @@ export const DEFAULT_EDIT_TRAIL_TRANSFORM: EditTrailTransform = {
 };
 
 export function isEditableMedia(asset: MediaAsset): boolean {
-  return (asset.kind === 'image' || asset.kind === 'video') && asset.generation?.status !== 'generating';
+  return (isImageLikeAsset(asset) || asset.kind === 'video') && asset.generation?.status !== 'generating';
 }
 
 export function activeEditIteration(asset: MediaAsset): EditTrailIteration | null {

@@ -1,4 +1,5 @@
 import type { MediaAsset } from '@/types';
+import { isImageLikeAsset } from '@/lib/media/characterReferences';
 import {
   PIAPI_KLING_3_OMNI_MODEL_ID,
   PIAPI_SEEDANCE_2_FAST_MODEL_ID,
@@ -205,7 +206,7 @@ async function buildPiApiKlingOmniRequest(
   validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos });
 
   const referenceImageEntries = await Promise.all(referenceImages.map(async (asset, index) => ({
-      token: `image${index + 1}`,
+      token: promptTokenForImageAsset(asset, index),
       url: await resolvePiApiReferenceUrl(asset, 'Kling image reference', options),
       purpose: `reference image ${index + 1}`,
     })));
@@ -338,7 +339,7 @@ function validatePiApiVeoMutation({
     throw new Error('PiAPI Veo reference-image mode supports 16:9 output.');
   }
   for (const asset of [...startFrames, ...endFrames, ...referenceImages]) {
-    if (asset.kind !== 'image') throw new Error(`${asset.name} must be an image input.`);
+    if (!isImageLikeAsset(asset)) throw new Error(`${asset.name} must be an image input.`);
   }
 }
 
@@ -362,7 +363,7 @@ function validatePiApiKlingMutation({
   const imageLimit = sourceVideos.length > 0 ? 4 : 7;
   if (referenceImages.length > imageLimit) throw new Error(`Kling Omni accepts up to ${imageLimit} image references in this mode.`);
   for (const asset of [...startFrames, ...endFrames, ...referenceImages]) {
-    if (asset.kind !== 'image') throw new Error(`${asset.name} must be an image input.`);
+    if (!isImageLikeAsset(asset)) throw new Error(`${asset.name} must be an image input.`);
   }
   for (const asset of sourceVideos) {
     if (asset.kind !== 'video') throw new Error(`${asset.name} must be a video input.`);
@@ -396,7 +397,7 @@ function validatePiApiSeedanceMutation({
   if (!hasFrameMode && referenceImages.length + sourceVideos.length > 12) throw new Error('Seedance accepts up to 12 total references.');
   const imagesToValidate = hasFrameMode ? [...startFrames, ...endFrames] : [...startFrames, ...endFrames, ...referenceImages];
   for (const asset of imagesToValidate) {
-    if (asset.kind !== 'image') throw new Error(`${asset.name} must be an image input.`);
+    if (!isImageLikeAsset(asset)) throw new Error(`${asset.name} must be an image input.`);
   }
   for (const asset of sourceVideos) {
     if (asset.kind !== 'video') throw new Error(`${asset.name} must be a video input.`);
@@ -409,6 +410,11 @@ function rewriteSeedanceFramePrompt(prompt: string, startFrameCount: number, end
   if (startFrameCount > 0) next = next.replace(/@start-frame\b/gi, '@image1');
   if (endFrameCount > 0) next = next.replace(/@end-frame\b/gi, `@image${startFrameCount + 1}`);
   return next;
+}
+
+function promptTokenForImageAsset(asset: MediaAsset, index: number): string {
+  if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
+  return `image${index + 1}`;
 }
 
 async function piApiFetch(path: string, credentials: PiApiCredentials, init: RequestInit): Promise<Response> {

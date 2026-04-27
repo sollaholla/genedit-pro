@@ -108,7 +108,7 @@ function PiApiConnectionCard({
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-slate-200">PiAPI</div>
-          <div className="mt-0.5 text-[11px] text-slate-500">One key enables Veo 3.1, Seedance 2.0, and Kling 3.0 Omni.</div>
+          <div className="mt-0.5 text-[11px] text-slate-500">One key enables video models plus GPT Image and Nano Banana character generation.</div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <a
