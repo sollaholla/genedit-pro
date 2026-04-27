@@ -19,7 +19,7 @@ import {
   sortModelsByPriority,
   type VideoModelDefinition,
 } from '@/lib/videoModels/capabilities';
-import { composeSequencePrompt, composeSequencePromptLines, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
+import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
 import { characterTokenForAsset, extractPromptReferenceTokens, isReferenceImageAsset } from '@/lib/media/characterReferences';
 import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
 import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
@@ -98,7 +98,6 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
   const previewImage = previewMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
-  const composedPromptLines = useMemo(() => composeSequencePromptLines(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
 
   useEffect(() => {
     if (isDraft) return;
@@ -633,7 +632,12 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
-                <SequencePromptOutput lines={composedPromptLines} selectedMarkerId={selectedMarkerId} />
+                <SequencePromptOutput
+                  sequence={sequence}
+                  markers={sortedMarkers}
+                  imageAssets={imageReferenceAssets}
+                  selectedMarkerId={selectedMarkerId}
+                />
               </section>
 
               <MarkerInspector
@@ -802,28 +806,85 @@ function SequenceCharacterStrip({
 }
 
 function SequencePromptOutput({
-  lines,
+  sequence,
+  markers,
+  imageAssets,
   selectedMarkerId,
 }: {
-  lines: Array<{ markerId: string | null; text: string }>;
+  sequence: SequenceAssetData;
+  markers: SequenceMarker[];
+  imageAssets: MediaAsset[];
   selectedMarkerId: string | null;
 }) {
-  if (lines.length === 0) {
-    return <div className="min-h-0 flex-1 overflow-auto rounded bg-surface-950 p-3 text-xs leading-relaxed text-slate-500"> </div>;
+  const imageAssetsById = useMemo(() => new Map(imageAssets.map((asset) => [asset.id, asset])), [imageAssets]);
+  const imageReferenceNumbers = useMemo(() => {
+    let nextIndex = 0;
+    const indexes = new Map<string, number>();
+    for (const marker of markers) {
+      if (!marker.imageAssetId) continue;
+      nextIndex += 1;
+      indexes.set(marker.id, nextIndex);
+    }
+    return indexes;
+  }, [markers]);
+  const overallPrompt = sequence.overallPrompt.trim();
+  if (!overallPrompt && markers.length === 0) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center rounded border border-dashed border-surface-700 bg-surface-950/80 p-6 text-center text-sm text-slate-500">
+        Add markers to build a shot sequence.
+      </div>
+    );
   }
+
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded bg-surface-950 p-2 font-mono text-xs leading-relaxed text-slate-300">
-      {lines.map((line, index) => {
-        const highlighted = Boolean(line.markerId && line.markerId === selectedMarkerId);
-        return (
-          <div
-            key={`${line.markerId ?? 'overall'}-${index}`}
-            className={`whitespace-pre-wrap rounded px-2 py-1 ${highlighted ? 'border border-brand-400/50 bg-brand-500/15 text-slate-100 shadow-[inset_3px_0_0_rgba(124,140,255,0.9)]' : ''}`}
-          >
-            {line.text || ' '}
+    <div className="min-h-0 flex-1 overflow-auto rounded border border-surface-800 bg-surface-950/90">
+      {overallPrompt && (
+        <div className="border-b border-surface-800 bg-surface-900/55 p-3">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Sequence Brief</span>
+            <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{markers.length} shots</span>
           </div>
-        );
-      })}
+          <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{overallPrompt}</p>
+        </div>
+      )}
+      <div className="relative p-3">
+        {markers.length > 1 && <div className="absolute bottom-5 left-[2.15rem] top-5 w-px bg-surface-700/80" />}
+        <div className="space-y-2">
+          {markers.map((marker, index) => {
+            const selected = marker.id === selectedMarkerId;
+            const image = marker.imageAssetId ? imageAssetsById.get(marker.imageAssetId) ?? null : null;
+            const imageReferenceNumber = imageReferenceNumbers.get(marker.id);
+            return (
+              <div
+                key={marker.id}
+                className={`relative grid grid-cols-[2.35rem_minmax(0,1fr)] gap-3 rounded-md border px-3 py-2.5 transition ${selected ? 'border-brand-400/70 bg-brand-500/15 shadow-[inset_3px_0_0_rgba(124,140,255,0.95)]' : 'border-surface-800 bg-surface-900/35'}`}
+              >
+                <div className="relative flex flex-col items-center gap-2 pt-0.5">
+                  <span className={`z-10 flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-semibold ${selected ? 'border-brand-300 bg-brand-500 text-white' : 'border-surface-600 bg-surface-950 text-slate-300'}`}>
+                    {String(index + 1).padStart(2, '0')}
+                  </span>
+                  <span className="rounded bg-surface-950 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">{formatTime(marker.timeSec)}</span>
+                </div>
+                <div className="min-w-0">
+                  <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Shot {index + 1}</span>
+                    {imageReferenceNumber && (
+                      <span className="inline-flex min-w-0 items-center gap-1 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200 ring-1 ring-amber-300/20">
+                        <ImageIcon size={10} />
+                        <span>@image{imageReferenceNumber}</span>
+                      </span>
+                    )}
+                    {image && <span className="min-w-0 truncate rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{image.name}</span>}
+                  </div>
+                  <div className="whitespace-pre-wrap text-sm leading-6 text-slate-200">
+                    {marker.prompt.trim() || <span className="text-slate-500">Untitled shot</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
