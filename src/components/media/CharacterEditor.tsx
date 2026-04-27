@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Copy, Image as ImageIcon, Save, Sparkles, UserRound, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Image as ImageIcon, Save, Sparkles, Upload, UserRound, X } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -14,7 +14,7 @@ import {
 } from '@/lib/imageModels/capabilities';
 import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
 import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
-import { characterTokenForAsset, slugifyCharacterId, uniqueCharacterId } from '@/lib/media/characterReferences';
+import { characterTokenForAsset, isReferenceImageAsset, slugifyCharacterId, uniqueCharacterId } from '@/lib/media/characterReferences';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
@@ -73,7 +73,9 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
   const updateCharacterAsset = useMediaStore((state) => state.updateCharacterAsset);
   const renameAsset = useMediaStore((state) => state.renameAsset);
   const objectUrlFor = useMediaStore((state) => state.objectUrlFor);
+  const importFiles = useMediaStore((state) => state.importFiles);
   const [form, setForm] = useState<CharacterForm>(() => defaultCharacterForm(assets));
+  const [referenceAssetIds, setReferenceAssetIds] = useState<string[]>([]);
   const [slugTouched, setSlugTouched] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -88,6 +90,9 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
   const promptForGeneration = form.description.trim();
   const providerPrompt = buildCharacterImagePrompt(promptForGeneration, form.style);
   const canGenerate = Boolean(promptForGeneration) && !working;
+  const referenceAssets = useMemo(() => referenceAssetIds
+    .map((id) => assets.find((candidate) => candidate.id === id))
+    .filter((candidate): candidate is MediaAsset => Boolean(candidate && candidate.kind === 'image' && isReferenceImageAsset(candidate))), [assets, referenceAssetIds]);
 
   useEffect(() => {
     if (!asset || asset.generation?.status === 'generating') return;
@@ -99,6 +104,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       if (loadedAssetIdRef.current !== null) {
         loadedAssetIdRef.current = null;
         setForm(defaultCharacterForm(assets));
+        setReferenceAssetIds([]);
         setSlugTouched(false);
       }
       return;
@@ -115,6 +121,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
       resolution: CHARACTER_IMAGE_RESOLUTION,
     });
+    setReferenceAssetIds(asset.character?.sourceImageAssetIds ?? []);
     setSlugTouched(false);
   }, [asset, assetId, assets]);
 
@@ -174,8 +181,33 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       model: selectedModel.id,
       aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
       resolution: CHARACTER_IMAGE_RESOLUTION,
+      sourceImageAssetIds: referenceAssets.map((reference) => reference.id),
     });
     setForm((current) => ({ ...current, name, characterId }));
+  };
+
+  const importReferenceImages = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = Array.from(input.files ?? []);
+      if (!files.length) return;
+      try {
+        const imported = await importFiles(files, asset?.folderId ?? folderId);
+        const imageIds = imported.filter((candidate) => candidate.kind === 'image' && candidate.blobKey).map((candidate) => candidate.id);
+        if (!imageIds.length) return;
+        setReferenceAssetIds((current) => uniqueIds([...current, ...imageIds]));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed importing reference images.');
+      }
+    };
+    input.click();
+  };
+
+  const removeReferenceImage = (assetIdToRemove: string) => {
+    setReferenceAssetIds((current) => current.filter((id) => id !== assetIdToRemove));
   };
 
   const copyToken = async () => {
@@ -214,6 +246,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       model: selectedModel.id,
       aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
       resolution: CHARACTER_IMAGE_RESOLUTION,
+      sourceImageAssetIds: referenceAssets.map((reference) => reference.id),
       updatedAt: Date.now(),
     };
     const generatedAssetId = addGeneratedAsset(name, folderId, estimatedCostUsd, undefined, {
@@ -226,12 +259,15 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
     onGenerationQueued?.(generatedAssetId);
     onClose();
     try {
+      const referenceInput = await buildReferenceInput(referenceAssets, selectedModel, objectUrlFor);
       const generated = await generatePiApiImage({
         model: selectedModel,
         prompt: providerPrompt,
         aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
         resolution: CHARACTER_IMAGE_RESOLUTION,
         outputFormat: selectedModel.capabilities.defaultOutputFormat,
+        referenceUrls: referenceInput.referenceUrls,
+        referenceFiles: referenceInput.referenceFiles,
         onProgress: (value) => updateGenerationProgress(generatedAssetId, value),
         onTaskAccepted: (task) => updateGenerationTask(generatedAssetId, {
           provider: 'piapi-gemini',
@@ -259,7 +295,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
 
   const regenerateCharacter = async (characterAsset: MediaAsset, apiKey: string) => {
     try {
-      const referenceInput = await buildReferenceInput(characterAsset, sourceUrl, selectedModel);
+      const referenceInput = await buildReferenceInput(uniqueAssetReferences([characterAsset, ...referenceAssets]), selectedModel, objectUrlFor);
       const generated = await generatePiApiImage({
         model: selectedModel,
         prompt: providerPrompt,
@@ -291,6 +327,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
           model: selectedModel.id,
           aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
           resolution: CHARACTER_IMAGE_RESOLUTION,
+          sourceImageAssetIds: referenceAssets.map((reference) => reference.id),
         },
       });
       if (form.name.trim() && form.name.trim() !== characterAsset.name) renameAsset(characterAsset.id, form.name.trim());
@@ -394,6 +431,55 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
                     placeholder="Describe the character's face, outfit, style, and visual identity."
                   />
                 </label>
+
+                <div className="rounded-md border border-surface-700 bg-surface-950/60 p-2.5">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reference Images</div>
+                    <button
+                      type="button"
+                      className="inline-flex h-7 items-center gap-1.5 rounded bg-surface-800 px-2 text-xs text-slate-200 hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => void importReferenceImages()}
+                      disabled={working}
+                    >
+                      <Upload size={12} />
+                      Import
+                    </button>
+                  </div>
+                  {referenceAssets.length > 0 ? (
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {referenceAssets.map((reference) => (
+                        <div key={reference.id} className="group relative overflow-hidden rounded border border-surface-700 bg-black/40">
+                          <div className="aspect-square">
+                            {reference.thumbnailDataUrl ? (
+                              <img src={reference.thumbnailDataUrl} alt={reference.name} className="h-full w-full object-cover" draggable={false} />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-slate-500">
+                                <ImageIcon size={18} />
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/70 text-slate-200 opacity-0 transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus-visible:opacity-100"
+                            onClick={() => removeReferenceImage(reference.id)}
+                            title="Remove reference"
+                            aria-label={`Remove ${reference.name}`}
+                            disabled={working}
+                          >
+                            <X size={11} />
+                          </button>
+                          <div className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[10px] font-medium normal-case tracking-normal text-white">
+                            {reference.name}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded border border-dashed border-surface-700 px-2 py-3 text-center text-xs font-normal normal-case tracking-normal text-slate-500">
+                      No reference images
+                    </div>
+                  )}
+                </div>
 
                 <div className="space-y-2 rounded-md border border-surface-700 bg-surface-950/60 p-2.5">
                   <ImageModelSelect value={selectedModel.id} options={IMAGE_MODELS} onChange={(modelId) => setFormForModel(modelId, setForm)} />
@@ -660,16 +746,56 @@ function LogoImage({ src, alt, size }: { src: string; alt: string; size: number 
   );
 }
 
-async function buildReferenceInput(asset: MediaAsset, sourceUrl: string | null, model: ImageModelDefinition): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
+async function buildReferenceInput(
+  assets: MediaAsset[],
+  model: ImageModelDefinition,
+  objectUrlFor: (assetId: string) => Promise<string | null>,
+): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
+  if (assets.length === 0) return {};
   if (isGptImageModel(model)) {
-    if (!sourceUrl) return {};
-    const blob = await fetch(sourceUrl).then((response) => response.blob());
-    const extension = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
-    return {
-      referenceFiles: [new File([blob], `${asset.character?.characterId ?? asset.id}.${extension}`, { type: blob.type || asset.mimeType || 'image/png' })],
-    };
+    const referenceFiles = await Promise.all(assets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
+    return { referenceFiles: referenceFiles.filter((file): file is File => Boolean(file)) };
   }
-  return { referenceUrls: [await hostLitterboxReference(asset, 'Character reference')] };
+  return { referenceUrls: await Promise.all(assets.map((asset) => hostLitterboxReference(asset, 'Character reference'))) };
+}
+
+async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {
+  const url = await objectUrlFor(asset.id);
+  if (!url) return null;
+  const blob = await fetch(url).then((response) => response.blob());
+  const extension = extensionForMime(blob.type || asset.mimeType);
+  return new File([blob], referenceFileName(asset, extension), { type: blob.type || asset.mimeType || 'image/png' });
+}
+
+function referenceFileName(asset: MediaAsset, extension: string): string {
+  const base = asset.character?.characterId ?? asset.name.replace(/\.[a-z0-9]{2,8}$/i, '') ?? asset.id;
+  const safe = base
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${safe || asset.id}.${extension}`;
+}
+
+function extensionForMime(mimeType: string): string {
+  if (/jpe?g/i.test(mimeType)) return 'jpg';
+  if (/webp/i.test(mimeType)) return 'webp';
+  return 'png';
+}
+
+function uniqueAssetReferences(assets: MediaAsset[]): MediaAsset[] {
+  const seen = new Set<string>();
+  const unique: MediaAsset[] = [];
+  for (const asset of assets) {
+    if (seen.has(asset.id)) continue;
+    seen.add(asset.id);
+    unique.push(asset);
+  }
+  return unique;
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids)];
 }
 
 function formatGenerationError(err: unknown): string {
