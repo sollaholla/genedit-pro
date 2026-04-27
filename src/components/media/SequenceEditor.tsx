@@ -1,7 +1,7 @@
 import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { nanoid } from 'nanoid';
-import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import { Check, Clapperboard, Copy, Image as ImageIcon, Loader2, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -21,7 +21,8 @@ import {
 } from '@/lib/videoModels/capabilities';
 import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
 import { characterTokenForAsset, extractPromptReferenceTokens, isReferenceImageAsset } from '@/lib/media/characterReferences';
-import { createPiApiImageGenerationTask, isGptImageModel } from '@/lib/imageGeneration/piapi';
+import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
+import { createPiApiImageGenerationTask, generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { PIAPI_API_KEY_STORAGE, PIAPI_KLING_API_KEY_STORAGE, PIAPI_VEO_API_KEY_STORAGE } from '@/lib/settings/connectionStorage';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
@@ -49,11 +50,12 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const addGeneratedAsset = useMediaStore((state) => state.addGeneratedAsset);
   const updateGenerationProgress = useMediaStore((state) => state.updateGenerationProgress);
   const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
+  const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
   const failGeneratedAsset = useMediaStore((state) => state.failGeneratedAsset);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
   const createSequenceAsset = useMediaStore((state) => state.createSequenceAsset);
   const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
-  const imageModels = useMemo(() => sortImageModelsByPriority(DEFAULT_IMAGE_MODELS.filter((model) => !isGptImageModel(model))), []);
+  const imageModels = useMemo(() => sortImageModelsByPriority(DEFAULT_IMAGE_MODELS), []);
   const fallbackModel = sequenceModels[0];
   const [committedAssetId, setCommittedAssetId] = useState<string | null>(null);
   const [draftSequence, setDraftSequence] = useState<SequenceAssetData>(() => createDefaultSequence(fallbackModel));
@@ -361,9 +363,48 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       { kind: 'image', mimeType: 'image/png', durationSec: 5 },
     );
 
+    const attachGeneratedAssetToMarker = () => {
+      const latestAssets = useMediaStore.getState().assets;
+      const latestSequence = latestAssets.find((asset) => asset.id === effectiveAssetId && asset.kind === 'sequence')?.sequence ?? sequence;
+      const nextSequence = {
+        ...latestSequence,
+        imageModel: selectedImageModel.id,
+        markers: latestSequence.markers.map((candidate) => (candidate.id === markerId ? { ...candidate, imageAssetId: generatedAssetId } : candidate)),
+      };
+      if (effectiveAssetId) updateSequenceAsset(effectiveAssetId, normalizeSequence(nextSequence, latestAssets));
+      else persist(nextSequence);
+    };
+
+    attachGeneratedAssetToMarker();
+
     try {
       const referenceAssetsForShot = shotImageReferenceAssets(sequence, marker, assets);
       const referenceInput = await buildImageReferenceInput(referenceAssetsForShot, selectedImageModel, objectUrlFor);
+      if (isGptImageModel(selectedImageModel)) {
+        updateGenerationTask(generatedAssetId, {
+          provider: 'piapi-gpt-image',
+          providerTaskStatus: 'requesting',
+          providerTaskCreatedAt: Date.now(),
+        });
+        const result = await generatePiApiImage({
+          model: selectedImageModel,
+          prompt,
+          aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+          resolution: CHARACTER_IMAGE_RESOLUTION,
+          outputFormat: selectedImageModel.capabilities.defaultOutputFormat,
+          ...referenceInput,
+          onProgress: (progress) => updateGenerationProgress(generatedAssetId, progress),
+        }, { apiKey });
+        const file = await downloadGeneratedImageFile(result.url, (progress) => updateGenerationProgress(generatedAssetId, progress));
+        await finalizeGeneratedAssetWithBlob(generatedAssetId, file, {
+          actualCostUsd: estimatedCostUsd,
+          provider: result.provider,
+          providerArtifactUri: result.url,
+          providerArtifactExpiresAt: result.providerArtifactExpiresAt,
+        });
+        return;
+      }
+
       const initialTask = await createPiApiImageGenerationTask({
         model: selectedImageModel,
         prompt,
@@ -387,15 +428,6 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         providerTaskStatus: initialTask.status,
         providerTaskCreatedAt: Date.now(),
       });
-      const latestAssets = useMediaStore.getState().assets;
-      const latestSequence = latestAssets.find((asset) => asset.id === effectiveAssetId && asset.kind === 'sequence')?.sequence ?? sequence;
-      const nextSequence = {
-        ...latestSequence,
-        imageModel: selectedImageModel.id,
-        markers: latestSequence.markers.map((candidate) => (candidate.id === markerId ? { ...candidate, imageAssetId: generatedAssetId } : candidate)),
-      };
-      if (effectiveAssetId) updateSequenceAsset(effectiveAssetId, normalizeSequence(nextSequence, latestAssets));
-      else persist(nextSequence);
     } catch (err) {
       const message = formatGenerationError(err);
       setImageGenerationError(message);
@@ -683,6 +715,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
             <div className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-md border border-surface-700 bg-black">
               {previewUrl && previewImage ? (
                 <img src={previewUrl} alt={previewImage.name} className="h-full w-full object-contain" draggable={false} />
+              ) : previewImage?.generation?.status === 'generating' ? (
+                <GeneratedShotLoading asset={previewImage} />
+              ) : previewImage?.generation?.status === 'error' ? (
+                <div className="flex flex-col items-center gap-2 px-4 text-center text-rose-300">
+                  <ImageIcon size={30} />
+                  <div className="text-xs font-medium">Image generation failed</div>
+                  <div className="line-clamp-2 text-[11px] text-rose-200/80">{previewImage.generation.errorMessage ?? 'Try generating this shot again.'}</div>
+                </div>
               ) : (
                 <div className="flex flex-col items-center gap-2 text-slate-500">
                   <ImageIcon size={30} />
@@ -905,6 +945,24 @@ function SequencePromptOutput({
   );
 }
 
+function GeneratedShotLoading({ asset }: { asset: MediaAsset }) {
+  const progress = Math.round(asset.generation?.progress ?? 10);
+  const status = asset.generation?.providerTaskStatus ? `PiAPI ${asset.generation.providerTaskStatus}` : 'Queued with PiAPI';
+  return (
+    <div className="flex w-full max-w-[260px] flex-col items-center gap-3 px-4 text-center text-slate-300">
+      <span className="flex h-12 w-12 items-center justify-center rounded-md bg-brand-500/10 text-brand-300 ring-1 ring-brand-400/25">
+        <Loader2 size={24} className="animate-spin" />
+      </span>
+      <div>
+        <div className="text-sm font-medium text-slate-100">Generating shot image</div>
+        <div className="mt-1 text-xs text-slate-500">{status} - {progress}%</div>
+      </div>
+      <progress value={progress} max={100} className="h-1.5 w-full overflow-hidden rounded bg-surface-800 accent-brand-400" />
+      <div className="text-[11px] leading-4 text-slate-500">This will keep polling when the project is open again.</div>
+    </div>
+  );
+}
+
 function MarkerInspector({
   marker,
   selectedImage,
@@ -948,6 +1006,16 @@ function MarkerInspector({
     );
   }
 
+  const selectedImageGenerating = selectedImage?.generation?.status === 'generating';
+  const selectedImageError = selectedImage?.generation?.status === 'error';
+  const selectedImageSubtitle = selectedImageGenerating
+    ? `Generating${formatGenerationProgress(selectedImage)} - you can leave and it will resume`
+    : selectedImageError
+      ? selectedImage.generation?.errorMessage ?? 'Generation failed'
+      : selectedImage
+        ? selectedImage.width && selectedImage.height ? `${selectedImage.width}x${selectedImage.height}` : selectedImage.mimeType
+        : 'Choose or generate a shot image';
+
   return (
     <section className="rounded-md border border-surface-700 bg-surface-900/70 p-3">
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -978,14 +1046,18 @@ function MarkerInspector({
           >
             {selectedImage?.thumbnailDataUrl ? (
               <img src={selectedImage.thumbnailDataUrl} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
+            ) : selectedImageGenerating ? (
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-brand-500/10 text-brand-300">
+                <Loader2 size={18} className="animate-spin" />
+              </span>
             ) : (
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-surface-800 text-slate-500">
+              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded ${selectedImageError ? 'bg-rose-500/10 text-rose-300' : 'bg-surface-800 text-slate-500'}`}>
                 <ImageIcon size={16} />
               </span>
             )}
             <span className="min-w-0 flex-1">
               <span className="block truncate">{selectedImage ? selectedImage.name : 'Choose or generate an image'}</span>
-              <span className="block truncate text-[11px] text-slate-500">Characters are referenced in the prompt with @</span>
+              <span className={`block truncate text-[11px] ${selectedImageGenerating ? 'text-brand-300' : selectedImageError ? 'text-rose-300' : 'text-slate-500'}`}>{selectedImageSubtitle}</span>
             </span>
           </button>
           {selectedImage && (
@@ -1042,6 +1114,11 @@ function MarkerInspector({
       </div>
     </section>
   );
+}
+
+function formatGenerationProgress(asset: MediaAsset): string {
+  const progress = asset.generation?.progress;
+  return Number.isFinite(progress) ? ` ${Math.round(progress ?? 0)}%` : '';
 }
 
 function ShotPromptEditor({

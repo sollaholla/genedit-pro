@@ -306,6 +306,12 @@ async function readGptImageResponse(response: Response, fallback: string): Promi
   }
   if (!response.ok || parsed?.error) {
     const message = parsed?.error?.message || text || `${fallback} (${response.status}).`;
+    if (response.status === 524) {
+      throw new VideoGenerationProviderError(
+        'InternalError',
+        `${fallback} (524): PiAPI's synchronous GPT Image endpoint timed out at the gateway before returning an image. The browser is still willing to wait, but this endpoint does not provide a resumable task id. Try again with fewer/lighter references, or use Nano Banana for background resumable generation.`,
+      );
+    }
     throw new VideoGenerationProviderError(classifyProviderErrorText(message), `${fallback} (${response.status}): ${message}`);
   }
   if (!parsed) throw new VideoGenerationProviderError('InternalError', `${fallback}: empty response.`);

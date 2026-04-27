@@ -1,0 +1,423 @@
+{
+  "version": 1,
+  "profile": {
+    "id": "1775351687009",
+    "name": "Nimnicht",
+    "createdAt": 1775351687009,
+    "deviceType": "robot",
+    "accelRate": 1.5,
+    "decelRate": 0.5,
+    "maxSpeed": 0.8,
+    "minWheelSpeed": 0.1,
+    "maxWheelSpeed": 0.775,
+    "maxDifferential": 0.5,
+    "resumeCreepDurationSec": 2,
+    "lockoutRecoveryClearDurationSec": 0.25,
+    "headingTurnInPlaceThresholdDeg": 12.5,
+    "auxPins": [
+      {
+        "pin": 16,
+        "label": "Sirens",
+        "activeMode": "activeHigh",
+        "defaultOn": false,
+        "enforceSync": true
+      },
+      {
+        "pin": 17,
+        "label": "Charge Port",
+        "activeMode": "activeLow",
+        "defaultOn": false,
+        "enforceSync": true
+      },
+      {
+        "pin": 4,
+        "label": "Light",
+        "activeMode": "activeHigh",
+        "defaultOn": false,
+        "enforceSync": true
+      }
+    ],
+    "behaviors": [
+      {
+        "id": "1772750184319",
+        "name": "Light",
+        "enabled": false,
+        "trigger": {
+          "type": "timeBetween",
+          "startHour": 0,
+          "startMinute": 0,
+          "endHour": 10,
+          "endMinute": 0,
+          "repeatDaily": true
+        },
+        "action": {
+          "type": "setGpio",
+          "pin": 4,
+          "on": true
+        },
+        "triggers": [
+          {
+            "type": "timeBetween",
+            "startHour": 0,
+            "startMinute": 0,
+            "endHour": 10,
+            "endMinute": 0,
+            "repeatDaily": true
+          },
+          {
+            "type": "gpioState",
+            "pin": 17,
+            "state": false
+          },
+          {
+            "type": "gpioState",
+            "pin": 17,
+            "state": false
+          }
+        ],
+        "actions": [
+          {
+            "type": "setGpio",
+            "pin": 4,
+            "on": true
+          }
+        ],
+        "cooldownMs": 5000
+      },
+      {
+        "id": "1773328816770",
+        "name": "Sirens On",
+        "enabled": true,
+        "trigger": {
+          "type": "detection",
+          "label": "person",
+          "comparison": "greaterThan",
+          "count": 0,
+          "minConfidence": 0.6,
+          "durationSeconds": 3
+        },
+        "action": {
+          "type": "setGpio",
+          "pin": 16,
+          "on": true
+        },
+        "triggers": [
+          {
+            "type": "detection",
+            "label": "person",
+            "comparison": "greaterThan",
+            "count": 0,
+            "minConfidence": 0.6,
+            "durationSeconds": 3
+          },
+          {
+            "type": "gpioState",
+            "pin": 17,
+            "state": false
+          },
+          {
+            "type": "gpioState",
+            "pin": 16,
+            "state": false
+          }
+        ],
+        "actions": [
+          {
+            "type": "setGpio",
+            "pin": 16,
+            "on": true
+          },
+          {
+            "type": "startRecording",
+            "fps": 10,
+            "res": 720,
+            "durationMs": 30000
+          },
+          {
+            "type": "setAutonomyMode",
+            "mode": "pointing",
+            "pointingLabel": "person",
+            "durationMs": 30000
+          }
+        ],
+        "cooldownMs": 5000
+      },
+      {
+        "id": "1773328851760",
+        "name": "Sirens Off",
+        "enabled": true,
+        "trigger": {
+          "type": "gpioState",
+          "pin": 16,
+          "state": true
+        },
+        "action": {
+          "type": "setGpio",
+          "pin": 16,
+          "on": false
+        },
+        "triggers": [
+          {
+            "type": "gpioState",
+            "pin": 16,
+            "state": true
+          },
+          {
+            "type": "detection",
+            "label": "person",
+            "comparison": "equalTo",
+            "count": 0,
+            "minConfidence": 0,
+            "durationSeconds": 2
+          }
+        ],
+        "actions": [
+          {
+            "type": "setGpio",
+            "pin": 16,
+            "on": false
+          }
+        ],
+        "cooldownMs": 5000
+      },
+      {
+        "id": "1773328911215",
+        "name": "Charge Port On",
+        "enabled": true,
+        "trigger": {
+          "type": "gpioState",
+          "pin": 17,
+          "state": true
+        },
+        "action": {
+          "type": "setGpio",
+          "pin": 16,
+          "on": false
+        },
+        "triggers": [
+          {
+            "type": "gpioState",
+            "pin": 17,
+            "state": true
+          }
+        ],
+        "actions": [
+          {
+            "type": "setGpio",
+            "pin": 16,
+            "on": false
+          },
+          {
+            "type": "setGpio",
+            "pin": 4,
+            "on": false
+          }
+        ],
+        "cooldownMs": 15000
+      },
+      {
+        "id": "1773329126839",
+        "name": "Siren Sound",
+        "enabled": true,
+        "trigger": {
+          "type": "gpioState",
+          "pin": 16,
+          "state": true
+        },
+        "action": {
+          "type": "playSound",
+          "soundAsset": "siren"
+        },
+        "triggers": [
+          {
+            "type": "gpioState",
+            "pin": 16,
+            "state": true
+          }
+        ],
+        "actions": [
+          {
+            "type": "playSound",
+            "soundAsset": "siren"
+          }
+        ],
+        "cooldownMs": 15000
+      },
+      {
+        "id": "1775351143192",
+        "name": "Battery Low",
+        "enabled": true,
+        "trigger": {
+          "type": "batteryLevel",
+          "minPercent": 0,
+          "maxPercent": 15
+        },
+        "action": {
+          "type": "navigateToWaypoint",
+          "waypointId": "1773962369522",
+          "waypointName": "Charger"
+        },
+        "triggers": [
+          {
+            "type": "batteryLevel",
+            "minPercent": 0,
+            "maxPercent": 15
+          }
+        ],
+        "actions": [
+          {
+            "type": "navigateToWaypoint",
+            "waypointId": "1773962369522",
+            "waypointName": "Charger"
+          }
+        ],
+        "cooldownMs": 60000
+      }
+    ],
+    "ntripConfig": {
+      "enabled": true,
+      "casterHost": "ntrip.myfloridagps.com",
+      "casterPort": 20000,
+      "mountpoint": "NAD_RTCM3_NEAR",
+      "sendGga": true,
+      "ggaIntervalSeconds": 10
+    },
+    "cameraEnabled": true,
+    "cameraDeviceId": "\\\\?\\usb#vid_1bcf&pid_284c&mi_00#8&1fc4579c&0&0000#{e5323777-f976-4f5b-9b55-b94699c46e44}\\global",
+    "reverseCameraHoldDurationSec": 5,
+    "visionOverlayDetectionsEnabled": true,
+    "visionOverlayGroundSegEnabled": true,
+    "visionOverlaySafeZoneEnabled": true,
+    "visionOverlayNavPathEnabled": false,
+    "visionOverlayAvoidanceEnabled": true,
+    "inferenceBackend": "gpu",
+    "modelQualityTier": "standard",
+    "depthSafeThreshold": 77.43251135707547,
+    "safeZoneBottomWidth": 0.9526940995762618,
+    "safeZoneTopWidth": 0.1838778829034589,
+    "safeZoneBottomMargin": 0.14983344728123013,
+    "safeZoneHeight": 0.4055469358209158,
+    "depthAutoStop": false,
+    "depthDangerDebounceMs": 1000,
+    "groundSegThreshold": 0.4550096496626109,
+    "groundSegLeftSteeringThreshold": 0.7160914927444183,
+    "groundSegRightSteeringThreshold": 0.7160914927444183,
+    "groundSegMarginalFactor": 0.5024364701280234,
+    "groundSegConfidence": 0.2044903717373107,
+    "groundSegAutoStop": true,
+    "groundSegDebounceMs": 350,
+    "enabledGroundClasses": [
+      3,
+      6,
+      9,
+      11,
+      13,
+      28,
+      29,
+      46,
+      52,
+      53,
+      54
+    ],
+    "groundSegTemporalSmoothing": 0.38388931450269803,
+    "yoloMinConfidence": 0.2,
+    "yoloObstacleEnabled": false,
+    "yoloObstacleAutoStop": false,
+    "yoloObstacleDebounceMs": 0,
+    "yoloObstacleStopThreshold": 0.46,
+    "yoloPersonStopConfidenceThreshold": 0.05,
+    "yoloPersonStopRunwayCoverageThreshold": 0.01,
+    "yoloPersonStopDebounceMs": 0,
+    "yoloObstacleDepthExponent": 2.4,
+    "yoloObstacleMinDepth": 0.15,
+    "yoloObstacleRunwayWidthMultiplier": 0.4,
+    "yoloCenterBandThrottleCutMultiplier": 0,
+    "groundSegCenterBandThrottleCutMultiplier": 1.13,
+    "centerBandThrottleCutBandFraction": 0.7,
+    "yoloFreshnessMs": 637,
+    "yoloSteeringV2Sensitivity": 1,
+    "yoloSteeringV2DecayFactor": 0.85,
+    "avoidanceSteeringGain": 1,
+    "avoidanceSmoothingFactor": 0.7,
+    "avoidanceDecayFactor": 0.35,
+    "avoidanceInstabilityDamping": 1.5,
+    "avoidanceTurnDebounce": 0.15,
+    "groundSegCenterBandMult": 0.51,
+    "groundSegNearFieldDepth": 0.75,
+    "obstacleMinThrottle": 0.8,
+    "steeringReversalLimit": 1,
+    "steeringReversalHoldDurationSec": 1,
+    "segFreshnessMs": 220,
+    "steeringPredictionEnabled": false,
+    "groundSegSteeringV2Sensitivity": 0.38,
+    "groundSegSteeringV2DecayFactor": 0.85,
+    "steeringV2CenterExtrapolationStrength": 0.37,
+    "steeringV2CenterBandAutoStop": true,
+    "steeringV2CenterBandMinThreshold": 0.25,
+    "batteryMinVoltage": 25,
+    "batteryMaxVoltage": 26.900000000000002,
+    "batteryShuntResistance": 0.010000000000000002,
+    "batteryCellCount": 8,
+    "disableDriveWhileCharging": false,
+    "visionDriveGuard": false,
+    "luminanceAutoStop": true,
+    "luminanceMinThreshold": 0.075,
+    "luminanceMaxThreshold": 0.9,
+    "luminanceDebounceMs": 500,
+    "navConfig": {
+      "lookAheadDistance": 2,
+      "arrivalRadius": 1.5,
+      "maxCrossTrackError": 10,
+      "steeringKp": 0.01,
+      "steeringKi": 0,
+      "steeringKd": 0.005,
+      "maxTurnRate": 1,
+      "maxNavSpeed": 0.6,
+      "approachDecelRadius": 5,
+      "creepSpeed": 0.15,
+      "minFixQuality": 4,
+      "fixLossTimeoutSec": 5,
+      "reverseAllowed": false,
+      "autoResumeSec": 3,
+      "cteResumeTolerance": 1,
+      "dangerRecoveryAccel": 0.5,
+      "dangerRecoveryDurationSec": 3,
+      "postTurnRampArmHeadingFactor": 0.35,
+      "postTurnRampReleaseHeadingFactor": 0.72,
+      "postTurnGroundSegWaitHeadingDeg": 60,
+      "postTurnRampDurationSec": 1.1
+    },
+    "cogNudgeFactor": 0.8,
+    "cogNoiseFloor": 0.1,
+    "audioInputDeviceId": "{0.0.1.00000000}.{c80bddde-51f5-40b2-9b24-a8381878d996}",
+    "audioOutputDeviceId": "{0.0.0.00000000}.{1139f103-0b5b-4c2e-8df8-841be9eb744c}",
+    "audioInputEnabled": true,
+    "audioOutputEnabled": true,
+    "usbBaudRates": {
+      "body": 115200,
+      "gnss": 115200,
+      "imu": 115200
+    },
+    "telemetryRateMultiplier": 1,
+    "videoMaxResolution": 270,
+    "videoTargetFps": 7,
+    "experimentalAutoDock": false,
+    "experimentalSteeringV2": true,
+    "experimentalEmbodiedNav": false,
+    "experimentalEmbodiedNavEngine": "omnivlaEdge",
+    "experimentalEmbodiedNavModelId": "qwen3_5_vl_9b",
+    "experimentalEmbodiedNavDefaultPrompt": "Navigate safely through the visible path.",
+    "experimentalEmbodiedNavControlHz": 3,
+    "experimentalEmbodiedNavMaxLinearMps": 0.3,
+    "experimentalEmbodiedNavMaxAngularRadps": 0.3,
+    "experimentalEmbodiedNavMaxTurns": 12,
+    "experimentalEmbodiedNavStepDurationMs": 900,
+    "experimentalEmbodiedNavCommandDecayMs": 250,
+    "experimentalEmbodiedNavNegateHeading": false,
+    "experimentalEmbodiedNavInvertW": false,
+    "bgRecordingFps": 5,
+    "bgRecordingResolution": 240,
+    "bgRecordingSegmentDuration": 300,
+    "bgRecordingDisableWhileCharging": true
+  }
+}
