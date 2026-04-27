@@ -21,14 +21,14 @@ import {
 } from '@/lib/videoModels/capabilities';
 import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
 import { characterTokenForAsset, extractPromptReferenceTokens, isReferenceImageAsset } from '@/lib/media/characterReferences';
-import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
-import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
+import { createPiApiImageGenerationTask, isGptImageModel } from '@/lib/imageGeneration/piapi';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { PIAPI_API_KEY_STORAGE, PIAPI_KLING_API_KEY_STORAGE, PIAPI_VEO_API_KEY_STORAGE } from '@/lib/settings/connectionStorage';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
+import { ImageModelSelect } from './ImageModelSelect';
 import { ModelSelect } from './ModelSelect';
 
 type Props = {
@@ -49,12 +49,11 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const addGeneratedAsset = useMediaStore((state) => state.addGeneratedAsset);
   const updateGenerationProgress = useMediaStore((state) => state.updateGenerationProgress);
   const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
-  const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
   const failGeneratedAsset = useMediaStore((state) => state.failGeneratedAsset);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
   const createSequenceAsset = useMediaStore((state) => state.createSequenceAsset);
   const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
-  const imageModels = useMemo(() => sortImageModelsByPriority(DEFAULT_IMAGE_MODELS), []);
+  const imageModels = useMemo(() => sortImageModelsByPriority(DEFAULT_IMAGE_MODELS.filter((model) => !isGptImageModel(model))), []);
   const fallbackModel = sequenceModels[0];
   const [committedAssetId, setCommittedAssetId] = useState<string | null>(null);
   const [draftSequence, setDraftSequence] = useState<SequenceAssetData>(() => createDefaultSequence(fallbackModel));
@@ -65,9 +64,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const isDraft = !effectiveAssetId;
   const sequence = storedAsset?.sequence ?? draftSequence;
   const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
-  const selectedImageModel = imageModelById(sequence.imageModel ?? '') ?? defaultImageModel();
+  const selectedImageModel = imageModels.find((model) => model.id === sequence.imageModel) ?? imageModels[0] ?? imageModelById(sequence.imageModel ?? '') ?? defaultImageModel();
   const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
-  const imageReferenceAssets = useMemo(() => assets.filter((asset) => asset.kind === 'image' && isReferenceImageAsset(asset)), [assets]);
+  const imageAssets = useMemo(() => assets.filter((asset) => asset.kind === 'image'), [assets]);
+  const imageReferenceAssets = useMemo(() => imageAssets.filter(isReferenceImageAsset), [imageAssets]);
   const characterAssets = useMemo(() => assets.filter((asset) => asset.kind === 'character' && isReferenceImageAsset(asset)), [assets]);
   const sequenceCharacterAssets = useMemo(() => {
     const ids = new Set(sequence.characterAssetIds ?? []);
@@ -93,10 +93,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const timelineGestureRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; target: 'timeline' | 'marker' } | null>(null);
   const suppressTimelineDoubleClickUntilRef = useRef(0);
   const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
-  const selectedMarkerImage = selectedMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
+  const selectedMarkerImage = selectedMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
   const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
-  const previewImage = previewMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
+  const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
   const selectedImagePrompt = useMemo(() => (selectedMarker ? buildShotImagePrompt(sequence, selectedMarker, assets) : ''), [assets, selectedMarker, sequence]);
 
@@ -364,7 +364,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     try {
       const referenceAssetsForShot = shotImageReferenceAssets(sequence, marker, assets);
       const referenceInput = await buildImageReferenceInput(referenceAssetsForShot, selectedImageModel, objectUrlFor);
-      const result = await generatePiApiImage({
+      const initialTask = await createPiApiImageGenerationTask({
         model: selectedImageModel,
         prompt,
         aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
@@ -376,15 +376,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
           providerTaskId: task.task_id,
           providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : undefined,
           providerTaskStatus: task.status,
+          providerTaskCreatedAt: Date.now(),
         }),
         onProgress: (progress) => updateGenerationProgress(generatedAssetId, progress),
       }, { apiKey });
-      const file = await downloadGeneratedImageFile(result.url, (progress) => updateGenerationProgress(generatedAssetId, progress));
-      await finalizeGeneratedAssetWithBlob(generatedAssetId, file, {
-        actualCostUsd: estimatedCostUsd,
-        provider: result.provider,
-        providerArtifactUri: result.url,
-        providerArtifactExpiresAt: result.providerArtifactExpiresAt,
+      updateGenerationTask(generatedAssetId, {
+        provider: selectedImageModel.provider,
+        providerTaskId: initialTask.task_id,
+        providerTaskEndpoint: initialTask.task_id ? `/api/v1/task/${initialTask.task_id}` : undefined,
+        providerTaskStatus: initialTask.status,
+        providerTaskCreatedAt: Date.now(),
       });
       const latestAssets = useMediaStore.getState().assets;
       const latestSequence = latestAssets.find((asset) => asset.id === effectiveAssetId && asset.kind === 'sequence')?.sequence ?? sequence;
@@ -641,7 +642,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 <SequencePromptOutput
                   sequence={sequence}
                   markers={sortedMarkers}
-                  imageAssets={imageReferenceAssets}
+                  imageAssets={imageAssets}
                   selectedMarkerId={selectedMarkerId}
                   onSelectMarker={selectMarker}
                 />
@@ -1131,7 +1132,8 @@ function ShotPromptEditor({
     const token = bareCharacterToken(asset);
     if (!token || !mention) return;
     const value = marker.prompt;
-    const next = `${value.slice(0, mention.start)}@${token} ${value.slice(mention.end)}`;
+    const replacementEnd = mentionTokenEnd(value, mention.end);
+    const next = `${value.slice(0, mention.start)}@${token} ${value.slice(replacementEnd)}`;
     const nextCursor = mention.start + token.length + 2;
     onChange(next);
     onAcceptCharacter(asset);
@@ -1188,29 +1190,10 @@ function ShotPromptEditor({
   );
 }
 
-function ImageModelSelect({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: ImageModelDefinition[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-      Image Model
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-9 rounded-md border border-surface-700 bg-surface-950 px-2 text-xs font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
-      >
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>{option.label}</option>
-        ))}
-      </select>
-    </label>
-  );
+function mentionTokenEnd(value: string, start: number): number {
+  let index = start;
+  while (index < value.length && /[a-z0-9_-]/i.test(value[index] ?? '')) index += 1;
+  return index;
 }
 
 function SequenceMarkerContextMenu({

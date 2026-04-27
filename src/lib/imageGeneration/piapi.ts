@@ -31,7 +31,7 @@ export type GeneratedPiApiImage = {
   providerArtifactExpiresAt: number;
 };
 
-type PiApiImageTaskData = {
+export type PiApiImageTaskData = {
   task_id?: string;
   status?: string;
   output?: Record<string, unknown> | null;
@@ -79,6 +79,21 @@ export async function generatePiApiImage(
   request.onProgress?.(3);
   if (isGptImageModel(request.model)) return generateGptImage(request, credentials);
   return generateGeminiImage(request, credentials);
+}
+
+export async function createPiApiImageGenerationTask(
+  request: ImageGenerationRequest,
+  credentials: PiApiCredentials,
+): Promise<PiApiImageTaskData> {
+  if (isGptImageModel(request.model)) {
+    throw new VideoGenerationProviderError('InternalError', 'This image model uses a synchronous PiAPI endpoint and cannot be resumed as a background task.');
+  }
+  request.onProgress?.(5);
+  const initialTask = await createPiApiImageTask(geminiImageTaskBody(request), credentials);
+  if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return an image task id.');
+  request.onTaskAccepted?.(initialTask);
+  request.onProgress?.(10);
+  return initialTask;
 }
 
 export async function getPiApiImageTask(taskId: string, credentials: PiApiCredentials): Promise<PiApiImageTaskData> {
@@ -179,8 +194,22 @@ async function generateGeminiImage(
   request: ImageGenerationRequest,
   credentials: PiApiCredentials,
 ): Promise<GeneratedPiApiImage> {
-  request.onProgress?.(5);
-  const body: Record<string, unknown> = {
+  const initialTask = await createPiApiImageGenerationTask(request, credentials);
+  const finalTask = await pollPiApiImageTask({ credentials, initialTask, onProgress: request.onProgress });
+  const image = generatedPiApiImageFromTask(finalTask);
+  if (!image.url) throw new VideoGenerationProviderError('InternalError', 'No generated image URL returned by PiAPI.');
+  return {
+    url: image.url,
+    provider: 'piapi-gemini',
+    providerTaskId: finalTask.task_id ?? initialTask.task_id,
+    providerTaskEndpoint: `/api/v1/task/${finalTask.task_id ?? initialTask.task_id}`,
+    providerTaskStatus: finalTask.status,
+    providerArtifactExpiresAt: Date.now() + PIAPI_IMAGE_ARTIFACT_TTL_MS,
+  };
+}
+
+function geminiImageTaskBody(request: ImageGenerationRequest): Record<string, unknown> {
+  return {
     model: 'gemini',
     task_type: request.model.id,
     input: {
@@ -194,21 +223,6 @@ async function generateGeminiImage(
     config: {
       service_mode: 'public',
     },
-  };
-  const initialTask = await createPiApiImageTask(body, credentials);
-  if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return an image task id.');
-  request.onTaskAccepted?.(initialTask);
-  request.onProgress?.(10);
-  const finalTask = await pollPiApiImageTask({ credentials, initialTask, onProgress: request.onProgress });
-  const image = generatedPiApiImageFromTask(finalTask);
-  if (!image.url) throw new VideoGenerationProviderError('InternalError', 'No generated image URL returned by PiAPI.');
-  return {
-    url: image.url,
-    provider: 'piapi-gemini',
-    providerTaskId: finalTask.task_id ?? initialTask.task_id,
-    providerTaskEndpoint: `/api/v1/task/${finalTask.task_id ?? initialTask.task_id}`,
-    providerTaskStatus: finalTask.status,
-    providerArtifactExpiresAt: Date.now() + PIAPI_IMAGE_ARTIFACT_TTL_MS,
   };
 }
 
