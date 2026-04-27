@@ -4,6 +4,7 @@ type SequenceReferenceOptions = {
   availableImageAssetIds?: Set<string>;
   characterTokensByAssetId?: Map<string, string>;
   characterAssetIds?: string[];
+  startFrameAssetId?: string | null;
   maxImages?: number;
 };
 
@@ -23,18 +24,21 @@ export function formatSequenceTimestamp(timeSec: number): string {
 export function sequenceReferenceAssetIds(sequence: SequenceAssetData, options: SequenceReferenceOptions = {}): string[] {
   const ids: string[] = [];
   const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY;
+  const addReferenceId = (assetId: string | null | undefined): boolean => {
+    if (!assetId || ids.length >= maxImages) return false;
+    if (assetId === options.startFrameAssetId) return false;
+    if (ids.includes(assetId)) return false;
+    if (options.availableImageAssetIds && !options.availableImageAssetIds.has(assetId)) return false;
+    ids.push(assetId);
+    return true;
+  };
   for (const assetId of options.characterAssetIds ?? sequence.characterAssetIds ?? []) {
     if (ids.length >= maxImages) break;
-    if (ids.includes(assetId)) continue;
-    if (options.availableImageAssetIds && !options.availableImageAssetIds.has(assetId)) continue;
-    ids.push(assetId);
+    addReferenceId(assetId);
   }
   for (const marker of sortedSequenceMarkers(sequence)) {
     if (ids.length >= maxImages) break;
-    const assetId = marker.imageAssetId;
-    if (!assetId) continue;
-    if (options.availableImageAssetIds && !options.availableImageAssetIds.has(assetId)) continue;
-    ids.push(assetId);
+    addReferenceId(marker.imageAssetId);
   }
   return ids;
 }
@@ -49,20 +53,29 @@ export function composeSequencePromptLines(sequence: SequenceAssetData, options:
   if (overallPrompt) {
     promptLines.push({ markerId: null, text: overallPrompt }, { markerId: null, text: '' });
   }
-  let referenceIndex = 0;
-  const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY;
+  const referenceTokenByAssetId = sequenceReferenceTokenMap(sequence, options);
   for (const marker of sortedSequenceMarkers(sequence)) {
-    const hasImage = Boolean(
-      marker.imageAssetId &&
-      referenceIndex < maxImages &&
-      (!options.availableImageAssetIds || options.availableImageAssetIds.has(marker.imageAssetId)),
-    );
-    const characterToken = marker.imageAssetId ? options.characterTokensByAssetId?.get(marker.imageAssetId) : undefined;
-    if (hasImage) referenceIndex += 1;
-    const token = hasImage ? ` @${characterToken ?? `image${referenceIndex}`}` : '';
+    const referenceToken = marker.imageAssetId ? referenceTokenByAssetId.get(marker.imageAssetId) : undefined;
+    const token = referenceToken ? ` @${referenceToken}` : '';
     const prompt = marker.prompt.trim() || 'Shot beat';
     const text = `[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${token}`;
     promptLines.push({ markerId: marker.id, text });
   }
   return promptLines;
+}
+
+function sequenceReferenceTokenMap(sequence: SequenceAssetData, options: SequenceReferenceOptions): Map<string, string> {
+  const out = new Map<string, string>();
+  if (options.startFrameAssetId) out.set(options.startFrameAssetId, 'start-frame');
+  let imageIndex = 0;
+  for (const assetId of sequenceReferenceAssetIds(sequence, options)) {
+    const characterToken = options.characterTokensByAssetId?.get(assetId);
+    if (characterToken) {
+      out.set(assetId, characterToken);
+      continue;
+    }
+    imageIndex += 1;
+    out.set(assetId, `image${imageIndex}`);
+  }
+  return out;
 }

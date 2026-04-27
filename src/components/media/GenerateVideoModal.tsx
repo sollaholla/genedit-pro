@@ -28,7 +28,7 @@ import {
   PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
-import { composeSequencePrompt, sequenceReferenceAssetIds } from '@/lib/media/sequence';
+import { composeSequencePrompt, sequenceReferenceAssetIds, sortedSequenceMarkers } from '@/lib/media/sequence';
 import { characterTokenForAsset, isReferenceImageAsset, resolveCharacterReferences } from '@/lib/media/characterReferences';
 import { isBillingErrorText, VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
@@ -316,19 +316,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = recipe.referenceAssetIds
+    const selectedRefAssets = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
-      .filter(isReferenceImageAsset)
-      .map((asset, index) => ({
-        id: `${asset.id}-${Date.now()}-${index}`,
-        token: referenceTokenForAsset(asset, index),
-        assetId: asset.id,
-        name: asset.name,
-        kind: asset.kind as RefToken['kind'],
-        thumbnail: asset.thumbnailDataUrl,
-      }));
-    setReferences(selectedRefs);
+      .filter(isReferenceImageAsset);
+    setReferences(referenceTokensForAssets(selectedRefAssets, `recipe-${initialRecipeAsset.id}-${Date.now()}`));
   }, [open, initialRecipeAsset, assets]);
 
   useEffect(() => {
@@ -345,31 +337,33 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       .filter((asset) => asset.kind === 'character' && asset.character?.characterId)
       .map((asset) => [asset.id, asset.character!.characterId]));
     const sequenceModel = models.find((candidate) => candidate.id === sequence.model) ?? DEFAULT_VIDEO_MODELS.find((candidate) => candidate.id === sequence.model);
+    const sequenceStartFrame = sequenceModel?.capabilities.assetInputs.startFrame
+      ? startFrameAssetForSequence(sequence, assets)
+      : null;
     const maxImages = sequenceModel?.capabilities.assetInputs.imageReferencesMax ?? 12;
-    const referenceAssetIds = sequenceReferenceAssetIds(sequence, { availableImageAssetIds: imageAssetIds, maxImages });
+    const sequenceReferenceOptions = {
+      availableImageAssetIds: imageAssetIds,
+      characterTokensByAssetId,
+      maxImages,
+      startFrameAssetId: sequenceStartFrame?.id ?? null,
+    };
+    const referenceAssetIds = sequenceReferenceAssetIds(sequence, sequenceReferenceOptions);
     setLoadedRecipeId(null);
     setRecipePickerOpen(false);
     setRecipeQuery('');
     setModel(sequence.model);
-    setPrompt(composeSequencePrompt(sequence, { availableImageAssetIds: imageAssetIds, characterTokensByAssetId, maxImages }));
+    setPrompt(composeSequencePrompt(sequence, sequenceReferenceOptions));
     setPromptMode('freeform');
     setStructuredPrompt({});
     setDuration(`${sequence.durationSec}s`);
     setAudioEnabled(true);
-    setStartFrame(null);
+    setStartFrame(sequenceStartFrame);
     setEndFrame(null);
     setSourceVideo(null);
-    setReferences(referenceAssetIds
+    const sequenceRefAssets = referenceAssetIds
       .map((assetId) => assets.find((asset) => asset.id === assetId && isReferenceImageAsset(asset)))
-      .filter((asset): asset is MediaAsset => Boolean(asset))
-      .map((asset, index) => ({
-        id: `${initialSequenceAsset.id}-${asset.id}-${index}`,
-        token: referenceTokenForAsset(asset, index),
-        assetId: asset.id,
-        name: asset.name,
-        kind: asset.kind as RefToken['kind'],
-        thumbnail: asset.thumbnailDataUrl,
-      })));
+      .filter((asset): asset is MediaAsset => Boolean(asset));
+    setReferences(referenceTokensForAssets(sequenceRefAssets, `sequence-${initialSequenceAsset.id}`));
   }, [open, initialSequenceAsset, assets]);
 
   useEffect(() => {
@@ -455,10 +449,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     return out;
   }, [assets, references, sourceVideoToken, startFrame, endFrame]);
 
-  const promptTokens = useMemo(
-    () => Array.from(prompt.matchAll(/@([a-z0-9-]+)/gi)),
-    [prompt],
-  );
+  const promptTokens = useMemo(() => uniquePromptReferenceTokens(prompt), [prompt]);
   const recipeAssets = useMemo(() => assets.filter((a) => a.kind === 'recipe' && a.recipe), [assets]);
   const filteredRecipeAssets = useMemo(() => {
     const q = recipeQuery.trim().toLowerCase();
@@ -492,6 +483,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   function addReferenceAsset(asset: MediaAsset) {
     if (!isReferenceImageAsset(asset)) return;
     if (imageReferenceLimit <= 0) return;
+    if (references.some((ref) => ref.assetId === asset.id)) return;
     if (references.length >= imageReferenceLimit) return;
     const kind = asset.kind as RefToken['kind'];
     const countForKind = references.filter((r) => r.kind === kind).length;
@@ -701,7 +693,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       startFrameAssetId: startFrame?.id ?? null,
       endFrameAssetId: endFrame?.id ?? null,
       sourceVideoAssetId: sourceVideo?.id ?? null,
-      referenceAssetIds: references.map((r) => r.assetId),
+      referenceAssetIds: uniqueReferenceAssetIds(references.map((r) => r.assetId)),
     };
   }
 
@@ -736,19 +728,11 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setSourceVideo(nextSourceVideo);
     setStartFrame(nextSourceVideo ? null : nextStartFrame);
     setEndFrame(nextSourceVideo ? null : nextEndFrame);
-    const selectedRefs = recipe.referenceAssetIds
+    const selectedRefAssets = recipe.referenceAssetIds
       .map((assetId) => assets.find((a) => a.id === assetId))
       .filter((a): a is MediaAsset => Boolean(a))
-      .filter(isReferenceImageAsset)
-      .map((refAsset, index) => ({
-        id: `${refAsset.id}-${Date.now()}-${index}`,
-        token: referenceTokenForAsset(refAsset, index),
-        assetId: refAsset.id,
-        name: refAsset.name,
-        kind: refAsset.kind as RefToken['kind'],
-        thumbnail: refAsset.thumbnailDataUrl,
-      }));
-    setReferences(selectedRefs);
+      .filter(isReferenceImageAsset);
+    setReferences(referenceTokensForAssets(selectedRefAssets, `recipe-${asset.id}-${Date.now()}`));
     setRecipePickerOpen(false);
     setRecipeQuery('');
   }
@@ -855,13 +839,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             )}
             {promptMode === 'freeform' && promptTokens.length > 0 && (
               <div className="absolute inset-x-2 bottom-2 flex max-h-8 flex-wrap gap-1.5 overflow-y-auto rounded bg-surface-900/85 pr-1 backdrop-blur">
-                {promptTokens.map((m, i) => {
-                  const key = m[1].toLowerCase();
+                {promptTokens.map((token) => {
+                    const key = token.toLowerCase();
                   const meta = referenceMap.get(key);
                   const valid = Boolean(meta);
                   return (
                     <span
-                      key={`${m.index}-${i}`}
+                        key={key}
                       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
                       onMouseEnter={(e) => {
                         if (meta && typeof meta !== 'string') {
@@ -875,7 +859,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
                       onMouseLeave={() => setHoveredToken(null)}
                     >
                       {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
-                      @{m[1]}
+                      @{token}
                     </span>
                   );
                 })}
@@ -1319,6 +1303,54 @@ function formatShortDate(timestamp: number) {
 function referenceTokenForAsset(asset: MediaAsset, index: number): string {
   if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
   return `image${index + 1}`;
+}
+
+function startFrameAssetForSequence(sequence: NonNullable<MediaAsset['sequence']>, assets: MediaAsset[]): MediaAsset | null {
+  const startMarker = sortedSequenceMarkers(sequence).find((marker) => marker.imageAssetId && Math.abs(marker.timeSec) < 0.001);
+  if (!startMarker?.imageAssetId) return null;
+  return assets.find((asset) => asset.id === startMarker.imageAssetId && isReferenceImageAsset(asset)) ?? null;
+}
+
+function referenceTokensForAssets(assets: MediaAsset[], idPrefix: string): RefToken[] {
+  const countsByKind = new Map<RefToken['kind'], number>();
+  return uniqueReferenceAssets(assets).map((asset, index) => {
+    const kind = asset.kind as RefToken['kind'];
+    const countForKind = countsByKind.get(kind) ?? 0;
+    countsByKind.set(kind, countForKind + 1);
+    return {
+      id: `${idPrefix}-${asset.id}-${index}`,
+      token: referenceTokenForAsset(asset, countForKind),
+      assetId: asset.id,
+      name: asset.name,
+      kind,
+      thumbnail: asset.thumbnailDataUrl,
+    };
+  });
+}
+
+function uniqueReferenceAssetIds(assetIds: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const assetId of assetIds) {
+    if (seen.has(assetId)) continue;
+    seen.add(assetId);
+    out.push(assetId);
+  }
+  return out;
+}
+
+function uniquePromptReferenceTokens(prompt: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const match of prompt.matchAll(/@([a-z0-9-]+)/gi)) {
+    const token = match[1];
+    if (!token) continue;
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(token);
+  }
+  return out;
 }
 
 function uniqueReferenceAssets(assets: MediaAsset[]): MediaAsset[] {
