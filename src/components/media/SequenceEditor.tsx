@@ -1,6 +1,6 @@
 import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
-import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import {
   DEFAULT_VIDEO_MODELS,
   isPiApiKlingModel,
@@ -43,7 +43,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const sequence = storedAsset?.sequence ?? draftSequence;
   const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
   const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
-  const imageAssets = useMemo(() => assets.filter(isReferenceImageAsset), [assets]);
+  const referenceAssets = useMemo(() => assets.filter(isReferenceImageAsset), [assets]);
   const characterTokensByAssetId = useMemo(() => new Map(assets
     .filter((candidate) => candidate.kind === 'character' && candidate.character?.characterId)
     .map((candidate) => [candidate.id, candidate.character!.characterId])), [assets]);
@@ -61,10 +61,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const timelineGestureRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; target: 'timeline' | 'marker' } | null>(null);
   const suppressTimelineDoubleClickUntilRef = useRef(0);
   const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
-  const selectedMarkerImage = selectedMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
+  const selectedMarkerImage = selectedMarker?.imageAssetId ? referenceAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
   const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
-  const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
+  const previewImage = previewMarker?.imageAssetId ? referenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
 
   useEffect(() => {
@@ -522,7 +522,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
               ) : (
                 <div className="flex flex-col items-center gap-2 text-slate-500">
                   <ImageIcon size={30} />
-                  <div className="text-xs">No marker image</div>
+                  <div className="text-xs">No marker reference</div>
                 </div>
               )}
             </div>
@@ -576,10 +576,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       </div>
       {imagePickerMarker && (
         <SequenceImagePicker
-          assets={imageAssets}
+          assets={referenceAssets}
           selectedId={imagePickerMarker.imageAssetId ?? null}
-          onPick={(image) => {
-            updateMarker(imagePickerMarker.id, { imageAssetId: image.id });
+          onPick={(reference) => {
+            updateMarker(imagePickerMarker.id, { imageAssetId: reference.id });
             setImagePickerMarkerId(null);
           }}
           onImport={() => void importMarkerImage()}
@@ -643,7 +643,7 @@ function MarkerInspector({
           />
         </label>
         <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Image
+          Reference
           <button
             type="button"
             className="flex min-h-14 w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-left text-sm font-normal normal-case tracking-normal text-slate-100 outline-none hover:border-surface-500 focus-visible:border-brand-400"
@@ -653,14 +653,19 @@ function MarkerInspector({
               <img src={selectedImage.thumbnailDataUrl} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
             ) : (
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-surface-800 text-slate-500">
-                <ImageIcon size={16} />
+                {selectedImage?.kind === 'character' ? <UserRound size={16} /> : <ImageIcon size={16} />}
               </span>
             )}
-            <span className="min-w-0 flex-1 truncate">{selectedImage ? selectedImage.name : 'Choose from media or import'}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{selectedImage ? selectedImage.name : 'Choose image or character'}</span>
+              {selectedImage?.kind === 'character' && selectedImage.character?.characterId && (
+                <span className="block truncate text-[11px] text-brand-200">@{selectedImage.character.characterId}</span>
+              )}
+            </span>
           </button>
           {selectedImage && (
             <button type="button" className="self-start text-[11px] font-normal normal-case tracking-normal text-slate-400 hover:text-slate-100" onClick={() => onUpdate(marker.id, { imageAssetId: null })}>
-              Clear image
+              Clear reference
             </button>
           )}
         </div>
@@ -763,7 +768,10 @@ function SequenceImagePicker({
         if (!normalizedQuery) return true;
         return [
           asset.name,
+          asset.kind,
           asset.mimeType,
+          asset.character?.characterId,
+          asset.character?.description,
           `${asset.width ?? ''}x${asset.height ?? ''}`,
         ].join(' ').toLowerCase().includes(normalizedQuery);
       })
@@ -780,8 +788,8 @@ function SequenceImagePicker({
         <div className="border-b border-white/10 p-3">
           <div className="mb-2 flex items-center justify-between">
             <div>
-              <div className="text-sm font-semibold text-slate-100">Pick marker image</div>
-              <div className="text-xs text-slate-400">Choose an image from media or import a new one.</div>
+              <div className="text-sm font-semibold text-slate-100">Pick marker reference</div>
+              <div className="text-xs text-slate-400">Choose an image or character from media, or import a new image.</div>
             </div>
             <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
               <X size={16} />
@@ -793,7 +801,7 @@ function SequenceImagePicker({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search images by name, type, or size"
+                placeholder="Search references by name, type, size, or character ID"
                 className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
                 autoFocus
               />
@@ -812,18 +820,18 @@ function SequenceImagePicker({
             </div>
             <button className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/20" onClick={onImport}>
               <Upload size={12} />
-              Import
+              Import Image
             </button>
           </div>
         </div>
         <div className="max-h-[520px] overflow-auto p-3">
           <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
-            <span>{filteredAssets.length} of {assets.length} images</span>
+            <span>{filteredAssets.length} of {assets.length} references</span>
             <span>{sortKey === 'recent' ? 'Recent first' : sortKey === 'size' ? 'Largest first' : 'A-Z'}</span>
           </div>
           {filteredAssets.length === 0 ? (
             <div className="rounded-lg border border-dashed border-white/15 p-8 text-center text-xs text-slate-500">
-              No images match this search.
+              No references match this search.
             </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2">
@@ -841,9 +849,12 @@ function SequenceImagePicker({
                         <img src={asset.thumbnailDataUrl} alt="" className="h-full w-full object-cover" draggable={false} />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-slate-500">
-                          <ImageIcon size={22} />
+                          {asset.kind === 'character' ? <UserRound size={22} /> : <ImageIcon size={22} />}
                         </div>
                       )}
+                      <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        {asset.kind === 'character' ? 'Character' : 'Image'}
+                      </span>
                       {selected && (
                         <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-brand-400 text-slate-950">
                           <Check size={12} />
@@ -852,7 +863,7 @@ function SequenceImagePicker({
                     </div>
                     <div className="px-2 py-1.5">
                       <div className="truncate text-xs font-medium text-slate-100">{asset.name}</div>
-                      <div className="mt-0.5 text-[10px] text-slate-500">{asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.mimeType}</div>
+                      <div className="mt-0.5 truncate text-[10px] text-slate-500">{referenceSubtitle(asset)}</div>
                     </div>
                   </button>
                 );
@@ -887,6 +898,15 @@ function normalizeSequence(sequence: SequenceAssetData): SequenceAssetData {
 
 function durationsForModel(model: VideoModelDefinition): number[] {
   return model.capabilities.durations.map((duration) => Number(duration.replace('s', ''))).filter((duration) => Number.isFinite(duration));
+}
+
+function referenceSubtitle(asset: MediaAsset): string {
+  if (asset.kind === 'character') {
+    const token = asset.character?.characterId ? `@${asset.character.characterId}` : 'Character';
+    const style = asset.character?.style ? ` · ${asset.character.style}` : '';
+    return `${token}${style}`;
+  }
+  return asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.mimeType;
 }
 
 function clampTime(timeSec: number, durationSec: number): number {

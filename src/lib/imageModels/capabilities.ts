@@ -24,7 +24,8 @@ export const GPT_IMAGE_2_PREVIEW_MODEL_ID = 'gpt-image-2-preview';
 export const NANO_BANANA_2_MODEL_ID = 'nano-banana-2';
 export const NANO_BANANA_PRO_MODEL_ID = 'nano-banana-pro';
 
-const COMMON_IMAGE_ASPECTS: ImageAspect[] = ['21:9', '16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'];
+export const CHARACTER_IMAGE_ASPECT_RATIO: ImageAspect = '21:9';
+export const CHARACTER_IMAGE_RESOLUTION = '2K';
 
 export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
   {
@@ -34,8 +35,8 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
     priority: 100,
     estimatedCostUsd: 0.105,
     capabilities: {
-      aspects: [...COMMON_IMAGE_ASPECTS],
-      resolutions: ['1K', '2K', '4K'],
+      aspects: [CHARACTER_IMAGE_ASPECT_RATIO],
+      resolutions: [CHARACTER_IMAGE_RESOLUTION],
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,
@@ -48,8 +49,8 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
     priority: 90,
     estimatedCostUsd: 0.06,
     capabilities: {
-      aspects: [...COMMON_IMAGE_ASPECTS],
-      resolutions: ['1K', '2K', '4K'],
+      aspects: [CHARACTER_IMAGE_ASPECT_RATIO],
+      resolutions: [CHARACTER_IMAGE_RESOLUTION],
       outputFormats: ['png', 'jpg', 'webp'],
       defaultOutputFormat: 'png',
       imageInputs: true,
@@ -62,8 +63,8 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
     priority: 80,
     estimatedCostUsd: 0.1,
     capabilities: {
-      aspects: ['1:1', '2:3', '3:2'],
-      resolutions: ['1024x1024', '1024x1536', '1536x1024'],
+      aspects: [CHARACTER_IMAGE_ASPECT_RATIO],
+      resolutions: [CHARACTER_IMAGE_RESOLUTION],
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,
@@ -76,8 +77,8 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
     priority: 70,
     estimatedCostUsd: 0.018,
     capabilities: {
-      aspects: ['1:1', '2:3', '3:2'],
-      resolutions: ['1024x1024', '1024x1536', '1536x1024'],
+      aspects: [CHARACTER_IMAGE_ASPECT_RATIO],
+      resolutions: [CHARACTER_IMAGE_RESOLUTION],
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,

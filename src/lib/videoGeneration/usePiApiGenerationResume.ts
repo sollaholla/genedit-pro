@@ -18,6 +18,7 @@ import {
 import { VideoGenerationProviderError } from './errors';
 
 const RESUME_POLL_MS = 15000;
+const IMAGE_GENERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function usePiApiGenerationResume() {
   useEffect(() => {
@@ -62,6 +63,9 @@ async function resumePiApiImageGeneration(asset: MediaAsset, apiKey: string): Pr
   const generation = asset.generation;
   const taskId = generation?.providerTaskId;
   if (!taskId) return;
+  if (generation?.providerTaskCreatedAt && Date.now() - generation.providerTaskCreatedAt > IMAGE_GENERATION_TIMEOUT_MS) {
+    throw new VideoGenerationProviderError('InternalError', 'PiAPI image generation timed out before returning an image.');
+  }
 
   const task = await getPiApiImageTask(taskId, { apiKey });
   const store = useMediaStore.getState();
@@ -87,7 +91,7 @@ async function resumePiApiImageGeneration(asset: MediaAsset, apiKey: string): Pr
   }
 
   const currentProgress = generation?.progress ?? 5;
-  store.updateGenerationProgress(asset.id, Math.min(95, Math.max(10, currentProgress + 2)));
+  store.updateGenerationProgress(asset.id, Math.min(95, Math.max(12, currentProgress + 2)));
 }
 
 function formatProviderError(error: VideoGenerationProviderError): string {

@@ -2,11 +2,14 @@ import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 
 export type MediaKind = 'video' | 'audio' | 'image' | 'character' | 'recipe' | 'sequence';
 
+export type CharacterVisualStyle = 'real-life' | 'anime' | '3d' | 'lego';
+
 export type CharacterAssetData = {
   characterId: string;
   description: string;
   prompt: string;
   generatedPrompt?: string;
+  style?: CharacterVisualStyle;
   model: string;
   aspectRatio: string;
   resolution: string;

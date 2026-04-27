@@ -1,12 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Image as ImageIcon, Save, Sparkles, UserRound, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Check, ChevronDown, Copy, Image as ImageIcon, Save, Sparkles, UserRound, X } from 'lucide-react';
 import {
+  CHARACTER_IMAGE_ASPECT_RATIO,
+  CHARACTER_IMAGE_RESOLUTION,
   DEFAULT_IMAGE_MODELS,
   defaultImageModel,
   estimateImageCostUsd,
   imageModelById,
   sortImageModelsByPriority,
   type ImageModelDefinition,
+  type ImageModelProvider,
 } from '@/lib/imageModels/capabilities';
 import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
 import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
@@ -21,7 +25,7 @@ import {
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { useMediaStore } from '@/state/mediaStore';
-import type { CharacterAssetData, EditTrailIteration, MediaAsset } from '@/types';
+import type { CharacterAssetData, CharacterVisualStyle, EditTrailIteration, MediaAsset } from '@/types';
 
 type Props = {
   assetId: string | null;
@@ -35,7 +39,7 @@ type CharacterForm = {
   name: string;
   characterId: string;
   description: string;
-  prompt: string;
+  style: CharacterVisualStyle;
   model: string;
   aspectRatio: string;
   resolution: string;
@@ -43,6 +47,12 @@ type CharacterForm = {
 
 const IMAGE_MODELS = sortImageModelsByPriority(DEFAULT_IMAGE_MODELS);
 const CHARACTER_SHEET_TEMPLATE = 'Create a single full-body character turnaround reference sheet. Arrange four evenly spaced views of the same character from left to right: front view, left side view, right side view, back view. Keep the face, body proportions, clothing, hairstyle, colors, and accessories consistent in every view. Use neutral studio lighting with no background.';
+const CHARACTER_STYLE_OPTIONS: Array<{ value: CharacterVisualStyle; label: string; prompt: string }> = [
+  { value: 'real-life', label: 'Real-life', prompt: 'Use a real-life photographic style with natural human materials and believable fabric detail.' },
+  { value: 'anime', label: 'Anime', prompt: 'Use a polished anime character design style with clean linework and expressive proportions.' },
+  { value: '3d', label: '3D', prompt: 'Use a high-quality stylized 3D character design style with smooth modeled forms and studio-rendered materials.' },
+  { value: 'lego', label: 'Lego', prompt: 'Use a Lego minifigure inspired character design style with toy-like plastic materials and simplified block construction.' },
+];
 
 export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSettings, onGenerationQueued }: Props) {
   const assets = useMediaStore((state) => state.assets);
@@ -73,8 +83,8 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
   const selectedModel = imageModelById(form.model) ?? defaultImageModel();
   const estimatedCostUsd = estimateImageCostUsd(selectedModel);
   const isCreate = !assetId;
-  const promptForGeneration = (form.prompt.trim() || form.description.trim()).trim();
-  const providerPrompt = buildCharacterImagePrompt(promptForGeneration);
+  const promptForGeneration = form.description.trim();
+  const providerPrompt = buildCharacterImagePrompt(promptForGeneration, form.style);
   const canGenerate = Boolean(promptForGeneration) && !working;
 
   useEffect(() => {
@@ -97,24 +107,14 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
     setForm({
       name: asset.name,
       characterId: asset.character?.characterId ?? uniqueCharacterId(asset.name, assets, asset.id),
-      description: asset.character?.description ?? '',
-      prompt: asset.character?.prompt ?? '',
+      description: asset.character?.description ?? asset.character?.prompt ?? '',
+      style: asset.character?.style ?? 'real-life',
       model: nextModel.id,
-      aspectRatio: asset.character?.aspectRatio ?? nextModel.capabilities.aspects[0] ?? '1:1',
-      resolution: asset.character?.resolution ?? nextModel.capabilities.resolutions[0] ?? '1K',
+      aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+      resolution: CHARACTER_IMAGE_RESOLUTION,
     });
     setSlugTouched(false);
   }, [asset, assetId, assets]);
-
-  useEffect(() => {
-    const model = imageModelById(form.model) ?? defaultImageModel();
-    if (!model.capabilities.aspects.includes(form.aspectRatio as never)) {
-      setForm((current) => ({ ...current, aspectRatio: model.capabilities.aspects[0] ?? '1:1' }));
-    }
-    if (!model.capabilities.resolutions.includes(form.resolution)) {
-      setForm((current) => ({ ...current, resolution: model.capabilities.resolutions[0] ?? '1K' }));
-    }
-  }, [form.aspectRatio, form.model, form.resolution]);
 
   useEffect(() => {
     let mounted = true;
@@ -168,9 +168,10 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       description: form.description.trim(),
       prompt: promptForGeneration,
       generatedPrompt: providerPrompt,
+      style: form.style,
       model: selectedModel.id,
-      aspectRatio: form.aspectRatio,
-      resolution: form.resolution,
+      aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+      resolution: CHARACTER_IMAGE_RESOLUTION,
     });
     setForm((current) => ({ ...current, name, characterId }));
   };
@@ -206,9 +207,11 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       characterId,
       description: form.description.trim(),
       prompt: promptForGeneration,
+      generatedPrompt: providerPrompt,
+      style: form.style,
       model: selectedModel.id,
-      aspectRatio: form.aspectRatio,
-      resolution: form.resolution,
+      aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+      resolution: CHARACTER_IMAGE_RESOLUTION,
       updatedAt: Date.now(),
     };
     const generatedAssetId = addGeneratedAsset(name, folderId, estimatedCostUsd, undefined, {
@@ -217,14 +220,15 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       durationSec: 5,
       character,
     });
+    updateGenerationProgress(generatedAssetId, 3);
     onGenerationQueued?.(generatedAssetId);
     onClose();
     try {
       const generated = await generatePiApiImage({
         model: selectedModel,
         prompt: providerPrompt,
-        aspectRatio: form.aspectRatio,
-        resolution: form.resolution,
+        aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+        resolution: CHARACTER_IMAGE_RESOLUTION,
         outputFormat: selectedModel.capabilities.defaultOutputFormat,
         onProgress: (value) => updateGenerationProgress(generatedAssetId, value),
         onTaskAccepted: (task) => updateGenerationTask(generatedAssetId, {
@@ -257,8 +261,8 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
       const generated = await generatePiApiImage({
         model: selectedModel,
         prompt: providerPrompt,
-        aspectRatio: form.aspectRatio,
-        resolution: form.resolution,
+        aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+        resolution: CHARACTER_IMAGE_RESOLUTION,
         outputFormat: selectedModel.capabilities.defaultOutputFormat,
         referenceUrls: referenceInput.referenceUrls,
         referenceFiles: referenceInput.referenceFiles,
@@ -281,9 +285,10 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
           description: form.description.trim(),
           prompt: promptForGeneration,
           generatedPrompt: providerPrompt,
+          style: form.style,
           model: selectedModel.id,
-          aspectRatio: form.aspectRatio,
-          resolution: form.resolution,
+          aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+          resolution: CHARACTER_IMAGE_RESOLUTION,
         },
       });
       if (form.name.trim() && form.name.trim() !== characterAsset.name) renameAsset(characterAsset.id, form.name.trim());
@@ -382,25 +387,25 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
                   Description
                   <textarea
                     value={form.description}
-                    onChange={(event) => setForm((current) => ({ ...current, description: event.target.value, prompt: current.prompt || event.target.value }))}
-                    className="mt-1 h-24 w-full resize-none rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                    onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                    className="mt-1 h-32 w-full resize-none rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
                     placeholder="Describe the character's face, outfit, style, and visual identity."
-                  />
-                </label>
-                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Generation Prompt
-                  <textarea
-                    value={form.prompt}
-                    onChange={(event) => setForm((current) => ({ ...current, prompt: event.target.value }))}
-                    className="mt-1 h-28 w-full resize-none rounded-md border border-surface-700 bg-surface-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
-                    placeholder="Prompt used for this image generation."
                   />
                 </label>
 
                 <div className="space-y-2 rounded-md border border-surface-700 bg-surface-950/60 p-2.5">
                   <ImageModelSelect value={selectedModel.id} options={IMAGE_MODELS} onChange={(modelId) => setFormForModel(modelId, setForm)} />
-                  <OptionRow label="Aspect" value={form.aspectRatio} options={selectedModel.capabilities.aspects} onChange={(value) => setForm((current) => ({ ...current, aspectRatio: value }))} />
-                  <OptionRow label="Resolution" value={form.resolution} options={selectedModel.capabilities.resolutions} onChange={(value) => setForm((current) => ({ ...current, resolution: value }))} />
+                  <StyleSelect value={form.style} onChange={(style) => setForm((current) => ({ ...current, style }))} />
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <div className="rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5">
+                      <div>Aspect</div>
+                      <div className="mt-0.5 text-sm font-medium normal-case tracking-normal text-slate-100">{CHARACTER_IMAGE_ASPECT_RATIO}</div>
+                    </div>
+                    <div className="rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5">
+                      <div>Resolution</div>
+                      <div className="mt-0.5 text-sm font-medium normal-case tracking-normal text-slate-100">{CHARACTER_IMAGE_RESOLUTION}</div>
+                    </div>
+                  </div>
                 </div>
 
                 {activeIteration?.generation?.actualCostUsd !== undefined && (
@@ -425,7 +430,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
 
           <div className="flex items-center justify-between gap-3 border-t border-surface-700 px-4 py-3">
             <div className="text-[11px] text-slate-500">
-              {selectedModel.label} · ${estimatedCostUsd.toFixed(3)} / image
+              {selectedModel.label} · {CHARACTER_IMAGE_ASPECT_RATIO} · {CHARACTER_IMAGE_RESOLUTION} · ${estimatedCostUsd.toFixed(3)} / image
             </div>
             <div className="flex items-center gap-2">
               {!isCreate && (
@@ -452,10 +457,10 @@ function defaultCharacterForm(assets: MediaAsset[]): CharacterForm {
     name: '',
     characterId: uniqueCharacterId('character', assets),
     description: '',
-    prompt: '',
+    style: 'real-life',
     model: model.id,
-    aspectRatio: model.capabilities.aspects[0] ?? '1:1',
-    resolution: model.capabilities.resolutions[0] ?? '1K',
+    aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+    resolution: CHARACTER_IMAGE_RESOLUTION,
   };
 }
 
@@ -464,13 +469,14 @@ function setFormForModel(modelId: string, setForm: (updater: (current: Character
   setForm((current) => ({
     ...current,
     model: model.id,
-    aspectRatio: model.capabilities.aspects.includes(current.aspectRatio as never) ? current.aspectRatio : model.capabilities.aspects[0] ?? '1:1',
-    resolution: model.capabilities.resolutions.includes(current.resolution) ? current.resolution : model.capabilities.resolutions[0] ?? '1K',
+    aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+    resolution: CHARACTER_IMAGE_RESOLUTION,
   }));
 }
 
-function buildCharacterImagePrompt(basePrompt: string): string {
-  return [basePrompt.trim(), CHARACTER_SHEET_TEMPLATE].filter(Boolean).join('\n\n');
+function buildCharacterImagePrompt(basePrompt: string, style: CharacterVisualStyle): string {
+  const stylePrompt = CHARACTER_STYLE_OPTIONS.find((option) => option.value === style)?.prompt;
+  return [basePrompt.trim(), stylePrompt, CHARACTER_SHEET_TEMPLATE].filter(Boolean).join('\n\n');
 }
 
 function IterationButton({ iteration, active, onClick }: { iteration: EditTrailIteration; active: boolean; onClick: () => void }) {
@@ -500,39 +506,168 @@ function IterationButton({ iteration, active, onClick }: { iteration: EditTrailI
 }
 
 function ImageModelSelect({ value, options, onChange }: { value: string; options: ImageModelDefinition[]; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.id === value) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || popupRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const popup = popupRef.current;
+      if (!trigger || !popup) return;
+      const rect = trigger.getBoundingClientRect();
+      const margin = 8;
+      const width = Math.min(320, window.innerWidth - margin * 2);
+      const estimatedHeight = popup.offsetHeight || 320;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const spaceAbove = rect.top - margin;
+      const placeAbove = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+      const left = Math.min(Math.max(margin, rect.left), window.innerWidth - width - margin);
+      const top = placeAbove
+        ? Math.max(margin, rect.top - estimatedHeight - 4)
+        : Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - margin);
+      popup.style.left = `${left}px`;
+      popup.style.top = `${top}px`;
+      popup.style.width = `${width}px`;
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
   return (
     <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
       Image Model
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-9 rounded-md border border-surface-700 bg-surface-900 px-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+      <button
+        ref={triggerRef}
+        type="button"
+        className="flex h-9 w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-900 px-2 text-sm font-normal normal-case tracking-normal text-slate-100 transition hover:border-surface-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="listbox"
+        aria-label={selected ? `Image model: ${selected.label}` : 'Select image model'}
       >
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>{option.label} · ${option.estimatedCostUsd.toFixed(3)}</option>
-        ))}
-      </select>
+        {selected ? (
+          <span className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-surface-950">
+              <ImageProviderLogo provider={selected.provider} size={18} />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-left font-medium">{selected.label}</span>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-left text-slate-400">No image models</span>
+        )}
+        <ChevronDown size={13} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={popupRef}
+          className="fixed z-[200] overflow-hidden rounded-md border border-surface-700 bg-surface-900 shadow-2xl"
+          role="listbox"
+          aria-label="Image models"
+        >
+          <div className="border-b border-surface-700 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Image Models</div>
+          <div className="max-h-[360px] overflow-auto p-1.5">
+            {options.map((option) => {
+              const active = option.id === value;
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="option"
+                  className={`flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left transition ${active ? 'bg-surface-700' : 'hover:bg-surface-800'}`}
+                  onClick={() => {
+                    onChange(option.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${active ? 'bg-surface-800' : 'bg-surface-950'}`}>
+                    <ImageProviderLogo provider={option.provider} size={24} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className={`truncate text-sm font-medium ${active ? 'text-slate-100' : 'text-slate-200'}`}>{option.label}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+                      <span className="rounded bg-surface-800 px-1.5 py-0.5">{CHARACTER_IMAGE_ASPECT_RATIO}</span>
+                      <span className="rounded bg-surface-800 px-1.5 py-0.5">{CHARACTER_IMAGE_RESOLUTION}</span>
+                      <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-300">${option.estimatedCostUsd.toFixed(3)}</span>
+                    </div>
+                  </div>
+                  {active && <Check size={14} className="shrink-0 text-brand-300" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>,
+        document.body,
+      )}
     </label>
   );
 }
 
-function OptionRow({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (value: string) => void }) {
+function StyleSelect({ value, onChange }: { value: CharacterVisualStyle; onChange: (value: CharacterVisualStyle) => void }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Style</div>
       <div className="flex flex-wrap gap-1">
-        {options.map((option) => (
+        {CHARACTER_STYLE_OPTIONS.map((option) => (
           <button
-            key={option}
+            key={option.value}
             type="button"
-            className={`h-7 rounded px-2 text-xs transition ${value === option ? 'bg-brand-500 text-white' : 'bg-surface-800 text-slate-300 hover:bg-surface-700'}`}
-            onClick={() => onChange(option)}
+            className={`h-7 rounded px-2 text-xs transition ${value === option.value ? 'bg-brand-500 text-white' : 'bg-surface-800 text-slate-300 hover:bg-surface-700'}`}
+            onClick={() => onChange(option.value)}
           >
-            {option}
+            {option.label}
           </button>
         ))}
       </div>
     </div>
+  );
+}
+
+function ImageProviderLogo({ provider, size }: { provider: ImageModelProvider; size: number }) {
+  if (provider === 'piapi-gpt-image') return <OpenAiLogo size={size} />;
+  return <GeminiLogo size={size} />;
+}
+
+function OpenAiLogo({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" className="text-slate-100">
+      <path d="M12 3.3 6.9 6.2v5.9L12 15l5.1-2.9V6.2L12 3.3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="m6.9 6.2 5.1 2.9 5.1-2.9M6.9 12.1 12 9.1l5.1 3M12 15V9.1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="12" r="8.7" fill="none" stroke="currentColor" strokeWidth="1.3" opacity="0.55" />
+    </svg>
+  );
+}
+
+function GeminiLogo({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 1.5c1.15 5.25 4.25 8.35 10.5 10.5-6.25 2.15-9.35 5.25-10.5 10.5C10.85 17.25 7.75 14.15 1.5 12 7.75 9.85 10.85 6.75 12 1.5Z" fill="#2488f5" />
+      <path d="M12 1.5c1.15 5.25 4.25 8.35 10.5 10.5-4.3 1.48-7.13 3.42-8.74 6.15C12.66 13.78 9.78 10.84 5.1 8.95 8.88 7.28 10.98 5.02 12 1.5Z" fill="#9b7cff" opacity="0.9" />
+    </svg>
   );
 }
 

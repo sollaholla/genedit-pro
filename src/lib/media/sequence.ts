@@ -31,17 +31,17 @@ export function composeSequencePrompt(sequence: SequenceAssetData, options: Sequ
   const lines: string[] = [];
   const overallPrompt = sequence.overallPrompt.trim();
   if (overallPrompt) lines.push(overallPrompt, '');
-  let imageIndex = 0;
+  let referenceIndex = 0;
   const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY;
   for (const marker of sortedSequenceMarkers(sequence)) {
     const hasImage = Boolean(
       marker.imageAssetId &&
-      imageIndex < maxImages &&
+      referenceIndex < maxImages &&
       (!options.availableImageAssetIds || options.availableImageAssetIds.has(marker.imageAssetId)),
     );
     const characterToken = marker.imageAssetId ? options.characterTokensByAssetId?.get(marker.imageAssetId) : undefined;
-    if (hasImage && !characterToken) imageIndex += 1;
-    const token = hasImage ? ` @${characterToken ?? `image${imageIndex}`}` : '';
+    if (hasImage) referenceIndex += 1;
+    const token = hasImage ? ` @${characterToken ?? `image${referenceIndex}`}` : '';
     const prompt = marker.prompt.trim() || 'Shot beat';
     lines.push(`[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${token}`);
   }

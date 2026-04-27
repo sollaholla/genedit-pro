@@ -76,6 +76,7 @@ export async function generatePiApiImage(
   request: ImageGenerationRequest,
   credentials: PiApiCredentials,
 ): Promise<GeneratedPiApiImage> {
+  request.onProgress?.(3);
   if (isGptImageModel(request.model)) return generateGptImage(request, credentials);
   return generateGeminiImage(request, credentials);
 }
@@ -86,6 +87,9 @@ export async function getPiApiImageTask(taskId: string, credentials: PiApiCreden
 }
 
 export function generatedPiApiImageFromTask(task: PiApiImageTaskData): { url?: string } {
+  const nestedOutputUrl = imageUrlFromUnknown(task.output);
+  if (nestedOutputUrl) return { url: nestedOutputUrl };
+
   const output = task.output ?? {};
   const outputUrl = firstString([output.image_url, output.url, output.download_url]);
   if (outputUrl) return { url: outputUrl };
@@ -95,6 +99,8 @@ export function generatedPiApiImageFromTask(task: PiApiImageTaskData): { url?: s
 
   const taskOutput = task.task_result?.task_output;
   if (!taskOutput) return {};
+  const nestedTaskUrl = imageUrlFromUnknown(taskOutput);
+  if (nestedTaskUrl) return { url: nestedTaskUrl };
   const taskUrl = firstString([taskOutput.image_url, ...(taskOutput.image_urls ?? [])]);
   if (taskUrl) return { url: taskUrl };
   if (taskOutput.image_base64) return { url: dataUrlFromBase64(taskOutput.image_base64) };
@@ -105,10 +111,12 @@ async function generateGptImage(
   request: ImageGenerationRequest,
   credentials: PiApiCredentials,
 ): Promise<GeneratedPiApiImage> {
+  request.onProgress?.(8);
   const endpoint = request.referenceFiles?.length ? '/v1/images/edits' : '/v1/images/generations';
   const response = request.referenceFiles?.length
     ? await createGptImageEdit(request, credentials, endpoint)
     : await createGptImageGeneration(request, credentials, endpoint);
+  request.onProgress?.(90);
   const imageUrl = gptImageUrlFromResponse(response);
   if (!imageUrl) throw new VideoGenerationProviderError('InternalError', 'PiAPI GPT image did not return an image URL.');
   return {
@@ -171,6 +179,7 @@ async function generateGeminiImage(
   request: ImageGenerationRequest,
   credentials: PiApiCredentials,
 ): Promise<GeneratedPiApiImage> {
+  request.onProgress?.(5);
   const body: Record<string, unknown> = {
     model: 'gemini',
     task_type: request.model.id,
@@ -189,6 +198,7 @@ async function generateGeminiImage(
   const initialTask = await createPiApiImageTask(body, credentials);
   if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return an image task id.');
   request.onTaskAccepted?.(initialTask);
+  request.onProgress?.(10);
   const finalTask = await pollPiApiImageTask({ credentials, initialTask, onProgress: request.onProgress });
   const image = generatedPiApiImageFromTask(finalTask);
   if (!image.url) throw new VideoGenerationProviderError('InternalError', 'No generated image URL returned by PiAPI.');
@@ -222,15 +232,16 @@ async function pollPiApiImageTask({
   const taskId = initialTask.task_id;
   if (!taskId) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return an image task id.');
   let task = initialTask;
-  let progress = 5;
+  let progress = 10;
+  onProgress?.(progress);
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const status = normalizeStatus(task.status);
     if (isFailedStatus(status)) throw piApiTaskFailure(task, 'PiAPI image generation failed');
     if (isCompletedStatus(status) && generatedPiApiImageFromTask(task).url) return task;
     await new Promise((resolve) => setTimeout(resolve, 3000));
+    task = await getPiApiImageTask(taskId, credentials);
     progress = Math.min(95, progress + 5);
     onProgress?.(progress);
-    task = await getPiApiImageTask(taskId, credentials);
   }
   throw new VideoGenerationProviderError('InternalError', 'PiAPI image generation timed out before returning an image.');
 }
@@ -335,6 +346,31 @@ function firstString(values: unknown[]): string | null {
   return null;
 }
 
+function imageUrlFromUnknown(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return /^(?:https?:\/\/|data:image\/)/i.test(trimmed) ? trimmed : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const url = imageUrlFromUnknown(item);
+      if (url) return url;
+    }
+    return null;
+  }
+  if (!isObject(value)) return null;
+  const preferredKeys = ['image_url', 'image_urls', 'images', 'url', 'urls', 'download_url', 'output_url', 'result_url'];
+  for (const key of preferredKeys) {
+    const url = imageUrlFromUnknown(value[key]);
+    if (url) return url;
+  }
+  for (const nested of Object.values(value)) {
+    const url = imageUrlFromUnknown(nested);
+    if (url) return url;
+  }
+  return null;
+}
+
 function dataUrlFromBase64(value: string): string {
   return value.startsWith('data:') ? value : `data:image/png;base64,${value}`;
 }
@@ -348,7 +384,11 @@ function isCompletedStatus(status: string): boolean {
 }
 
 function isFailedStatus(status: string): boolean {
-  return status === 'failed' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled';
+  return status === 'failed' || status === 'failure' || status === 'fail' || status === 'error' || status === 'cancelled' || status === 'canceled';
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 export function activeCharacterReferenceFile(asset: MediaAsset, blob: Blob | null): File | null {
