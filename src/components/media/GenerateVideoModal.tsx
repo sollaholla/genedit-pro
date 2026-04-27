@@ -202,9 +202,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     .map((ref) => assets.find((asset) => asset.id === ref.assetId))
     .filter((asset): asset is MediaAsset => asset !== undefined)
     .filter(isReferenceImageAsset), [assets, references]);
-  const referenceImageAssets = useMemo(() => uniqueReferenceAssets([...explicitReferenceAssets, ...promptCharacterReferences]), [explicitReferenceAssets, promptCharacterReferences]);
+  const referenceImageAssets = useMemo(() => {
+    const frameAssetIds = new Set([startFrame?.id, endFrame?.id].filter((id): id is string => Boolean(id)));
+    return uniqueReferenceAssets([...explicitReferenceAssets, ...promptCharacterReferences])
+      .filter((asset) => !frameAssetIds.has(asset.id));
+  }, [endFrame?.id, explicitReferenceAssets, promptCharacterReferences, startFrame?.id]);
   const activeReferenceCount = referenceImageAssets.length;
-  const referencesIgnoredByFrameMode = Boolean((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame) && activeReferenceCount > 0);
+  const referencesIgnoredByFrameMode = Boolean(isVeoModel(selectedModel) && (startFrame || endFrame) && activeReferenceCount > 0);
   const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && activeReferenceCount > 0);
   const generateDisabled = isGenerating ||
     !providerCredentialsAvailable ||
@@ -213,13 +217,17 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const seconds = Number(duration.replace('s', ''));
     return estimatePiApiCostUsd(selectedModel, resolution, seconds, audioEnabled);
   }, [audioEnabled, duration, resolution, selectedModel]);
-  const imageReferenceLimit = sourceVideo
+  const baseImageReferenceLimit = sourceVideo
     ? isKlingModel(selectedModel)
       ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
       : isPiApiSeedanceModel(selectedModel)
         ? Math.max(0, selectedModel.capabilities.assetInputs.imageReferencesMax - 1)
         : selectedModel.capabilities.assetInputs.imageReferencesMax
     : selectedModel.capabilities.assetInputs.imageReferencesMax;
+  const frameImageReferenceCount = isPiApiSeedanceModel(selectedModel) && !sourceVideo
+    ? Number(Boolean(startFrame)) + Number(Boolean(endFrame))
+    : 0;
+  const imageReferenceLimit = Math.max(0, baseImageReferenceLimit - frameImageReferenceCount);
   const sourceVideoSupported = selectedModel.capabilities.assetInputs.videoExtension;
   const frameInputsSupported = selectedModel.capabilities.assetInputs.startFrame;
   const constrainedByEightSecondGeneration = Boolean(
@@ -236,7 +244,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     [selectedModel.capabilities.resolutions],
   );
   const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
-    !((isVeoModel(selectedModel) || isPiApiSeedanceModel(selectedModel)) && (startFrame || endFrame)) &&
+    !(isVeoModel(selectedModel) && (startFrame || endFrame)) &&
     !(isVeoModel(selectedModel) && sourceVideo);
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
@@ -340,7 +348,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const sequenceStartFrame = sequenceModel?.capabilities.assetInputs.startFrame
       ? startFrameAssetForSequence(sequence, assets)
       : null;
-    const maxImages = sequenceModel?.capabilities.assetInputs.imageReferencesMax ?? 12;
+    const frameReferenceSlots = sequenceStartFrame && sequenceModel && isPiApiSeedanceModel(sequenceModel) ? 1 : 0;
+    const maxImages = Math.max(0, (sequenceModel?.capabilities.assetInputs.imageReferencesMax ?? 12) - frameReferenceSlots);
     const sequenceReferenceOptions = {
       availableImageAssetIds: imageAssetIds,
       characterTokensByAssetId,
@@ -483,6 +492,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   function addReferenceAsset(asset: MediaAsset) {
     if (!isReferenceImageAsset(asset)) return;
     if (imageReferenceLimit <= 0) return;
+    if (asset.id === startFrame?.id || asset.id === endFrame?.id) return;
     if (references.some((ref) => ref.assetId === asset.id)) return;
     if (references.length >= imageReferenceLimit) return;
     const kind = asset.kind as RefToken['kind'];
@@ -890,7 +900,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               <div className="mb-2 text-[11px] text-slate-500">
                 Up to {imageReferenceLimit} image references. {isVeoModel(selectedModel)
                   ? 'Start/end frames take precedence over image references.'
-                  : 'References are sent through Kling Omni images.'}
+                  : 'References are sent as image inputs.'}
               </div>
             )}
             {referencesIgnoredByFrameMode && (

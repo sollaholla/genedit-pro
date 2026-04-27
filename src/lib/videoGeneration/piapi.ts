@@ -205,8 +205,9 @@ async function buildPiApiKlingOmniRequest(
 
   validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos });
 
+  const referenceTokenCounts = new Map<string, number>();
   const referenceImageEntries = await Promise.all(referenceImages.map(async (asset, index) => ({
-      token: promptTokenForImageAsset(asset, index),
+      token: promptTokenForReferenceAsset(asset, referenceTokenCounts),
       url: await resolvePiApiReferenceUrl(asset, 'Kling image reference', options),
       purpose: `reference image ${index + 1}`,
     })));
@@ -269,34 +270,31 @@ async function buildPiApiSeedanceRequest(
 
   validatePiApiSeedanceMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
-  const hasFrameMode = startFrames.length > 0 || endFrames.length > 0;
-  const imageUrls = hasFrameMode
-    ? await Promise.all([
-      ...startFrames.map((asset) => resolvePiApiReferenceUrl(asset, 'Seedance start frame', options)),
-      ...endFrames.map((asset) => resolvePiApiReferenceUrl(asset, 'Seedance end frame', options)),
-    ])
-    : await Promise.all(
-      referenceImages.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance image reference ${index + 1}`, options)),
-    );
-  const videoUrls = hasFrameMode
-    ? []
-    : await Promise.all(
-      sourceVideos.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)),
-    );
+  const referenceTokenCounts = new Map<string, number>();
+  const imageEntries: PiApiImageEntry[] = await Promise.all([
+    ...startFrames.map((asset) => ({ token: 'start-frame', asset, purpose: 'start frame' })),
+    ...endFrames.map((asset) => ({ token: 'end-frame', asset, purpose: 'end frame' })),
+    ...referenceImages.map((asset, index) => ({ token: promptTokenForReferenceAsset(asset, referenceTokenCounts), asset, purpose: `reference image ${index + 1}` })),
+  ].map(async (entry) => ({
+    token: entry.token,
+    url: await resolvePiApiReferenceUrl(entry.asset, `Seedance ${entry.purpose}`, options),
+    purpose: entry.purpose,
+  })));
+  const videoUrls = await Promise.all(
+    sourceVideos.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)),
+  );
 
-  const mode = hasFrameMode
-    ? 'first_last_frames'
-    : imageUrls.length > 0 || videoUrls.length > 0
+  const mode = imageEntries.length > 0 || videoUrls.length > 0
       ? 'omni_reference'
       : 'text_to_video';
   const input: Record<string, unknown> = {
-    prompt: hasFrameMode ? rewriteSeedanceFramePrompt(mutation.prompt, startFrames.length, endFrames.length) : mutation.prompt,
+    prompt: imageEntries.length > 0 ? rewriteSeedancePromptReferences(mutation.prompt, imageEntries) : mutation.prompt,
     mode,
     duration: mutation.config.durationSeconds,
     resolution: mutation.config.resolution,
-    aspect_ratio: hasFrameMode ? 'auto' : mutation.config.aspectRatio,
+    aspect_ratio: mutation.config.aspectRatio,
   };
-  if (imageUrls.length > 0) input.image_urls = imageUrls;
+  if (imageEntries.length > 0) input.image_urls = imageEntries.map((entry) => entry.url);
   if (videoUrls.length > 0) input.video_urls = videoUrls;
 
   return {
@@ -383,7 +381,6 @@ function validatePiApiSeedanceMutation({
   sourceVideos: MediaAsset[];
   mutation: VideoGenerationMutation;
 }) {
-  const hasFrameMode = startFrames.length > 0 || endFrames.length > 0;
   if (mutation.config.durationSeconds < 4 || mutation.config.durationSeconds > 15) {
     throw new Error('Seedance 2.0 duration must be between 4 and 15 seconds.');
   }
@@ -394,8 +391,8 @@ function validatePiApiSeedanceMutation({
   if ((startFrames.length > 0 || endFrames.length > 0) && sourceVideos.length > 0) {
     throw new Error('Seedance video references cannot be combined with first/last frame mode.');
   }
-  if (!hasFrameMode && referenceImages.length + sourceVideos.length > 12) throw new Error('Seedance accepts up to 12 total references.');
-  const imagesToValidate = hasFrameMode ? [...startFrames, ...endFrames] : [...startFrames, ...endFrames, ...referenceImages];
+  if (startFrames.length + endFrames.length + referenceImages.length + sourceVideos.length > 12) throw new Error('Seedance accepts up to 12 total references.');
+  const imagesToValidate = [...startFrames, ...endFrames, ...referenceImages];
   for (const asset of imagesToValidate) {
     if (!isImageLikeAsset(asset)) throw new Error(`${asset.name} must be an image input.`);
   }
@@ -405,16 +402,27 @@ function validatePiApiSeedanceMutation({
   }
 }
 
-function rewriteSeedanceFramePrompt(prompt: string, startFrameCount: number, endFrameCount: number): string {
+function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImageEntry[]): string {
   let next = prompt;
-  if (startFrameCount > 0) next = next.replace(/@start-frame\b/gi, '@image1');
-  if (endFrameCount > 0) next = next.replace(/@end-frame\b/gi, `@image${startFrameCount + 1}`);
-  return next;
+  const missingDirectives: string[] = [];
+  imageEntries.forEach((entry, index) => {
+    const replacement = `@image${index + 1}`;
+    const placeholder = `__GENEDIT_SEEDANCE_IMAGE_${index + 1}__`;
+    const hadToken = containsPromptToken(next, entry.token);
+    next = replacePromptToken(next, entry.token, placeholder);
+    if (!hadToken) missingDirectives.push(`Use ${replacement} as the ${entry.purpose}.`);
+  });
+  imageEntries.forEach((_, index) => {
+    next = next.replaceAll(`__GENEDIT_SEEDANCE_IMAGE_${index + 1}__`, `@image${index + 1}`);
+  });
+  return `${missingDirectives.join(' ')} ${next}`.trim();
 }
 
-function promptTokenForImageAsset(asset: MediaAsset, index: number): string {
+function promptTokenForReferenceAsset(asset: MediaAsset, counts: Map<string, number>): string {
   if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
-  return `image${index + 1}`;
+  const count = counts.get('image') ?? 0;
+  counts.set('image', count + 1);
+  return `image${count + 1}`;
 }
 
 async function piApiFetch(path: string, credentials: PiApiCredentials, init: RequestInit): Promise<Response> {
