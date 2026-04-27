@@ -59,7 +59,7 @@ export function TimelineClip({
 
   return (
     <div
-      className={`absolute top-1 overflow-hidden rounded-sm text-[10px] text-white no-select
+      className={`absolute top-1 z-0 isolate overflow-hidden rounded-sm text-[10px] text-white no-select
         ${bg}
         ${selected && !ghost ? 'ring-2 ring-brand-400' : 'ring-1 ring-black/30'}
         ${ghost ? 'pointer-events-none opacity-60 ring-2 ring-brand-400 ring-dashed' : 'cursor-grab active:cursor-grabbing'}`}

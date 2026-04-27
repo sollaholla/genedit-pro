@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Clip, Project, Track } from '@/types';
-import { Plus, Scissors, Trash2 } from 'lucide-react';
+import { Plus, Scissors } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
   TRACK_HEADER_WIDTH_PX,
@@ -156,10 +156,8 @@ export function Timeline() {
     deleteSelectedKeyframe,
     selectedKeyframe,
     selectedKeyframes,
-    selectedKeyframeData,
     setSelectedKeyframe,
     selectKeyframes,
-    setSelectedKeyframeValue,
     beginKeyframeDrag,
     moveKeyframe,
     moveKeyframeGroup,
@@ -721,31 +719,6 @@ export function Timeline() {
         </div>
         <ShortcutHints />
       </div>
-      {selectedClip && selectedKeyframeData && (
-        <div className="border-t border-surface-700 bg-surface-900 px-3 py-1.5 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-slate-400">{`Transform ${selectedKeyframeData.componentIndex + 1}.${formatKeyframeProperty(selectedKeyframeData.property)}`}</span>
-            <input
-              type="number"
-              className="w-24 rounded border border-surface-600 bg-surface-800 px-2 py-1 text-slate-100 outline-none"
-              value={Number(selectedKeyframeData.value.toFixed(3))}
-              onChange={(e) => {
-                const nextValue = Number(e.target.value);
-                if (!Number.isFinite(nextValue)) return;
-                setSelectedKeyframeValue(nextValue);
-              }}
-            />
-            <button
-              type="button"
-              className="btn-ghost px-2 py-1 text-xs text-rose-300 hover:text-rose-200"
-              onClick={deleteSelectedKeyframe}
-              title="Delete keyframe (Delete)"
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        </div>
-      )}
       <div className="flex min-h-0 flex-1">
         {/* Track headers: pinned ruler + vertically synced track list */}
         <div className="relative min-h-0 shrink-0 overflow-hidden border-r border-surface-700" style={{ width: TRACK_HEADER_WIDTH_PX }}>
@@ -1230,13 +1203,6 @@ function TrackCreateMenu({ onVideo, onAudio }: { onVideo: () => void; onAudio: (
       )}
     </div>
   );
-}
-
-function formatKeyframeProperty(property: string): string {
-  if (property === 'offsetX') return 'Offset X';
-  if (property === 'offsetY') return 'Offset Y';
-  if (property === 'scale') return 'Scale';
-  return property;
 }
 
 function Hint({ keys, label }: { keys: React.ReactNode[]; label: string }) {
