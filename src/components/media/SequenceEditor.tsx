@@ -1646,6 +1646,17 @@ function buildShotImagePrompt(sequence: SequenceAssetData, targetMarker: Sequenc
     lines.push('');
   }
 
+  lines.push('LIGHTING AND STYLE CONTINUITY:');
+  if (adjacentReferences.length > 0) {
+    lines.push('- Match the supplied reference frame lighting direction, color temperature, exposure, contrast, lens feel, grain/noise level, and overall visual style.');
+    lines.push('- Keep character wardrobe, materials, skin tone, hair, and environment treatment consistent with the reference frames.');
+    lines.push('- Do not copy the pose, gesture, facial expression, camera action, or story event from the reference frames unless it is explicitly part of the selected frame prompt.');
+  } else {
+    lines.push('- Establish a consistent cinematic lighting style that can be carried across later frames in this sequence.');
+    lines.push('- Keep exposure, contrast, color temperature, lens feel, and production design coherent with the sequence brief and character references.');
+  }
+  lines.push('');
+
   if (overallPrompt) {
     lines.push('SEQUENCE BRIEF FOR CONTINUITY ONLY:');
     lines.push(overallPrompt);
