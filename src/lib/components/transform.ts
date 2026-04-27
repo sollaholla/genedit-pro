@@ -207,6 +207,48 @@ export function moveTransformKeyframeGroup(
   };
 }
 
+export function moveTransformKeyframes(
+  clip: Clip,
+  targets: Array<TransformTarget & { property: TransformProperty; keyframeId: string; timeSec: number }>,
+  options: { mergeEpsSec?: number } = {},
+): Clip {
+  const components = getClipComponents(clip);
+  if (targets.length === 0 || components.length === 0) return clip;
+  const transformComponents = getTransformComponents(clip);
+  return {
+    ...clip,
+    components: components.map((component) => {
+      if (component.type !== 'transform') return component;
+      const transformIndex = transformComponents.findIndex((candidate) => candidate.id === component.id);
+      const componentTargets = targets.filter((target) => {
+        if (target.componentId) return target.componentId === component.id;
+        return target.componentIndex === transformIndex;
+      });
+      if (componentTargets.length === 0) return component;
+
+      const keyframes = { ...component.data.keyframes };
+      (['scale', 'offsetX', 'offsetY'] as const).forEach((property) => {
+        const propertyTargets = componentTargets.filter((target) => target.property === property);
+        if (propertyTargets.length === 0) return;
+        const targetById = new Map(propertyTargets.map((target) => [target.keyframeId, target]));
+        const moved = keyframes[property].map((point) => {
+          const target = targetById.get(point.id);
+          return target ? { ...point, timeSec: target.timeSec } : point;
+        });
+        keyframes[property] = mergeKeyframesAtSameTime(moved, new Set(targetById.keys()), options.mergeEpsSec);
+      });
+
+      return {
+        ...component,
+        data: {
+          ...component.data,
+          keyframes,
+        },
+      };
+    }),
+  };
+}
+
 function mergeKeyframesAtSameTime(
   points: KeyframePoint[],
   preferredIds: Set<string>,
@@ -250,6 +292,46 @@ export function removeTransformKeyframe(
             ...component.data.keyframes,
             [target.property]: component.data.keyframes[target.property].filter((point) => point.id !== target.keyframeId),
           },
+        },
+      };
+    }),
+  };
+}
+
+export function removeTransformKeyframes(
+  clip: Clip,
+  targets: Array<TransformTarget & { property: TransformProperty; keyframeId: string }>,
+): Clip {
+  const components = getClipComponents(clip);
+  if (targets.length === 0 || components.length === 0) return clip;
+  const transformComponents = getTransformComponents(clip);
+  return {
+    ...clip,
+    components: components.map((component) => {
+      if (component.type !== 'transform') return component;
+      const transformIndex = transformComponents.findIndex((candidate) => candidate.id === component.id);
+      const componentTargets = targets.filter((target) => {
+        if (target.componentId) return target.componentId === component.id;
+        return target.componentIndex === transformIndex;
+      });
+      if (componentTargets.length === 0) return component;
+
+      const keyframes = { ...component.data.keyframes };
+      (['scale', 'offsetX', 'offsetY'] as const).forEach((property) => {
+        const ids = new Set(
+          componentTargets
+            .filter((target) => target.property === property)
+            .map((target) => target.keyframeId),
+        );
+        if (ids.size === 0) return;
+        keyframes[property] = keyframes[property].filter((point) => !ids.has(point.id));
+      });
+
+      return {
+        ...component,
+        data: {
+          ...component.data,
+          keyframes,
         },
       };
     }),

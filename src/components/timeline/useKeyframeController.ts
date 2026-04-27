@@ -1,7 +1,9 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { Clip, Project } from '@/types';
 import {
+  moveTransformKeyframes,
   moveTransformKeyframeGroup,
+  removeTransformKeyframes,
   removeTransformKeyframeGroup,
   updateTransformKeyframe,
 } from '@/lib/components/transform';
@@ -9,11 +11,14 @@ import { clipTimelineDurationSec } from '@/lib/timeline/operations';
 import {
   findSelectedKeyframe,
   getKeyframeProperties,
+  keyframeSelectionKey,
   laneHeightForClip,
   type KeyframeSelection,
 } from './keyframeModel';
 
 type ProjectUpdater = (fn: (project: Project) => Project) => void;
+
+type KeyframeDragBaseline = KeyframeSelection & { timeSec: number };
 
 type UseKeyframeControllerArgs = {
   clips: Clip[];
@@ -38,10 +43,20 @@ export function useKeyframeController({
   beginTx,
   setCurrentTime,
 }: UseKeyframeControllerArgs) {
-  const [selectedKeyframe, setSelectedKeyframe] = useState<KeyframeSelection | null>(null);
+  const [selectedKeyframes, setSelectedKeyframesState] = useState<KeyframeSelection[]>([]);
+  const keyframeDragRef = useRef<{ anchorKey: string; anchorTimeSec: number; baselines: KeyframeDragBaseline[] } | null>(null);
+  const selectedKeyframe = selectedKeyframes[0] ?? null;
   const selectedKeyframeClip = selectedKeyframe
     ? clips.find((clip) => clip.id === selectedKeyframe.clipId) ?? null
     : null;
+
+  const setSelectedKeyframe = useCallback((selection: KeyframeSelection | null) => {
+    setSelectedKeyframesState(selection ? [selection] : []);
+  }, []);
+
+  const selectKeyframes = useCallback((selections: KeyframeSelection[]) => {
+    setSelectedKeyframesState(dedupeKeyframeSelections(selections));
+  }, []);
 
   const visibleKeyframeProperties = useMemo(() => {
     if (!selectedClip) return [];
@@ -69,10 +84,23 @@ export function useKeyframeController({
   }, [update, updateSilent]);
 
   const deleteSelectedKeyframe = useCallback(() => {
-    if (!selectedKeyframe) return;
-    patchClip(selectedKeyframe.clipId, (clip) => removeTransformKeyframeGroup(clip, selectedKeyframe));
-    setSelectedKeyframe(null);
-  }, [patchClip, selectedKeyframe]);
+    const selections = dedupeKeyframeSelections(selectedKeyframes);
+    const onlySelection = selections[0] ?? null;
+    if (!onlySelection) return;
+    if (selections.length === 1) {
+      patchClip(onlySelection.clipId, (clip) => removeTransformKeyframeGroup(clip, onlySelection));
+    } else {
+      update((project) => ({
+        ...project,
+        clips: project.clips.map((clip) => {
+          const clipSelections = selections.filter((selection) => selection.clipId === clip.id);
+          return clipSelections.length > 0 ? removeTransformKeyframes(clip, clipSelections) : clip;
+        }),
+      }));
+    }
+    setSelectedKeyframesState([]);
+    keyframeDragRef.current = null;
+  }, [patchClip, selectedKeyframes, update]);
 
   const setSelectedKeyframeValue = useCallback((value: number) => {
     if (!selectedKeyframe) return;
@@ -80,6 +108,16 @@ export function useKeyframeController({
   }, [patchClip, selectedKeyframe]);
 
   const nudgeSelectedKeyframe = useCallback((property: 'time' | 'value', direction: -1 | 1) => {
+    if (selectedKeyframes.length > 1 && property === 'time') {
+      const frameStep = direction / Math.max(1, fps);
+      const baselines = resolveSelectedKeyframePoints(clips, selectedKeyframes);
+      if (baselines.length === 0) return;
+      update((project) => moveKeyframeBaselines(project, baselines, frameStep, fps));
+      const first = baselines[0]!;
+      const clip = clips.find((candidate) => candidate.id === first.clipId);
+      if (clip) setCurrentTime(clip.startSec + quantizeKeyframeTime(first.timeSec + frameStep, fps, clipTimelineDurationSec(clip)));
+      return;
+    }
     if (!selectedKeyframeData || !selectedKeyframeClip) return;
     const frameStep = 1 / Math.max(1, fps);
     const valueStep = selectedKeyframeData.property === 'scale' ? 0.01 : 1;
@@ -94,17 +132,34 @@ export function useKeyframeController({
       const nextTime = patch.timeSec ?? selectedKeyframeData.timeSec;
       setCurrentTime(selectedKeyframeClip.startSec + nextTime);
     }
-  }, [fps, patchClip, selectedKeyframeClip, selectedKeyframeData, setCurrentTime]);
+  }, [clips, fps, patchClip, selectedKeyframeClip, selectedKeyframeData, selectedKeyframes, setCurrentTime, update]);
 
-  const beginKeyframeDrag = useCallback(() => {
+  const beginKeyframeDrag = useCallback((anchor?: KeyframeSelection & { timeSec: number }) => {
     beginTx();
-  }, [beginTx]);
+    keyframeDragRef.current = null;
+    if (!anchor || selectedKeyframes.length <= 1) return;
+    const anchorKey = keyframeSelectionKey(anchor);
+    if (!selectedKeyframes.some((selection) => keyframeSelectionKey(selection) === anchorKey)) return;
+    const baselines = resolveSelectedKeyframePoints(clips, selectedKeyframes);
+    if (baselines.length <= 1) return;
+    keyframeDragRef.current = {
+      anchorKey,
+      anchorTimeSec: anchor.timeSec,
+      baselines,
+    };
+  }, [beginTx, clips, selectedKeyframes]);
 
   const moveKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number; value: number }) => {
     const clip = clips.find((candidate) => candidate.id === meta.clipId);
     if (!clip) return;
     const durationSec = clipTimelineDurationSec(clip);
     const nextTimeSec = quantizeKeyframeTime(meta.timeSec, fps, durationSec);
+    const dragState = keyframeDragRef.current;
+    if (dragState?.anchorKey === keyframeSelectionKey(meta)) {
+      updateSilent((project) => moveKeyframeBaselines(project, dragState.baselines, nextTimeSec - dragState.anchorTimeSec, fps));
+      setCurrentTime(clip.startSec + nextTimeSec);
+      return;
+    }
     patchClip(
       meta.clipId,
       (clip) => updateTransformKeyframe(clip, meta, { timeSec: nextTimeSec, value: meta.value }, {
@@ -120,7 +175,7 @@ export function useKeyframeController({
       keyframeId: meta.keyframeId,
     });
     setCurrentTime(clip.startSec + nextTimeSec);
-  }, [clips, fps, patchClip, setCurrentTime]);
+  }, [clips, fps, patchClip, setCurrentTime, setSelectedKeyframe, updateSilent]);
 
   const moveKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
@@ -136,18 +191,18 @@ export function useKeyframeController({
       }),
       true,
     );
-    setSelectedKeyframe(first);
+    setSelectedKeyframesState(dedupeKeyframeSelections(meta.members));
     setCurrentTime(clip.startSec + nextTimeSec);
   }, [clips, fps, patchClip, setCurrentTime]);
 
   const selectKeyframe = useCallback((meta: KeyframeSelection & { timeSec: number }) => {
-    setSelectedKeyframe({
+    setSelectedKeyframesState([{
       componentIndex: meta.componentIndex,
       componentId: meta.componentId,
       clipId: meta.clipId,
       property: meta.property,
       keyframeId: meta.keyframeId,
-    });
+    }]);
     const clip = clips.find((candidate) => candidate.id === meta.clipId);
     if (clip) setCurrentTime(clip.startSec + quantizeKeyframeTime(meta.timeSec, fps, clipTimelineDurationSec(clip)));
   }, [clips, fps, setCurrentTime]);
@@ -155,7 +210,7 @@ export function useKeyframeController({
   const selectKeyframeGroup = useCallback((meta: { members: KeyframeSelection[]; timeSec: number }) => {
     const first = meta.members[0];
     if (!first) return;
-    setSelectedKeyframe(first);
+    setSelectedKeyframesState(dedupeKeyframeSelections(meta.members));
     const clip = clips.find((candidate) => candidate.id === first.clipId);
     if (clip) setCurrentTime(clip.startSec + quantizeKeyframeTime(meta.timeSec, fps, clipTimelineDurationSec(clip)));
   }, [clips, fps, setCurrentTime]);
@@ -165,8 +220,10 @@ export function useKeyframeController({
     deleteSelectedKeyframe,
     keyframeLaneHeight,
     selectedKeyframe,
+    selectedKeyframes,
     selectedKeyframeData,
     setSelectedKeyframe,
+    selectKeyframes,
     setSelectedKeyframeValue,
     beginKeyframeDrag,
     moveKeyframe,
@@ -190,4 +247,47 @@ function quantizeKeyframeTime(timeSec: number, fps: number, durationSec: number)
 
 function keyframeFrameMergeEpsSec(fps: number): number {
   return 0.5 / Math.max(1, fps) + 1e-6;
+}
+
+function dedupeKeyframeSelections(selections: KeyframeSelection[]): KeyframeSelection[] {
+  const seen = new Set<string>();
+  const deduped: KeyframeSelection[] = [];
+  for (const selection of selections) {
+    const key = keyframeSelectionKey(selection);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(selection);
+  }
+  return deduped;
+}
+
+function resolveSelectedKeyframePoints(clips: Clip[], selections: KeyframeSelection[]): KeyframeDragBaseline[] {
+  const resolved: KeyframeDragBaseline[] = [];
+  for (const selection of dedupeKeyframeSelections(selections)) {
+    const clip = clips.find((candidate) => candidate.id === selection.clipId);
+    if (!clip) continue;
+    const row = getKeyframeProperties(clip).find((candidate) => (
+      candidate.componentId === selection.componentId &&
+      candidate.property === selection.property
+    ));
+    const point = row?.points.find((candidate) => candidate.id === selection.keyframeId);
+    if (point) resolved.push({ ...selection, timeSec: point.timeSec });
+  }
+  return resolved;
+}
+
+function moveKeyframeBaselines(project: Project, baselines: KeyframeDragBaseline[], deltaSec: number, fps: number): Project {
+  return {
+    ...project,
+    clips: project.clips.map((clip) => {
+      const clipBaselines = baselines.filter((baseline) => baseline.clipId === clip.id);
+      if (clipBaselines.length === 0) return clip;
+      const durationSec = clipTimelineDurationSec(clip);
+      const targets = clipBaselines.map((baseline) => ({
+        ...baseline,
+        timeSec: quantizeKeyframeTime(baseline.timeSec + deltaSec, fps, durationSec),
+      }));
+      return moveTransformKeyframes(clip, targets, { mergeEpsSec: keyframeFrameMergeEpsSec(fps) });
+    }),
+  };
 }

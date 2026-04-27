@@ -17,6 +17,10 @@ export type KeyframeSelection = {
   keyframeId: string;
 };
 
+export function keyframeSelectionKey(selection: KeyframeSelection): string {
+  return `${selection.clipId}:${selection.componentId}:${selection.property}:${selection.keyframeId}`;
+}
+
 export type KeyframePropertyRow = {
   label: string;
   componentIndex: number;

@@ -45,7 +45,15 @@ import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
 import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
 import { useKeyframeController } from './useKeyframeController';
-import { getKeyframeProperties, laneHeightForRows, type KeyframePropertyRow } from './keyframeModel';
+import {
+  getKeyframeProperties,
+  KEYFRAME_COMPONENT_ROW_HEIGHT_PX,
+  KEYFRAME_PROPERTY_ROW_HEIGHT_PX,
+  KEYFRAME_TITLE_HEIGHT_PX,
+  laneHeightForRows,
+  type KeyframePropertyRow,
+  type KeyframeSelection,
+} from './keyframeModel';
 import { keyframeComponentVisibilityKey } from '@/lib/components/transform';
 
 type DragOverlay = {
@@ -146,8 +154,10 @@ export function Timeline() {
   const {
     deleteSelectedKeyframe,
     selectedKeyframe,
+    selectedKeyframes,
     selectedKeyframeData,
     setSelectedKeyframe,
+    selectKeyframes,
     setSelectedKeyframeValue,
     beginKeyframeDrag,
     moveKeyframe,
@@ -558,15 +568,23 @@ export function Timeline() {
     if (e.button !== 0) return;
     // Ctrl/Cmd-click on empty area starts an additive marquee; otherwise replaces.
     const additive = e.ctrlKey || e.metaKey;
-    const baseline = additive ? usePlaybackStore.getState().selectedClipIds : [];
     const el = scrollRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const startX = e.clientX - rect.left + el.scrollLeft;
     const startY = e.clientY - rect.top + el.scrollTop;
+    const marqueeMode = isKeyframeContentY(startY, tracks, keyframeLanesByTrack) ? 'keyframes' : 'clips';
+    const clipBaseline = additive ? usePlaybackStore.getState().selectedClipIds : [];
+    const keyframeBaseline = additive ? selectedKeyframes : [];
     const initialSelection = usePlaybackStore.getState().selectedClipIds;
     setMarquee({ startX, startY, curX: startX, curY: startY });
-    if (!additive) setClipSelection([], { silent: true });
+
+    if (marqueeMode === 'keyframes') {
+      if (!additive) selectKeyframes([]);
+    } else {
+      setSelectedKeyframe(null);
+      if (!additive) setClipSelection([], { silent: true });
+    }
 
     const move = (ev: MouseEvent) => {
       const s = scrollRef.current;
@@ -581,11 +599,20 @@ export function Timeline() {
       const x1 = Math.max(startX, curX);
       const y0 = Math.min(startY, curY);
       const y1 = Math.max(startY, curY);
+
+      if (marqueeMode === 'keyframes') {
+        const hits = collectKeyframesInRect({ x0, x1, y0, y1 }, tracks, keyframeLanesByTrack, pxPerSec, project.fps);
+        const first = hits[0] ?? keyframeBaseline[0];
+        selectKeyframes([...keyframeBaseline, ...hits]);
+        if (first) selectClip(first.clipId);
+        return;
+      }
+
       const tStart = x0 / pxPerSec;
       const tEnd = x1 / pxPerSec;
       const idxStart = trackIndexFromContentY(y0);
       const idxEnd = trackIndexFromContentY(y1);
-      const hitIds = new Set(baseline);
+      const hitIds = new Set(clipBaseline);
       for (const clip of useProjectStore.getState().project.clips) {
         const trackIdx = tracks.findIndex((t) => t.id === clip.trackId);
         if (trackIdx < idxStart || trackIdx > idxEnd) continue;
@@ -599,11 +626,11 @@ export function Timeline() {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       setMarquee(null);
-      commitClipSelection(initialSelection);
+      if (marqueeMode === 'clips') commitClipSelection(initialSelection);
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [pxPerSec, tracks, setClipSelection, commitClipSelection, trackIndexFromContentY]);
+  }, [commitClipSelection, keyframeLanesByTrack, project.fps, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, trackIndexFromContentY, tracks]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -807,6 +834,7 @@ export function Timeline() {
                       pxPerSec={pxPerSec}
                       fps={project.fps}
                       selectedKeyframe={selectedKeyframe}
+                      selectedKeyframes={selectedKeyframes}
                       rows={lane.rows}
                       onDeselectKeyframe={() => setSelectedKeyframe(null)}
                       onBeginKeyframeDrag={beginKeyframeDrag}

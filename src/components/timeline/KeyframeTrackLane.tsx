@@ -2,7 +2,7 @@ import type { Clip } from '@/types';
 import { EyeOff } from 'lucide-react';
 import { clipTimelineDurationSec } from '@/lib/timeline/operations';
 import { timeToPx } from '@/lib/timeline/geometry';
-import type { KeyframePropertyRow, KeyframeSelection } from './keyframeModel';
+import { keyframeSelectionKey, type KeyframePropertyRow, type KeyframeSelection } from './keyframeModel';
 import {
   KEYFRAME_COMPONENT_ROW_HEIGHT_PX,
   KEYFRAME_PROPERTY_ROW_HEIGHT_PX,
@@ -26,6 +26,7 @@ export function KeyframeTrackLane({
   pxPerSec,
   fps,
   selectedKeyframe,
+  selectedKeyframes,
   rows,
   onDeselectKeyframe,
   onBeginKeyframeDrag,
@@ -39,9 +40,10 @@ export function KeyframeTrackLane({
   pxPerSec: number;
   fps: number;
   selectedKeyframe: KeyframeSelection | null;
+  selectedKeyframes: KeyframeSelection[];
   rows: KeyframePropertyRow[];
   onDeselectKeyframe: () => void;
-  onBeginKeyframeDrag: () => void;
+  onBeginKeyframeDrag: (anchor?: KeyframeSelection & { timeSec: number }) => void;
   onMoveKeyframe: (meta: DragKeyframeMeta) => void;
   onMoveKeyframeGroup: (meta: { members: KeyframeSelection[]; timeSec: number }) => void;
   onSelectKeyframe: (meta: KeyframeSelection & { timeSec: number }) => void;
@@ -52,7 +54,8 @@ export function KeyframeTrackLane({
   const safeFps = Math.max(1, fps);
   const groupedRows = groupRows(rows);
   const frameGroups = buildFrameGroups(rows, safeFps, clip.id);
-  const selectedFrame = findSelectedFrame(rows, selectedKeyframe, safeFps, clip.id);
+  const selectedFrame = selectedKeyframes.length <= 1 ? findSelectedFrame(rows, selectedKeyframe, safeFps, clip.id) : null;
+  const selectedKeys = new Set(selectedKeyframes.map(keyframeSelectionKey));
   const durationSec = Math.max(1e-6, clipTimelineDurationSec(clip));
   const clipLeftPx = timeToPx(clip.startSec, pxPerSec);
   const clipWidthPx = Math.max(48, timeToPx(durationSec, pxPerSec));
@@ -86,7 +89,7 @@ export function KeyframeTrackLane({
           }}
         >
           {frameGroups.map((group) => {
-            const selected = selectedFrame === group.frame;
+            const selected = selectedFrame === group.frame || group.members.some((member) => selectedKeys.has(keyframeSelectionKey(member)));
             const left = Math.max(0, Math.min(clipWidthPx, timeToPx(group.timeSec, pxPerSec)));
             return (
               <button
@@ -98,13 +101,16 @@ export function KeyframeTrackLane({
                 onMouseDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  onSelectKeyframeGroup({
-                    members: group.members,
-                    timeSec: group.timeSec,
-                  });
+                  const keepSelection = selected && selectedKeyframes.length > 1;
+                  if (!keepSelection) {
+                    onSelectKeyframeGroup({
+                      members: group.members,
+                      timeSec: group.timeSec,
+                    });
+                  }
                   const rail = e.currentTarget.parentElement;
                   if (!rail) return;
-                  onBeginKeyframeDrag();
+                  onBeginKeyframeDrag(group.members[0] ? { ...group.members[0], timeSec: group.timeSec } : undefined);
                   const move = (ev: MouseEvent) => {
                     const rect = rail.getBoundingClientRect();
                     const localPx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
@@ -175,11 +181,14 @@ export function KeyframeTrackLane({
                 {row.points.map((keyframe) => {
                   const frame = Math.round(keyframe.timeSec * safeFps);
                   const frameTimeSec = Math.max(0, Math.min(durationSec, frame / safeFps));
-                  const selected = selectedFrame === frame ||
-                    (selectedKeyframe?.keyframeId === keyframe.id &&
-                      selectedKeyframe.clipId === clip.id &&
-                      selectedKeyframe.componentId === row.componentId &&
-                      selectedKeyframe.property === row.property);
+                  const selection = {
+                    componentIndex: row.componentIndex,
+                    componentId: row.componentId,
+                    clipId: clip.id,
+                    property: row.property,
+                    keyframeId: keyframe.id,
+                  };
+                  const selected = selectedFrame === frame || selectedKeys.has(keyframeSelectionKey(selection));
                   const left = Math.max(0, Math.min(clipWidthPx, timeToPx(frameTimeSec, pxPerSec)));
                   return (
                     <button
@@ -191,28 +200,18 @@ export function KeyframeTrackLane({
                       onMouseDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        onSelectKeyframe({
-                          componentIndex: row.componentIndex,
-                          componentId: row.componentId,
-                          clipId: clip.id,
-                          property: row.property,
-                          keyframeId: keyframe.id,
-                          timeSec: keyframe.timeSec,
-                        });
+                        const keepSelection = selectedKeys.has(keyframeSelectionKey(selection)) && selectedKeyframes.length > 1;
+                        if (!keepSelection) onSelectKeyframe({ ...selection, timeSec: keyframe.timeSec });
                         const rail = e.currentTarget.parentElement;
                         if (!rail) return;
-                        onBeginKeyframeDrag();
+                        onBeginKeyframeDrag({ ...selection, timeSec: keyframe.timeSec });
                         const move = (ev: MouseEvent) => {
                           const rect = rail.getBoundingClientRect();
                           const localPx = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
                           const nextFrame = Math.round((localPx / pxPerSec) * safeFps);
                           const nextTimeSec = Math.max(0, Math.min(durationSec, nextFrame / safeFps));
                           onMoveKeyframe({
-                            componentIndex: row.componentIndex,
-                            componentId: row.componentId,
-                            clipId: clip.id,
-                            property: row.property,
-                            keyframeId: keyframe.id,
+                            ...selection,
                             timeSec: nextTimeSec,
                             value: keyframe.value,
                           });

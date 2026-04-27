@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { Download } from 'lucide-react';
+import { AlertTriangle, ImagePlus } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -104,6 +104,23 @@ type PreviewDebugBridge = {
   sampleFrame: () => PreviewDebugFrameSample;
 };
 
+type PreviewPerformanceWarning = {
+  repeatedPct: number;
+  troublePct: number;
+  samples: number;
+};
+
+type PreviewPerformanceFrame = {
+  key: string;
+  pixels: Uint8Array;
+};
+
+type PreviewPerformanceSample = {
+  ts: number;
+  repeated: boolean;
+  troubled: boolean;
+};
+
 declare global {
   interface Window {
     __GENEDIT_PREVIEW_DEBUG__?: PreviewDebugBridge;
@@ -123,6 +140,15 @@ const MAX_RECENT_MEDIA_RETAINED = 24;
 const STARTUP_AUDIO_SYNC_GRACE_MS = 180;
 const STARTUP_AUDIO_SEEK_TOLERANCE_SEC = 0.08;
 const STARTUP_DECODER_SYNC_TIMEOUT_MS = 1000;
+const PERFORMANCE_SAMPLE_WIDTH = 32;
+const PERFORMANCE_SAMPLE_HEIGHT = 18;
+const PERFORMANCE_WINDOW_MS = 2500;
+const PERFORMANCE_MIN_SAMPLES = 30;
+const PERFORMANCE_REPEATED_DIFF_THRESHOLD = 0.75;
+const PERFORMANCE_REPEATED_WARNING_RATIO = 0.78;
+const PERFORMANCE_EXTREME_REPEATED_WARNING_RATIO = 0.9;
+const PERFORMANCE_TROUBLE_WARNING_RATIO = 0.15;
+const PERFORMANCE_WARNING_PUBLISH_MS = 350;
 
 function clipEndSec(clip: Clip): number {
   return clip.startSec + clipTimelineDurationSec(clip);
@@ -269,6 +295,34 @@ function canPaintSyncedVideo(
 function mediaElementReadyForSourceTime(el: HTMLMediaElement, target: number, toleranceSec: number): boolean {
   if (el.readyState < 2 || el.seeking) return false;
   return Math.abs(el.currentTime - target) <= toleranceSec;
+}
+
+function sampledFrameDiff(previous: Uint8Array, next: Uint8Array): number {
+  const count = Math.min(previous.length, next.length);
+  if (count === 0) return 0;
+  let total = 0;
+  for (let index = 0; index < count; index += 1) total += Math.abs(previous[index]! - next[index]!);
+  return total / count;
+}
+
+function activeVideoPlaybackTroubled(
+  visualLayers: ActiveLayer[],
+  assetsById: Map<string, MediaAsset>,
+  videoPool: ElementPool,
+  timelineTimeSec: number,
+  previewFps: number,
+): boolean {
+  for (const layer of visualLayers) {
+    const asset = assetsById.get(layer.clip.assetId);
+    if (asset?.kind !== 'video') continue;
+    const video = videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
+    if (!video) return true;
+    const layerTimelineTimeSec = layerVisualTimelineTime(layer, timelineTimeSec, previewFps, true);
+    const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
+    if (video.seeking || video.readyState < 3) return true;
+    if (Math.abs(video.currentTime - layerSourceTimeSec) > 0.22) return true;
+  }
+  return false;
 }
 
 function sampleCanvas(canvas: HTMLCanvasElement | null): PreviewDebugCanvasSample | null {
@@ -499,22 +553,9 @@ function timecodeForFilename(timeSec: number, fps: number): string {
     .join('-');
 }
 
-function safeDownloadName(projectName: string, timeSec: number, fps: number): string {
+function safeFrameAssetName(projectName: string, timeSec: number, fps: number): string {
   const safeProjectName = projectName.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').slice(0, 48) || 'GenEdit';
   return `${safeProjectName} frame ${timecodeForFilename(timeSec, fps)}.png`;
-}
-
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.rel = 'noopener';
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function PreviewPlayer() {
@@ -573,6 +614,11 @@ export function PreviewPlayer() {
   const prevReadinessRef = useRef<Record<string, boolean>>({});
   const lastReadinessPublishRef = useRef(0);
   const lastClipMeterPublishRef = useRef(0);
+  const performanceSampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const performanceSampleContextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const lastPerformanceFrameRef = useRef<PreviewPerformanceFrame | null>(null);
+  const performanceSamplesRef = useRef<PreviewPerformanceSample[]>([]);
+  const lastPerformanceWarningPublishRef = useRef(0);
 
   // Smooth transitions: track which clips are fading out/in to avoid pops.
   const fadingOut = useRef<Map<string, { startTs: number; fromGain: number }>>(new Map());
@@ -584,6 +630,7 @@ export function PreviewPlayer() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
   const [previewContextMenu, setPreviewContextMenu] = useState<{ x: number; y: number; canSaveFrame: boolean } | null>(null);
+  const [previewPerformanceWarning, setPreviewPerformanceWarning] = useState<PreviewPerformanceWarning | null>(null);
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
   const frameRatePreset = frameRateOptionForFps(project.fps);
@@ -622,7 +669,90 @@ export function PreviewPlayer() {
     fadingOut.current.clear();
     fadingIn.current.clear();
     prevActiveAudioIds.current.clear();
+    lastPerformanceFrameRef.current = null;
+    performanceSamplesRef.current = [];
+    setPreviewPerformanceWarning(null);
   }, []);
+
+  const samplePreviewPerformanceFrame = useCallback((): Uint8Array | null => {
+    const source = freezeFrameCanvasRef.current;
+    if (!source || source.width <= 0 || source.height <= 0) return null;
+    let canvas = performanceSampleCanvasRef.current;
+    let ctx = performanceSampleContextRef.current;
+    if (!canvas || !ctx) {
+      canvas = document.createElement('canvas');
+      canvas.width = PERFORMANCE_SAMPLE_WIDTH;
+      canvas.height = PERFORMANCE_SAMPLE_HEIGHT;
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      performanceSampleCanvasRef.current = canvas;
+      performanceSampleContextRef.current = ctx;
+    }
+    ctx.drawImage(source, 0, 0, PERFORMANCE_SAMPLE_WIDTH, PERFORMANCE_SAMPLE_HEIGHT);
+    const data = ctx.getImageData(0, 0, PERFORMANCE_SAMPLE_WIDTH, PERFORMANCE_SAMPLE_HEIGHT).data;
+    const pixels = new Uint8Array(PERFORMANCE_SAMPLE_WIDTH * PERFORMANCE_SAMPLE_HEIGHT);
+    for (let index = 0, pixelIndex = 0; index < data.length; index += 4, pixelIndex += 1) {
+      pixels[pixelIndex] = Math.round((data[index]! + data[index + 1]! + data[index + 2]!) / 3);
+    }
+    return pixels;
+  }, []);
+
+  const resetPreviewPerformanceMonitor = useCallback(() => {
+    lastPerformanceFrameRef.current = null;
+    performanceSamplesRef.current = [];
+    if (previewPerformanceWarning) setPreviewPerformanceWarning(null);
+  }, [previewPerformanceWarning]);
+
+  const updatePreviewPerformanceMonitor = useCallback((params: {
+    ts: number;
+    frameKey: string;
+    mediaPlaying: boolean;
+    visualLayers: ActiveLayer[];
+    assetsById: Map<string, MediaAsset>;
+    timelineTimeSec: number;
+    previewFps: number;
+  }) => {
+    const hasActiveVideoLayer = params.visualLayers.some((layer) => params.assetsById.get(layer.clip.assetId)?.kind === 'video');
+    if (!params.mediaPlaying || !hasActiveVideoLayer || !params.frameKey) {
+      resetPreviewPerformanceMonitor();
+      return;
+    }
+
+    if (lastPerformanceFrameRef.current?.key === params.frameKey) return;
+    const pixels = samplePreviewPerformanceFrame();
+    if (!pixels) return;
+
+    const previous = lastPerformanceFrameRef.current;
+    lastPerformanceFrameRef.current = { key: params.frameKey, pixels };
+    if (!previous) return;
+
+    const repeated = sampledFrameDiff(previous.pixels, pixels) < PERFORMANCE_REPEATED_DIFF_THRESHOLD;
+    const troubled = activeVideoPlaybackTroubled(
+      params.visualLayers,
+      params.assetsById,
+      videoPool.current,
+      params.timelineTimeSec,
+      params.previewFps,
+    );
+    const samples = performanceSamplesRef.current;
+    samples.push({ ts: params.ts, repeated, troubled });
+    while (samples.length > 0 && params.ts - samples[0]!.ts > PERFORMANCE_WINDOW_MS) samples.shift();
+
+    if (params.ts - lastPerformanceWarningPublishRef.current < PERFORMANCE_WARNING_PUBLISH_MS) return;
+    lastPerformanceWarningPublishRef.current = params.ts;
+    if (samples.length < PERFORMANCE_MIN_SAMPLES) {
+      if (previewPerformanceWarning) setPreviewPerformanceWarning(null);
+      return;
+    }
+
+    const repeatedCount = samples.filter((sample) => sample.repeated).length;
+    const troubleCount = samples.filter((sample) => sample.troubled).length;
+    const repeatedPct = repeatedCount / samples.length;
+    const troublePct = troubleCount / samples.length;
+    const shouldWarn = repeatedPct >= PERFORMANCE_REPEATED_WARNING_RATIO
+      && (troublePct >= PERFORMANCE_TROUBLE_WARNING_RATIO || repeatedPct >= PERFORMANCE_EXTREME_REPEATED_WARNING_RATIO);
+    setPreviewPerformanceWarning(shouldWarn ? { repeatedPct, troublePct, samples: samples.length } : null);
+  }, [previewPerformanceWarning, resetPreviewPerformanceMonitor, samplePreviewPerformanceFrame]);
 
   useEffect(() => {
     const nextSignature = previewTopologySignature(project);
@@ -701,7 +831,9 @@ export function PreviewPlayer() {
 
     const blob = await canvasToBlob(canvas);
     if (!blob) return;
-    triggerDownload(blob, safeDownloadName(latestProject.name, timelineTimeSec, previewFps));
+    const filename = safeFrameAssetName(latestProject.name, timelineTimeSec, previewFps);
+    const file = new File([blob], filename, { type: blob.type || 'image/png' });
+    await useMediaStore.getState().importFiles([file]);
   }, []);
 
   const handlePreviewContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1276,6 +1408,15 @@ export function PreviewPlayer() {
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = visualLayers.length > 0 ? 'block' : 'none';
       }
+      updatePreviewPerformanceMonitor({
+        ts,
+        frameKey: canvasFrameKey,
+        mediaPlaying,
+        visualLayers,
+        assetsById,
+        timelineTimeSec: t,
+        previewFps,
+      });
       for (const [clipId, el] of videoPool.current) {
         const videoEl = el as HTMLVideoElement;
         const activeLayer = activeVisualLayersByClipId.get(clipId);
@@ -1552,7 +1693,7 @@ export function PreviewPlayer() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [ensureClipElement, pause, pruneMediaElements, resetTransientPlaybackState]);
+  }, [ensureClipElement, pause, pruneMediaElements, resetTransientPlaybackState, updatePreviewPerformanceMonitor]);
 
   // Cleanup on unmount.
   useEffect(() => {
@@ -1663,6 +1804,26 @@ export function PreviewPlayer() {
               {ready ? 'No clip at playhead' : 'Loading…'}
             </div>
           )}
+          {previewPerformanceWarning && (
+            <div className="pointer-events-none absolute right-3 top-3 z-30">
+              <div className="pointer-events-auto group relative">
+                <div
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-300/70 bg-surface-950/90 text-amber-300 shadow-lg shadow-black/30 backdrop-blur"
+                  role="status"
+                  aria-label="Preview performance warning"
+                >
+                  <AlertTriangle size={18} />
+                </div>
+                <div className="pointer-events-none absolute right-0 top-11 hidden w-72 rounded-md border border-amber-300/40 bg-surface-950/95 p-3 text-xs leading-relaxed text-slate-300 shadow-xl shadow-black/40 group-hover:block">
+                  <div className="mb-1 font-semibold text-amber-200">Preview performance warning</div>
+                  <div>
+                    Repeated preview frames are high ({Math.round(previewPerformanceWarning.repeatedPct * 100)}%).
+                    Your hardware or browser may be struggling to decode this section in real time. Exports are unaffected.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       {isFullscreen && (
@@ -1756,7 +1917,7 @@ function PreviewContextMenu({
           onClose();
         }}
       >
-        <Download size={12} />
+        <ImagePlus size={12} />
         Save Video Frame
       </button>
     </div>
