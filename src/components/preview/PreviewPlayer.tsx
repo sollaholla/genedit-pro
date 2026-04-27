@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
+import { Download } from 'lucide-react';
 import { useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
@@ -324,6 +326,10 @@ function canvasFilterForClip(clip: Clip, timelineTimeSec: number): string {
     .trim() || 'none';
 }
 
+type PreviewCanvasRenderOptions = {
+  colorCorrection?: boolean;
+};
+
 function renderPreviewCanvas(
   canvas: HTMLCanvasElement | null,
   visualLayers: ActiveLayer[],
@@ -334,6 +340,7 @@ function renderPreviewCanvas(
   playing: boolean,
   videoPool: ElementPool,
   imagePool: ImagePool,
+  options: PreviewCanvasRenderOptions = {},
 ): boolean {
   if (!canvas || project.width <= 0 || project.height <= 0) return false;
   const drawItems: Array<{
@@ -370,6 +377,7 @@ function renderPreviewCanvas(
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const applyColorCorrection = options.colorCorrection !== false;
     for (const { source, asset, clip, timelineTimeSec: layerTimelineTimeSec } of drawItems) {
       const tf = resolvedTransform(clip, layerTimelineTimeSec);
       const mediaTransform = activeEditTransform(asset);
@@ -382,7 +390,7 @@ function renderPreviewCanvas(
       const visualScale = Math.max(0.1, Math.min(6, (tf.scale ?? clip.scale ?? 1) * mediaTransform.scale));
       ctx.save();
       try {
-        ctx.filter = canvasFilterForClip(clip, layerTimelineTimeSec);
+        ctx.filter = applyColorCorrection ? canvasFilterForClip(clip, layerTimelineTimeSec) : 'none';
         ctx.globalAlpha = clipOpacityAtTimelineTime(clip, layerTimelineTimeSec);
         ctx.translate(x, y);
         ctx.scale(visualScale, visualScale);
@@ -397,6 +405,42 @@ function renderPreviewCanvas(
   } finally {
     ctx.filter = 'none';
   }
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+function timecodeForFilename(timeSec: number, fps: number): string {
+  const safeFps = Math.max(1, fps);
+  const totalFrames = Math.max(0, Math.floor(timeSec * safeFps + 1e-6));
+  const frames = totalFrames % Math.round(safeFps);
+  const totalSeconds = Math.floor(totalFrames / safeFps);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  return [hours, minutes, seconds, frames]
+    .map((part) => String(part).padStart(2, '0'))
+    .join('-');
+}
+
+function safeDownloadName(projectName: string, timeSec: number, fps: number): string {
+  const safeProjectName = projectName.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').slice(0, 48) || 'GenEdit';
+  return `${safeProjectName} frame ${timecodeForFilename(timeSec, fps)}.png`;
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function PreviewPlayer() {
@@ -465,6 +509,7 @@ export function PreviewPlayer() {
   const [ready, setReady] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewFrameSize, setPreviewFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [previewContextMenu, setPreviewContextMenu] = useState<{ x: number; y: number; canSaveFrame: boolean } | null>(null);
   const aspectPreset = inferProjectAspectPreset(project.width, project.height);
   const resolutionPreset = inferProjectResolutionPreset(project.width, project.height, aspectPreset);
   const frameRatePreset = frameRateOptionForFps(project.fps);
@@ -555,6 +600,43 @@ export function PreviewPlayer() {
       void containerRef.current?.requestFullscreen().catch(() => undefined);
     }
   };
+
+  const saveCurrentVideoFrame = useCallback(async () => {
+    const latestProject = useProjectStore.getState().project;
+    const latestPlayback = usePlaybackStore.getState();
+    const timelineTimeSec = latestPlayback.currentTimeSec;
+    const previewFps = safeProjectFps(latestProject);
+    const visualFrame = resolveFrame(latestProject, timelineTimeSec);
+    if (visualFrame.videos.length === 0) return;
+
+    const assetsById = new Map(assetsRef.current.map((asset) => [asset.id, asset]));
+    const canvas = document.createElement('canvas');
+    const rendered = renderPreviewCanvas(
+      canvas,
+      visualFrame.videos,
+      assetsById,
+      latestProject,
+      timelineTimeSec,
+      previewFps,
+      latestPlayback.playing,
+      videoPool.current,
+      imagePool.current,
+      { colorCorrection: false },
+    );
+    if (!rendered) return;
+
+    const blob = await canvasToBlob(canvas);
+    if (!blob) return;
+    triggerDownload(blob, safeDownloadName(latestProject.name, timelineTimeSec, previewFps));
+  }, []);
+
+  const handlePreviewContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const latestProject = useProjectStore.getState().project;
+    const timelineTimeSec = usePlaybackStore.getState().currentTimeSec;
+    const canSaveFrame = resolveFrame(latestProject, timelineTimeSec).videos.length > 0;
+    setPreviewContextMenu({ x: event.clientX, y: event.clientY, canSaveFrame });
+  }, []);
 
   const releaseAudioGraph = useCallback((clipId: string) => {
     gainNodes.current.get(clipId)?.disconnect();
@@ -1450,6 +1532,7 @@ export function PreviewPlayer() {
             isFullscreen ? '' : 'rounded-md ring-1 ring-surface-700'
           }`}
           onDoubleClick={toggleFullscreen}
+          onContextMenu={handlePreviewContextMenu}
         >
           <svg aria-hidden className="pointer-events-none absolute h-0 w-0" focusable="false">
             <defs>
@@ -1493,6 +1576,82 @@ export function PreviewPlayer() {
         onFrameRatePresetChange={updateFrameRatePreset}
         onToggleFullscreen={toggleFullscreen}
       />
+      {previewContextMenu && (
+        <PreviewContextMenu
+          x={previewContextMenu.x}
+          y={previewContextMenu.y}
+          canSaveFrame={previewContextMenu.canSaveFrame}
+          onSaveFrame={() => { void saveCurrentVideoFrame(); }}
+          onClose={() => setPreviewContextMenu(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PreviewContextMenu({
+  x,
+  y,
+  canSaveFrame,
+  onSaveFrame,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  canSaveFrame: boolean;
+  onSaveFrame: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - menu.offsetWidth - margin);
+    const maxTop = Math.max(margin, window.innerHeight - menu.offsetHeight - margin);
+    const left = Math.min(Math.max(margin, x), maxLeft);
+    const top = Math.min(Math.max(margin, y), maxTop);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }, [x, y]);
+
+  useEffect(() => {
+    const onDown = (event: globalThis.MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-preview-context-menu]')) return;
+      onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={menuRef}
+      data-preview-context-menu
+      className="fixed z-[90] min-w-[190px] rounded-md border border-surface-600 bg-surface-800 py-1 text-xs text-slate-200 shadow-lg"
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        disabled={!canSaveFrame}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+        onClick={() => {
+          if (canSaveFrame) onSaveFrame();
+          onClose();
+        }}
+      >
+        <Download size={12} />
+        Save Video Frame
+      </button>
     </div>
   );
 }
