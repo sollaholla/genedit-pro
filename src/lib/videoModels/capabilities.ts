@@ -117,8 +117,8 @@ export const VEO_STRUCTURED_PROMPT_SECTIONS: StructuredPromptSectionDefinition[]
 
 export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
   {
-    id: PIAPI_VEO_STANDARD_MODEL_ID,
-    label: 'Veo 3.1',
+    id: PIAPI_SEEDANCE_2_MODEL_ID,
+    label: 'Seedance 2.0',
     provider: 'piapi',
     priority: 100,
     promptGuidelines: {
@@ -127,23 +127,23 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     capabilities: {
       references: true,
       audio: true,
-      adult: true,
-      durations: ['4s', '6s', '8s'],
-      resolutions: ['720p', '1080p'],
-      aspects: ['16:9', '9:16'],
+      adult: false,
+      durations: [...SEEDANCE_DURATIONS],
+      resolutions: ['480p', '720p', '1080p'],
+      aspects: [...SEEDANCE_ASPECTS],
       assetInputs: {
         startFrame: true,
         endFrame: true,
-        imageReferencesMax: 3,
-        videoExtension: false,
+        imageReferencesMax: 12,
+        videoExtension: true,
       },
     },
   },
   {
-    id: PIAPI_VEO_FAST_MODEL_ID,
-    label: 'Veo 3.1 Fast',
+    id: PIAPI_VEO_STANDARD_MODEL_ID,
+    label: 'Veo 3.1',
     provider: 'piapi',
-    priority: 80,
+    priority: 90,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
     },
@@ -166,7 +166,7 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     id: PIAPI_KLING_3_OMNI_MODEL_ID,
     label: 'Kling 3.0 Omni',
     provider: 'piapi',
-    priority: 70,
+    priority: 80,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
     },
@@ -186,33 +186,10 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
     },
   },
   {
-    id: PIAPI_SEEDANCE_2_MODEL_ID,
-    label: 'Seedance 2.0',
-    provider: 'piapi',
-    priority: 90,
-    promptGuidelines: {
-      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
-    },
-    capabilities: {
-      references: true,
-      audio: true,
-      adult: false,
-      durations: [...SEEDANCE_DURATIONS],
-      resolutions: ['480p', '720p', '1080p'],
-      aspects: [...SEEDANCE_ASPECTS],
-      assetInputs: {
-        startFrame: true,
-        endFrame: true,
-        imageReferencesMax: 12,
-        videoExtension: true,
-      },
-    },
-  },
-  {
     id: PIAPI_SEEDANCE_2_FAST_MODEL_ID,
     label: 'Seedance 2.0 Fast',
     provider: 'piapi',
-    priority: 85,
+    priority: 70,
     promptGuidelines: {
       structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
     },
@@ -228,6 +205,29 @@ export const DEFAULT_VIDEO_MODELS: VideoModelDefinition[] = [
         endFrame: true,
         imageReferencesMax: 12,
         videoExtension: true,
+      },
+    },
+  },
+  {
+    id: PIAPI_VEO_FAST_MODEL_ID,
+    label: 'Veo 3.1 Fast',
+    provider: 'piapi',
+    priority: 60,
+    promptGuidelines: {
+      structuredSections: VEO_STRUCTURED_PROMPT_SECTIONS,
+    },
+    capabilities: {
+      references: true,
+      audio: true,
+      adult: true,
+      durations: ['4s', '6s', '8s'],
+      resolutions: ['720p', '1080p'],
+      aspects: ['16:9', '9:16'],
+      assetInputs: {
+        startFrame: true,
+        endFrame: true,
+        imageReferencesMax: 3,
+        videoExtension: false,
       },
     },
   },
