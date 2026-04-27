@@ -76,6 +76,10 @@ function loadAssets(projectId: string): MediaAsset[] {
   }
 }
 
+export function readProjectMediaAssets(projectId: string): MediaAsset[] {
+  return loadAssets(projectId);
+}
+
 function loadFolders(projectId: string): MediaFolder[] {
   ensureLegacyMediaMigrated(projectId);
   try {

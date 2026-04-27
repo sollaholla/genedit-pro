@@ -18,6 +18,14 @@ export type ProjectSummary = {
   name: string;
   createdAt: number;
   updatedAt: number;
+  durationSec: number;
+  clipCount: number;
+  trackCount: number;
+  width: number;
+  height: number;
+  fps: number;
+  aiGenerationSpendUsd: number;
+  posterAssetId?: string | null;
 };
 
 function projectStorageKey(projectId: string): string {
@@ -37,6 +45,14 @@ function readProjectSummaries(): ProjectSummary[] {
         name: summary.name,
         createdAt: Number.isFinite(summary.createdAt) ? summary.createdAt : Date.now(),
         updatedAt: Number.isFinite(summary.updatedAt) ? summary.updatedAt : Date.now(),
+        durationSec: Number.isFinite(summary.durationSec) ? summary.durationSec : 0,
+        clipCount: Number.isFinite(summary.clipCount) ? summary.clipCount : 0,
+        trackCount: Number.isFinite(summary.trackCount) ? summary.trackCount : 0,
+        width: Number.isFinite(summary.width) ? summary.width : 1920,
+        height: Number.isFinite(summary.height) ? summary.height : 1080,
+        fps: Number.isFinite(summary.fps) ? summary.fps : 30,
+        aiGenerationSpendUsd: Number.isFinite(summary.aiGenerationSpendUsd) ? summary.aiGenerationSpendUsd : 0,
+        posterAssetId: typeof summary.posterAssetId === 'string' ? summary.posterAssetId : null,
       }));
   } catch {
     return [];
@@ -58,7 +74,20 @@ function summaryForProject(project: Project, existing?: ProjectSummary): Project
     name: project.name.trim() || 'Untitled Project',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
+    durationSec: ops.projectDurationSec(project),
+    clipCount: project.clips.length,
+    trackCount: project.tracks.length,
+    width: project.width,
+    height: project.height,
+    fps: project.fps,
+    aiGenerationSpendUsd: project.metadata?.aiGenerationSpendUsd ?? 0,
+    posterAssetId: firstTimelineAssetId(project),
   };
+}
+
+function firstTimelineAssetId(project: Project): string | null {
+  const firstClip = [...project.clips].sort((first, second) => first.startSec - second.startSec)[0];
+  return firstClip?.assetId ?? null;
 }
 
 function upsertProjectSummary(projects: ProjectSummary[], project: Project): ProjectSummary[] {
@@ -211,6 +240,15 @@ function loadProjectById(projectId: string, projects: ProjectSummary[]): Project
   return { ...createInitialProject(), id: projectId, name: summary?.name ?? 'Untitled Project' };
 }
 
+function hydrateProjectSummaries(projects: ProjectSummary[]): ProjectSummary[] {
+  return projects
+    .map((summary) => ({
+      ...summaryForProject(loadProjectById(summary.id, projects), summary),
+      updatedAt: summary.updatedAt,
+    }))
+    .sort((first, second) => second.updatedAt - first.updatedAt);
+}
+
 function normalizeComponent(component: ComponentInstance): ComponentInstance | null {
   if (component.type === 'colorCorrection') {
     return {
@@ -271,11 +309,12 @@ function persistProjectState(project: Project, projects: ProjectSummary[]) {
 }
 
 const initialRegistry = initializeProjectRegistry();
-const initialProject = loadProjectById(initialRegistry.activeProjectId, initialRegistry.projects);
+const initialProjects = hydrateProjectSummaries(initialRegistry.projects);
+const initialProject = loadProjectById(initialRegistry.activeProjectId, initialProjects);
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: initialProject,
-  projects: upsertProjectSummary(initialRegistry.projects, initialProject),
+  projects: upsertProjectSummary(initialProjects, initialProject),
   activeProjectId: initialProject.id,
   _past: [],
   _future: [],

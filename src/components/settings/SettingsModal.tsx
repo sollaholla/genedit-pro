@@ -13,10 +13,7 @@ type Props = {
   onClose: () => void;
 };
 
-type Tab = 'connections' | 'general';
-
 export function SettingsModal({ open, onClose }: Props) {
-  const [tab, setTab] = useState<Tab>('connections');
   const [piapiKey, setPiapiKey] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -49,41 +46,30 @@ export function SettingsModal({ open, onClose }: Props) {
         <aside className="w-56 border-r border-surface-700 bg-surface-900 p-3">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Settings</div>
           <button
-            className={`mb-1 w-full rounded px-2 py-1.5 text-left text-sm ${tab === 'connections' ? 'bg-surface-700 text-slate-100' : 'text-slate-400 hover:bg-surface-800'}`}
-            onClick={() => setTab('connections')}
+            className="mb-1 w-full rounded px-2 py-1.5 text-left text-sm bg-surface-700 text-slate-100"
           >
             Connections
-          </button>
-          <button
-            className={`w-full rounded px-2 py-1.5 text-left text-sm ${tab === 'general' ? 'bg-surface-700 text-slate-100' : 'text-slate-400 hover:bg-surface-800'}`}
-            onClick={() => setTab('general')}
-          >
-            General
           </button>
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
-            <div className="text-sm font-semibold text-slate-100">{tab === 'connections' ? 'Connections' : 'General'}</div>
+            <div className="text-sm font-semibold text-slate-100">Connections</div>
             <button className="rounded p-1 text-slate-400 hover:bg-surface-800 hover:text-slate-200" onClick={onClose} title="Close settings" aria-label="Close settings">
               <X size={16} />
             </button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto p-4">
-            {tab === 'connections' ? (
-              <div className="space-y-4">
-                <p className="text-xs text-slate-500">Your API keys are encrypted in this browser.</p>
-                <PiApiConnectionCard
-                  value={piapiKey}
-                  onChange={setPiapiKey}
-                  saving={saving}
-                  onSave={() => void savePiApiKey()}
-                />
-              </div>
-            ) : (
-              <div className="text-sm text-slate-400">General settings coming soon.</div>
-            )}
+            <div className="space-y-4">
+              <p className="text-xs text-slate-500">Your API keys are encrypted in this browser.</p>
+              <PiApiConnectionCard
+                value={piapiKey}
+                onChange={setPiapiKey}
+                saving={saving}
+                onSave={() => void savePiApiKey()}
+              />
+            </div>
           </div>
         </section>
       </div>
