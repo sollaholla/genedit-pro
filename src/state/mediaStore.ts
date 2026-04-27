@@ -105,6 +105,8 @@ type MediaState = {
   setActiveEditTrailIteration: (assetId: string, iterationId: string) => void;
   undoEditTrail: (assetId: string) => Promise<void>;
   createFolder: (name: string) => void;
+  renameFolder: (id: string, name: string) => void;
+  removeFolder: (id: string, removeAssets: boolean) => Promise<void>;
   addGeneratedAsset: (name: string, folderId?: string | null, estimatedCostUsd?: number, recipe?: GenerateRecipe) => string;
   updateGenerationProgress: (id: string, progress: number) => void;
   updateGenerationTask: (
@@ -484,6 +486,38 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     const next = [...get().folders, { id: nanoid(8), name }];
     saveFolders(next, get().activeProjectId);
     set({ folders: next });
+  },
+
+  renameFolder: (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const next = get().folders.map((folder) => (folder.id === id ? { ...folder, name: trimmed } : folder));
+    saveFolders(next, get().activeProjectId);
+    set({ folders: next });
+  },
+
+  removeFolder: async (id, removeAssets) => {
+    const projectId = get().activeProjectId;
+    const nextFolders = get().folders.filter((folder) => folder.id !== id);
+    let nextAssets = get().assets;
+    if (removeAssets) {
+      const doomed = nextAssets.filter((asset) => asset.folderId === id);
+      const blobKeys = new Set<string>();
+      for (const asset of doomed) {
+        if (asset.blobKey) blobKeys.add(asset.blobKey);
+        for (const iteration of asset.editTrail?.iterations ?? []) {
+          if (iteration.blobKey) blobKeys.add(iteration.blobKey);
+        }
+      }
+      await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
+      for (const asset of doomed) revokeCachedUrl(asset.id);
+      nextAssets = nextAssets.filter((asset) => asset.folderId !== id);
+    } else {
+      nextAssets = nextAssets.map((asset) => (asset.folderId === id ? { ...asset, folderId: null } : asset));
+    }
+    saveFolders(nextFolders, projectId);
+    saveAssets(nextAssets, projectId);
+    set({ folders: nextFolders, assets: nextAssets });
   },
 
   addGeneratedAsset: (name, folderId = null, estimatedCostUsd, recipe) => {

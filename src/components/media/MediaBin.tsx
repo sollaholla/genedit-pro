@@ -37,6 +37,8 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
+  const renameFolder = useMediaStore((s) => s.renameFolder);
+  const removeFolder = useMediaStore((s) => s.removeFolder);
   const importing = useMediaStore((s) => s.importing);
   const importFiles = useMediaStore((s) => s.importFiles);
   const removeAsset = useMediaStore((s) => s.removeAsset);
@@ -57,6 +59,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
   const [openAssetMenuId, setOpenAssetMenuId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
+  const [folderMenu, setFolderMenu] = useState<{ folderId: string; x: number; y: number } | null>(null);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [pendingFolderDelete, setPendingFolderDelete] = useState<MediaFolder | null>(null);
+  const folderMenuRef = useRef<HTMLDivElement | null>(null);
   const tileRefs = useRef(new Map<string, HTMLLIElement>());
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const activeFolder = useMemo(
@@ -145,6 +151,28 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
     }
   }, [activeFolderId, folders]);
 
+  useEffect(() => {
+    if (!folderMenu) return;
+    const close = () => setFolderMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+      window.removeEventListener('resize', close);
+    };
+  }, [folderMenu]);
+
+  useLayoutEffect(() => {
+    if (!folderMenu) return;
+    const menu = folderMenuRef.current;
+    if (!menu) return;
+    const position = clampMediaMenuPosition(folderMenu.x, folderMenu.y, menu.offsetWidth, menu.offsetHeight);
+    menu.style.left = `${position.x}px`;
+    menu.style.top = `${position.y}px`;
+  }, [folderMenu]);
+
   return (
     <div
       className="flex h-full flex-col"
@@ -198,7 +226,18 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
               label={f.name}
               count={assetCountForFolder(f.id)}
               active={activeFolderId === f.id}
+              renaming={renamingFolderId === f.id}
               onClick={() => setActiveFolderId(f.id)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setFolderMenu({ folderId: f.id, x: event.clientX, y: event.clientY });
+              }}
+              onRenameCommit={(name) => {
+                renameFolder(f.id, name);
+                setRenamingFolderId(null);
+              }}
+              onRenameCancel={() => setRenamingFolderId(null)}
               onDropToFolder={(event) => moveDroppedMediaToFolder(event, f.id)}
             />
           ))}
@@ -239,8 +278,19 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
                 folder={folder}
                 assetCount={assetCountForFolder(folder.id)}
                 previews={previewsForFolder(folder.id)}
+                renaming={renamingFolderId === folder.id}
                 onOpen={() => setActiveFolderId(folder.id)}
                 onDropToFolder={(event) => moveDroppedMediaToFolder(event, folder.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setFolderMenu({ folderId: folder.id, x: event.clientX, y: event.clientY });
+                }}
+                onRenameCommit={(name) => {
+                  renameFolder(folder.id, name);
+                  setRenamingFolderId(null);
+                }}
+                onRenameCancel={() => setRenamingFolderId(null)}
               />
             ))}
             {visibleAssets.map((asset) => (
@@ -293,6 +343,131 @@ export function MediaBin({ onImportClick, onGenerateClick, onOpenRecipe, onGener
           onClose={() => setPreviewAssetId(null)}
         />
       )}
+      {folderMenu && (
+        <div
+          ref={folderMenuRef}
+          className="fixed z-[120] min-w-[150px] rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
+          onContextMenu={(event) => event.preventDefault()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+            onClick={() => {
+              setRenamingFolderId(folderMenu.folderId);
+              setFolderMenu(null);
+            }}
+          >
+            <Pencil size={12} />
+            Rename
+          </button>
+          <div className="my-1 h-px bg-surface-700" />
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10"
+            onClick={() => {
+              const folder = folders.find((candidate) => candidate.id === folderMenu.folderId) ?? null;
+              if (folder) setPendingFolderDelete(folder);
+              setFolderMenu(null);
+            }}
+          >
+            <Trash2 size={12} />
+            Delete
+          </button>
+        </div>
+      )}
+      {pendingFolderDelete && (
+        <FolderDeleteDialog
+          folder={pendingFolderDelete}
+          assetCount={assetCountForFolder(pendingFolderDelete.id)}
+          onCancel={() => setPendingFolderDelete(null)}
+          onConfirm={(removeAssets) => {
+            void removeFolder(pendingFolderDelete.id, removeAssets);
+            if (activeFolderId === pendingFolderDelete.id) setActiveFolderId(null);
+            setPendingFolderDelete(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FolderDeleteDialog({
+  folder,
+  assetCount,
+  onCancel,
+  onConfirm,
+}: {
+  folder: MediaFolder;
+  assetCount: number;
+  onCancel: () => void;
+  onConfirm: (removeAssets: boolean) => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={onCancel}>
+      <div
+        className="w-[min(440px,94vw)] rounded-lg border border-white/15 bg-surface-950 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            <Trash2 size={16} className="text-red-300" />
+            Delete folder
+          </div>
+          <button
+            type="button"
+            className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+            onClick={onCancel}
+            title="Cancel"
+            aria-label="Cancel"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-4 py-3 text-sm text-slate-300">
+          <p>
+            Delete <span className="font-semibold text-slate-100">{folder.name}</span>
+            {assetCount > 0 ? (
+              <>
+                {' '}— it contains <span className="font-semibold text-slate-100">{assetCount}</span> file{assetCount === 1 ? '' : 's'}.
+                What should happen to them?
+              </>
+            ) : (
+              '?'
+            )}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-surface-700 px-4 py-3">
+          <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={onCancel}>
+            Cancel
+          </button>
+          {assetCount > 0 && (
+            <button
+              type="button"
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={() => onConfirm(false)}
+            >
+              Move files out
+            </button>
+          )}
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded-md bg-red-500/90 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500"
+            onClick={() => onConfirm(true)}
+          >
+            <Trash2 size={12} />
+            {assetCount > 0 ? 'Delete folder & files' : 'Delete folder'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -303,14 +478,63 @@ function FolderFilterButton({
   active,
   onClick,
   onDropToFolder,
+  onContextMenu,
+  renaming = false,
+  onRenameCommit,
+  onRenameCancel,
 }: {
   label: string;
   count: number;
   active: boolean;
   onClick: () => void;
   onDropToFolder: (event: DragEvent<HTMLButtonElement>) => void | Promise<void>;
+  onContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void;
+  renaming?: boolean;
+  onRenameCommit?: (name: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const [dropOver, setDropOver] = useState(false);
+  const [draft, setDraft] = useState(label);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (renaming) {
+      setDraft(label);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [renaming, label]);
+
+  if (renaming) {
+    return (
+      <input
+        ref={inputRef}
+        title="Folder name"
+        aria-label="Folder name"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          const trimmed = draft.trim();
+          if (trimmed && trimmed !== label) onRenameCommit?.(trimmed);
+          else onRenameCancel?.();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            const trimmed = draft.trim();
+            if (trimmed && trimmed !== label) onRenameCommit?.(trimmed);
+            else onRenameCancel?.();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            onRenameCancel?.();
+          }
+        }}
+        className="min-w-0 rounded border border-brand-400/60 bg-surface-950 px-2 py-0.5 text-[11px] text-slate-100 outline-none"
+      />
+    );
+  }
 
   return (
     <button
@@ -318,6 +542,7 @@ function FolderFilterButton({
         active ? 'bg-surface-700 text-slate-200' : 'bg-surface-800 text-slate-400'
       } ${dropOver ? 'ring-1 ring-brand-400 bg-brand-500/20 text-slate-100' : ''}`}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onDragOver={(event) => {
         if (!canAcceptMediaDrop(event)) return;
         event.preventDefault();
@@ -344,14 +569,34 @@ function FolderTile({
   previews,
   onOpen,
   onDropToFolder,
+  onContextMenu,
+  renaming = false,
+  onRenameCommit,
+  onRenameCancel,
 }: {
   folder: MediaFolder;
   assetCount: number;
   previews: MediaAsset[];
   onOpen: () => void;
   onDropToFolder: (event: DragEvent<HTMLLIElement>) => void | Promise<void>;
+  onContextMenu?: (event: MouseEvent<HTMLLIElement>) => void;
+  renaming?: boolean;
+  onRenameCommit?: (name: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const [dropOver, setDropOver] = useState(false);
+  const [draft, setDraft] = useState(folder.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (renaming) {
+      setDraft(folder.name);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [renaming, folder.name]);
 
   return (
     <li
@@ -359,6 +604,7 @@ function FolderTile({
       className={`group relative overflow-hidden rounded-md border bg-surface-800 transition ${
         dropOver ? 'border-brand-300 ring-2 ring-brand-400/60' : 'border-surface-700 hover:border-surface-500'
       }`}
+      onContextMenu={onContextMenu}
       onDragOver={(event) => {
         if (!canAcceptMediaDrop(event)) return;
         event.preventDefault();
@@ -372,10 +618,20 @@ function FolderTile({
         void onDropToFolder(event);
       }}
     >
-      <button
-        type="button"
-        className="flex w-full flex-col text-left"
-        onClick={onOpen}
+      <div
+        role="button"
+        tabIndex={renaming ? -1 : 0}
+        className="flex w-full cursor-pointer flex-col text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
+        onClick={() => {
+          if (!renaming) onOpen();
+        }}
+        onKeyDown={(event) => {
+          if (renaming) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onOpen();
+          }
+        }}
         title={`Open ${folder.name}`}
       >
         <div className="relative aspect-video overflow-hidden bg-surface-900">
@@ -413,13 +669,41 @@ function FolderTile({
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-100">
             <Folder size={12} className="shrink-0 text-slate-400" />
-            <span className="truncate">{folder.name}</span>
+            {renaming ? (
+              <input
+                ref={inputRef}
+                title="Folder name"
+                aria-label="Folder name"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onBlur={() => {
+                  const trimmed = draft.trim();
+                  if (trimmed && trimmed !== folder.name) onRenameCommit?.(trimmed);
+                  else onRenameCancel?.();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    const trimmed = draft.trim();
+                    if (trimmed && trimmed !== folder.name) onRenameCommit?.(trimmed);
+                    else onRenameCancel?.();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    onRenameCancel?.();
+                  }
+                }}
+                className="min-w-0 flex-1 rounded border border-brand-400/60 bg-surface-950 px-1.5 py-0.5 text-xs text-slate-100 outline-none"
+              />
+            ) : (
+              <span className="truncate">{folder.name}</span>
+            )}
           </div>
           <span className="shrink-0 rounded bg-surface-700 px-1.5 py-0.5 text-[10px] text-slate-400">
             {assetCount}
           </span>
         </div>
-      </button>
+      </div>
     </li>
   );
 }
