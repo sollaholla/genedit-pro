@@ -68,4 +68,7 @@
   .export-progress::-moz-progress-bar {
     @apply bg-brand-500;
   }
+  .edit-trail-transform-target {
+    transform-origin: center center;
+  }
 }

@@ -1,6 +1,5 @@
-import { Film, Image as ImageIcon, Pause, Play, RotateCcw, Save, Sparkles, Undo2, X } from 'lucide-react';
+import { Film, Image as ImageIcon, Pause, Play, Plus, RotateCcw, Save, Sparkles, Undo2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
 import { DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { useMediaStore } from '@/state/mediaStore';
 import type { EditTrailTransform, MediaAsset } from '@/types';
@@ -13,11 +12,13 @@ type Props = {
 export function EditTrailDialog({ assetId, onClose }: Props) {
   const asset = useMediaStore((s) => s.assets.find((item) => item.id === assetId) ?? null);
   const ensureEditTrail = useMediaStore((s) => s.ensureEditTrail);
+  const addEditTrailIteration = useMediaStore((s) => s.addEditTrailIteration);
   const saveEditTrailIteration = useMediaStore((s) => s.saveEditTrailIteration);
   const setActiveEditTrailIteration = useMediaStore((s) => s.setActiveEditTrailIteration);
   const undoEditTrail = useMediaStore((s) => s.undoEditTrail);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditTrailTransform>(DEFAULT_EDIT_TRAIL_TRANSFORM);
   const [saving, setSaving] = useState(false);
@@ -56,6 +57,11 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     setVideoPlaying(false);
   }, [sourceUrl]);
 
+  useEffect(() => {
+    applyPreviewTransform(videoRef.current, draft);
+    applyPreviewTransform(imageRef.current, draft);
+  }, [draft, sourceUrl]);
+
   const iterations = useMemo(() => {
     return [...(asset?.editTrail?.iterations ?? [])].sort((a, b) => b.createdAt - a.createdAt);
   }, [asset?.editTrail?.iterations]);
@@ -63,24 +69,28 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     if (!asset?.editTrail) return null;
     return asset.editTrail.iterations.find((iteration) => iteration.id === asset.editTrail?.activeIterationId) ?? null;
   }, [asset?.editTrail]);
-  const canUndo = Boolean(activeIteration && activeIteration.source !== 'original');
+  const baseIterationId = asset?.editTrail?.iterations[0]?.id;
+  const activeIsBase = Boolean(activeIteration && activeIteration.id === baseIterationId);
+  const canUndo = Boolean(activeIteration && !activeIsBase);
 
   if (!asset || (asset.kind !== 'image' && asset.kind !== 'video')) return null;
 
-  const saveIteration = async () => {
+  const commitIteration = async (mode: 'save-active' | 'add-new') => {
     if (!sourceUrl || saving) return;
     setSaving(true);
     setError(null);
     try {
+      let file: File | null = null;
+      let thumbnail: string | undefined;
       if (asset.kind === 'image') {
-        const file = await renderEditedImageFile(asset, sourceUrl, draft);
-        await saveEditTrailIteration(asset.id, file, draft);
+        file = await renderEditedImageFile(asset, sourceUrl, draft);
       } else {
-        const thumbnail = asset.thumbnailDataUrl
+        thumbnail = asset.thumbnailDataUrl
           ? await renderEditedThumbnail(asset.thumbnailDataUrl, draft).catch(() => asset.thumbnailDataUrl)
           : undefined;
-        await saveEditTrailIteration(asset.id, null, draft, thumbnail);
       }
+      if (mode === 'add-new') await addEditTrailIteration(asset.id, file, draft, thumbnail);
+      else await saveEditTrailIteration(asset.id, file, draft, thumbnail);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save edit iteration.');
     } finally {
@@ -203,8 +213,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                         muted
                         loop
                         playsInline
-                        className="max-h-full max-w-full object-contain"
-                        style={transformStyle(draft)}
+                        className="edit-trail-transform-target max-h-full max-w-full object-contain"
                         onLoadedMetadata={(event) => {
                           const duration = event.currentTarget.duration;
                           setVideoDuration(Number.isFinite(duration) ? duration : 0);
@@ -244,11 +253,11 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                     </div>
                   ) : (
                     <img
+                      ref={imageRef}
                       src={sourceUrl}
                       alt=""
                       draggable={false}
-                      className="max-h-full max-w-full select-none object-contain"
-                      style={transformStyle(draft)}
+                      className="edit-trail-transform-target max-h-full max-w-full select-none object-contain"
                     />
                   )
                 ) : (
@@ -311,9 +320,19 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 Generate
               </button>
               <button
+                className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 text-sm text-slate-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={saving || !sourceUrl}
+                onClick={() => commitIteration('add-new')}
+                title="Create a new edit from the active frame"
+              >
+                <Plus size={14} />
+                Add edit
+              </button>
+              <button
                 className="inline-flex h-9 items-center gap-1 rounded-full bg-emerald-400 px-4 text-sm font-semibold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-500"
                 disabled={saving || !sourceUrl}
-                onClick={saveIteration}
+                onClick={() => commitIteration('save-active')}
+                title={activeIsBase ? 'Create a new edit from the base frame' : 'Overwrite the selected edit'}
               >
                 <Save size={14} />
                 {saving ? 'Saving…' : 'Save edit'}
@@ -357,13 +376,6 @@ function ControlSlider({
       />
     </label>
   );
-}
-
-function transformStyle(transform: EditTrailTransform): CSSProperties {
-  return {
-    transform: `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`,
-    transformOrigin: 'center center',
-  };
 }
 
 function formatPlaybackTime(seconds: number): string {
@@ -425,6 +437,11 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error('Could not load the edit source.'));
     img.src = src;
   });
+}
+
+function applyPreviewTransform(element: HTMLElement | null, transform: EditTrailTransform) {
+  if (!element) return;
+  element.style.transform = `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`;
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string): Promise<Blob> {

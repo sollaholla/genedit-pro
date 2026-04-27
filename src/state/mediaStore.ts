@@ -471,7 +471,8 @@ export const useMediaStore = create<MediaState>((set, get) => ({
 
     const base = withEditTrail(asset);
     const active = base.editTrail.iterations.find((iteration) => iteration.id === base.editTrail.activeIterationId);
-    if (!active || active.source === 'original') {
+    const baseIterationId = base.editTrail.iterations[0]?.id;
+    if (!active || active.id === baseIterationId || active.source === 'original') {
       await get().addEditTrailIteration(assetId, file, transform, thumbnailDataUrl);
       return;
     }
