@@ -82,6 +82,8 @@ const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
 const RECENT_MEDIA_RETAIN_MS = 30_000;
 const MAX_RECENT_MEDIA_RETAINED = 24;
+const STARTUP_AUDIO_SYNC_GRACE_MS = 180;
+const STARTUP_AUDIO_SEEK_TOLERANCE_SEC = 0.08;
 const STARTUP_DECODER_SYNC_TIMEOUT_MS = 1000;
 
 function clipEndSec(clip: Clip): number {
@@ -239,6 +241,7 @@ function activeMediaReadyForStartup(
   videoPool: ElementPool,
   imagePool: ImagePool,
   audioPool: ElementPool,
+  requireAudio: boolean,
 ): boolean {
   for (const layer of visualLayers) {
     const asset = assetsById.get(layer.clip.assetId);
@@ -257,11 +260,13 @@ function activeMediaReadyForStartup(
     }
   }
 
+  if (!requireAudio) return true;
+
   for (const layer of audioLayers) {
     const asset = assetsById.get(layer.clip.assetId);
     if (asset?.kind !== 'video' && asset?.kind !== 'audio') continue;
     const el = audioPool.get(layer.clip.id) ?? (asset.kind === 'video' ? videoPool.get(layer.clip.id) : undefined);
-    if (!el || !mediaElementReadyForSourceTime(el, layer.sourceTimeSec, 0.08)) return false;
+    if (!el || !mediaElementReadyForSourceTime(el, layer.sourceTimeSec, STARTUP_AUDIO_SEEK_TOLERANCE_SEC)) return false;
   }
 
   return true;
@@ -1392,12 +1397,20 @@ export function PreviewPlayer() {
 
         if (!mediaPlaying && !el.paused) el.pause();
         if (el !== visualVideoEl || !activeVisualLayersByClipId.has(clipId)) {
-          seekIfNeeded(el, layer.sourceTimeSec, mediaPlaying, undefined, requestedSeekTargetsRef.current);
+          seekIfNeeded(
+            el,
+            layer.sourceTimeSec,
+            mediaPlaying,
+            startupDecoderSyncActive ? STARTUP_AUDIO_SEEK_TOLERANCE_SEC : undefined,
+            requestedSeekTargetsRef.current,
+          );
         }
         if (mediaPlaying && el.paused) el.play().catch(() => undefined);
       }
 
       if (state.playing && startupDecoderSyncStartedAtRef.current !== null) {
+        const startupElapsedMs = ts - startupDecoderSyncStartedAtRef.current;
+        const requireAudioForStartup = startupElapsedMs < STARTUP_AUDIO_SYNC_GRACE_MS;
         const startupReady = activeMediaReadyForStartup(
           visualFrame.videos,
           audioFrame.audios,
@@ -1407,8 +1420,9 @@ export function PreviewPlayer() {
           videoPool.current,
           imagePool.current,
           audioPool.current,
+          requireAudioForStartup,
         );
-        const startupTimedOut = ts - startupDecoderSyncStartedAtRef.current >= STARTUP_DECODER_SYNC_TIMEOUT_MS;
+        const startupTimedOut = startupElapsedMs >= STARTUP_DECODER_SYNC_TIMEOUT_MS;
         if (startupReady || startupTimedOut) {
           needsDecoderSyncOnPlayRef.current = false;
           startupDecoderSyncStartedAtRef.current = null;

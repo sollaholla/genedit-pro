@@ -284,7 +284,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       <div className="flex h-[min(880px,94vh)] w-[min(1180px,96vw)] flex-col overflow-hidden rounded-lg border border-white/15 bg-surface-950 shadow-2xl">
         <div className="flex shrink-0 items-center justify-between border-b border-surface-700 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2">
-            <Clapperboard size={17} className="shrink-0 text-brand-300" />
+            <Clapperboard size={17} className="shrink-0 text-brand-400" />
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-slate-100">{storedAsset?.name ?? 'New sequence'}</div>
               <div className="text-[11px] uppercase tracking-wide text-slate-500">Sequence{isDraft ? ' · Draft' : ''}</div>
@@ -348,7 +348,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 <div className="inline-flex items-center rounded-md border border-surface-700 bg-surface-950 p-0.5">
                   <button
                     type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
                     onClick={seekStart}
                     title="Go to start"
                     aria-label="Go to start"
@@ -357,7 +357,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   </button>
                   <button
                     type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded text-slate-200 hover:bg-surface-700 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300 disabled:cursor-not-allowed disabled:opacity-35"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-200 hover:bg-surface-700 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 disabled:cursor-not-allowed disabled:opacity-35"
                     onClick={playPreview}
                     disabled={playing}
                     title="Play preview"
@@ -367,7 +367,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   </button>
                   <button
                     type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300 disabled:cursor-not-allowed disabled:opacity-35"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 disabled:cursor-not-allowed disabled:opacity-35"
                     onClick={pausePreview}
                     disabled={!playing}
                     title="Pause preview"
@@ -377,7 +377,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   </button>
                   <button
                     type="button"
-                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-300"
+                    className="flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-surface-700 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
                     onClick={seekEnd}
                     title="Go to end"
                     aria-label="Go to end"
@@ -429,6 +429,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 {sortedMarkers.map((marker, index) => {
                   const x = timeToX(marker.timeSec, sequence.durationSec);
                   const selected = marker.id === selectedMarkerId;
+                  const markerLineClassName = selected
+                    ? 'stroke-brand-400'
+                    : marker.imageAssetId
+                      ? 'stroke-amber-300'
+                      : 'stroke-brand-500';
+                  const markerCircleClassName = marker.imageAssetId
+                    ? 'fill-amber-300 stroke-white'
+                    : selected
+                      ? 'fill-brand-400 stroke-white'
+                      : 'fill-brand-500 stroke-white';
                   return (
                     <g
                       key={marker.id}
@@ -460,15 +470,15 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                       }}
                       onDoubleClick={(event) => event.stopPropagation()}
                     >
-                      <line x1="0" y1="18" x2="0" y2="66" className={selected ? 'stroke-brand-300' : 'stroke-amber-300'} strokeWidth={selected ? 3 : 2} />
+                      <line x1="0" y1="18" x2="0" y2="66" className={markerLineClassName} strokeWidth={selected ? 3 : 2} />
                       <circle
                         cx="0"
                         cy={TIMELINE_Y}
                         r={selected ? 8 : 6}
-                        className={marker.imageAssetId ? 'fill-amber-300 stroke-surface-950' : selected ? 'fill-brand-300 stroke-surface-950' : 'fill-slate-400 stroke-surface-950'}
+                        className={markerCircleClassName}
                         strokeWidth="2"
                       />
-                      <text x="0" y="12" textAnchor="middle" className={selected ? 'fill-brand-200 text-[11px] font-semibold' : 'fill-slate-400 text-[10px]'}>{index + 1}</text>
+                      <text x="0" y="12" textAnchor="middle" className={selected ? 'fill-brand-400 text-[11px] font-semibold' : 'fill-slate-400 text-[10px]'}>{index + 1}</text>
                     </g>
                   );
                 })}
@@ -659,7 +669,7 @@ function MarkerInspector({
             <span className="min-w-0 flex-1">
               <span className="block truncate">{selectedImage ? selectedImage.name : 'Choose image or character'}</span>
               {selectedImage?.kind === 'character' && selectedImage.character?.characterId && (
-                <span className="block truncate text-[11px] text-brand-200">@{selectedImage.character.characterId}</span>
+                <span className="block truncate text-[11px] text-brand-400">@{selectedImage.character.characterId}</span>
               )}
             </span>
           </button>
@@ -841,7 +851,7 @@ function SequenceImagePicker({
                   <button
                     key={asset.id}
                     type="button"
-                    className={`group overflow-hidden rounded-lg border bg-white/[0.03] text-left transition ${selected ? 'border-brand-300 ring-1 ring-brand-300/70' : 'border-white/10 hover:border-white/25 hover:bg-white/[0.06]'}`}
+                    className={`group overflow-hidden rounded-lg border bg-white/[0.03] text-left transition ${selected ? 'border-brand-400 ring-1 ring-brand-400/70' : 'border-white/10 hover:border-white/25 hover:bg-white/[0.06]'}`}
                     onClick={() => onPick(asset)}
                   >
                     <div className="relative aspect-video bg-black/45">
