@@ -72,6 +72,44 @@ function computeRms(buf: Float32Array): number {
 type ElementPool = Map<string, HTMLMediaElement>;
 type ImagePool = Map<string, HTMLImageElement>;
 
+type PreviewDebugCanvasSample = {
+  width: number;
+  height: number;
+  pixels: number[];
+};
+
+type PreviewDebugMediaSample = {
+  clipId: string;
+  currentTime: number;
+  duration: number;
+  paused: boolean;
+  readyState: number;
+  seeking: boolean;
+  playbackRate: number;
+};
+
+type PreviewDebugFrameSample = {
+  now: number;
+  currentTimeSec: number;
+  playing: boolean;
+  canvas: PreviewDebugCanvasSample | null;
+  videos: PreviewDebugMediaSample[];
+  audios: PreviewDebugMediaSample[];
+};
+
+type PreviewDebugBridge = {
+  play: () => void;
+  pause: () => void;
+  setCurrentTime: (timeSec: number) => void;
+  sampleFrame: () => PreviewDebugFrameSample;
+};
+
+declare global {
+  interface Window {
+    __GENEDIT_PREVIEW_DEBUG__?: PreviewDebugBridge;
+  }
+}
+
 const FADE_OUT_MS = 80;
 const FADE_IN_MS = 40;
 const PREPARE_BACKWARD_SEC = 5.0;
@@ -84,7 +122,6 @@ const RECENT_MEDIA_RETAIN_MS = 30_000;
 const MAX_RECENT_MEDIA_RETAINED = 24;
 const STARTUP_AUDIO_SYNC_GRACE_MS = 180;
 const STARTUP_AUDIO_SEEK_TOLERANCE_SEC = 0.08;
-const STARTUP_VIDEO_PRIME_MS = 90;
 const STARTUP_DECODER_SYNC_TIMEOUT_MS = 1000;
 
 function clipEndSec(clip: Clip): number {
@@ -165,31 +202,6 @@ function layerSourceTimeAt(layer: ActiveLayer, timelineTimeSec: number): number 
   return layer.clip.inSec + localTimeSec * clipSpeed(layer.clip);
 }
 
-function timelineTimeFromLayerSourceTime(layer: ActiveLayer, sourceTimeSec: number): number {
-  const speed = clipSpeed(layer.clip);
-  const durationSec = clipTimelineDurationSec(layer.clip);
-  const localTimeSec = speed > 0
-    ? (sourceTimeSec - layer.clip.inSec) / speed
-    : 0;
-  return layer.clip.startSec + Math.max(0, Math.min(durationSec, localTimeSec));
-}
-
-function startupReleaseTimeFromVisualMedia(
-  visualLayers: ActiveLayer[],
-  assetsById: Map<string, MediaAsset>,
-  videoPool: ElementPool,
-  fallbackTimeSec: number,
-): number {
-  for (const layer of visualLayers) {
-    const asset = assetsById.get(layer.clip.assetId);
-    if (asset?.kind !== 'video') continue;
-    const video = videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
-    if (!video || !Number.isFinite(video.currentTime)) continue;
-    return timelineTimeFromLayerSourceTime(layer, video.currentTime);
-  }
-  return fallbackTimeSec;
-}
-
 type VideoSyncWindow = {
   beforeSec: number;
   afterSec: number;
@@ -201,8 +213,8 @@ function videoSyncWindow(clip: Clip, fps: number, playing: boolean): VideoSyncWi
   const beforeSec = Math.min(0.035, Math.max(0.015, sourceFrameSec * 0.75));
   if (!playing) return { beforeSec, afterSec: beforeSec };
   return {
-    beforeSec: Math.min(0.16, Math.max(0.05, sourceFrameSec * 1.75)),
-    afterSec: Math.min(0.12, Math.max(0.035, sourceFrameSec * 1.25)),
+    beforeSec: Math.min(0.28, Math.max(0.12, sourceFrameSec * 4)),
+    afterSec: Math.min(0.18, Math.max(0.08, sourceFrameSec * 3)),
   };
 }
 
@@ -224,16 +236,17 @@ function seekIfNeeded(
     ? drift > threshold
     : outsideSyncWindow(el.currentTime, target, threshold);
   if (!shouldSeek) {
-    requestedSeekTargets?.delete(el);
+    if (!el.seeking) requestedSeekTargets?.delete(el);
     return false;
   }
+  if (el.seeking) return false;
   const lastRequestedTarget = requestedSeekTargets?.get(el);
   const hasRequestedTarget = lastRequestedTarget !== undefined && Math.abs(lastRequestedTarget - target) <= 0.002;
   const canRetargetPausedSeek = !playing && !hasRequestedTarget;
   const canRetargetPlayingSeek = playing && (
     lastRequestedTarget === undefined || Math.abs(lastRequestedTarget - target) > 0.2
   );
-  if ((!el.seeking || canRetargetPausedSeek || canRetargetPlayingSeek) && el.readyState >= 1) {
+  if ((lastRequestedTarget === undefined || canRetargetPausedSeek || canRetargetPlayingSeek) && el.readyState >= 1) {
     try { el.currentTime = target; } catch { /* noop */ }
     requestedSeekTargets?.set(el, target);
     return true;
@@ -256,6 +269,36 @@ function canPaintSyncedVideo(
 function mediaElementReadyForSourceTime(el: HTMLMediaElement, target: number, toleranceSec: number): boolean {
   if (el.readyState < 2 || el.seeking) return false;
   return Math.abs(el.currentTime - target) <= toleranceSec;
+}
+
+function sampleCanvas(canvas: HTMLCanvasElement | null): PreviewDebugCanvasSample | null {
+  if (!canvas || canvas.width <= 0 || canvas.height <= 0) return null;
+  const width = 64;
+  const height = 36;
+  const sample = document.createElement('canvas');
+  sample.width = width;
+  sample.height = height;
+  const ctx = sample.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(canvas, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const pixels: number[] = [];
+  for (let index = 0; index < data.length; index += 4) {
+    pixels.push(Math.round((data[index]! + data[index + 1]! + data[index + 2]!) / 3));
+  }
+  return { width, height, pixels };
+}
+
+function sampleMediaPool(pool: ElementPool): PreviewDebugMediaSample[] {
+  return [...pool.entries()].map(([clipId, el]) => ({
+    clipId,
+    currentTime: el.currentTime,
+    duration: Number.isFinite(el.duration) ? el.duration : 0,
+    paused: el.paused,
+    readyState: el.readyState,
+    seeking: el.seeking,
+    playbackRate: el.playbackRate,
+  }));
 }
 
 function activeMediaReadyForStartup(
@@ -519,7 +562,6 @@ export function PreviewPlayer() {
   const prevHasVideoRef = useRef(false);
   const needsDecoderSyncOnPlayRef = useRef(false);
   const startupDecoderSyncStartedAtRef = useRef<number | null>(null);
-  const startupVideoPrimeStartedAtRef = useRef<number | null>(null);
   const lastPlayingCanvasFrameKeyRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
@@ -574,7 +616,6 @@ export function PreviewPlayer() {
     requestedSeekTargetsRef.current = new WeakMap();
     needsDecoderSyncOnPlayRef.current = false;
     startupDecoderSyncStartedAtRef.current = null;
-    startupVideoPrimeStartedAtRef.current = null;
     lastPlayingCanvasFrameKeyRef.current = null;
     prerolledRef.current.clear();
     hotPrimedSeekRef.current.clear();
@@ -1105,20 +1146,16 @@ export function PreviewPlayer() {
       }
       if (pausedPlayheadChanged || jumpedBackward || jumpedFar) {
         needsDecoderSyncOnPlayRef.current = true;
-        startupVideoPrimeStartedAtRef.current = null;
         if (state.playing) startupDecoderSyncStartedAtRef.current = ts;
       }
       if (startingPlayback && needsDecoderSyncOnPlayRef.current) {
         startupDecoderSyncStartedAtRef.current = ts;
-        startupVideoPrimeStartedAtRef.current = null;
       } else if (startingPlayback && needsDecoderSyncBeforeReset) {
         needsDecoderSyncOnPlayRef.current = true;
         startupDecoderSyncStartedAtRef.current = ts;
-        startupVideoPrimeStartedAtRef.current = null;
       }
       if (!state.playing) {
         startupDecoderSyncStartedAtRef.current = null;
-        startupVideoPrimeStartedAtRef.current = null;
       }
       lastPlayingStateRef.current = state.playing;
 
@@ -1188,16 +1225,11 @@ export function PreviewPlayer() {
         if (!videoEl) continue;
         keepVideoDecoderElementWarm(videoEl);
         setPitchPreservingRate(videoEl, clipSpeed(layer.clip));
-        if (!mediaPlaying && !startupDecoderSyncActive && !videoEl.paused) videoEl.pause();
+        if (!mediaPlaying && !videoEl.paused) videoEl.pause();
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, mediaPlaying);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
-        if (startupDecoderSyncActive && canPaintSyncedVideo(videoEl, layer.clip, layerSourceTimeSec, tolerance)) {
-          videoEl.muted = true;
-          if (videoEl.paused) videoEl.play().catch(() => undefined);
-          if (startupVideoPrimeStartedAtRef.current === null) startupVideoPrimeStartedAtRef.current = ts;
-        }
         if (mediaPlaying && videoEl.paused) {
           videoEl.muted = true;
           videoEl.play().catch(() => undefined);
@@ -1447,11 +1479,6 @@ export function PreviewPlayer() {
 
       if (state.playing && startupDecoderSyncStartedAtRef.current !== null) {
         const startupElapsedMs = ts - startupDecoderSyncStartedAtRef.current;
-        const startupHasVisualVideo = visualFrame.videos.some((layer) => assetsById.get(layer.clip.assetId)?.kind === 'video');
-        const startupVideoPrimeElapsedMs = startupVideoPrimeStartedAtRef.current === null
-          ? 0
-          : ts - startupVideoPrimeStartedAtRef.current;
-        const startupVideoPrimed = startupHasVisualVideo && startupVideoPrimeElapsedMs >= STARTUP_VIDEO_PRIME_MS;
         const requireAudioForStartup = startupElapsedMs < STARTUP_AUDIO_SYNC_GRACE_MS;
         const startupReady = activeMediaReadyForStartup(
           visualFrame.videos,
@@ -1465,21 +1492,11 @@ export function PreviewPlayer() {
           requireAudioForStartup,
         );
         const startupTimedOut = startupElapsedMs >= STARTUP_DECODER_SYNC_TIMEOUT_MS;
-        const startupCanRelease = startupHasVisualVideo
-          ? startupVideoPrimed || startupTimedOut
-          : startupReady || startupTimedOut;
-        if (startupCanRelease) {
-          const releaseTimeSec = startupVideoPrimed
-            ? startupReleaseTimeFromVisualMedia(visualFrame.videos, assetsById, videoPool.current, t)
-            : t;
+        if (startupReady || startupTimedOut) {
           needsDecoderSyncOnPlayRef.current = false;
           startupDecoderSyncStartedAtRef.current = null;
-          startupVideoPrimeStartedAtRef.current = null;
           requestedSeekTargetsRef.current = new WeakMap();
-          playbackClockTimeRef.current = releaseTimeSec;
-          if (Math.abs(releaseTimeSec - t) > 1e-4) {
-            state.setCurrentTime(releaseTimeSec, { snapMode: 'floor' });
-          }
+          playbackClockTimeRef.current = t;
           lastTickRef.current = ts;
         }
       }
@@ -1580,6 +1597,30 @@ export function PreviewPlayer() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [duration, project.fps, setCurrentTime]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return undefined;
+    const bridge: PreviewDebugBridge = {
+      play: () => usePlaybackStore.getState().play(),
+      pause: () => usePlaybackStore.getState().pause(),
+      setCurrentTime: (timeSec) => usePlaybackStore.getState().setCurrentTime(timeSec, { snap: false }),
+      sampleFrame: () => {
+        const playback = usePlaybackStore.getState();
+        return {
+          now: performance.now(),
+          currentTimeSec: playback.currentTimeSec,
+          playing: playback.playing,
+          canvas: sampleCanvas(freezeFrameCanvasRef.current),
+          videos: sampleMediaPool(videoPool.current),
+          audios: sampleMediaPool(audioPool.current),
+        };
+      },
+    };
+    window.__GENEDIT_PREVIEW_DEBUG__ = bridge;
+    return () => {
+      if (window.__GENEDIT_PREVIEW_DEBUG__ === bridge) delete window.__GENEDIT_PREVIEW_DEBUG__;
+    };
+  }, []);
 
   return (
     <div
