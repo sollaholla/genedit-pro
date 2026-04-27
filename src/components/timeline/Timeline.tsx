@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Clip, Project } from '@/types';
+import type { Clip, Project, Track } from '@/types';
 import { Plus, Scissors, Trash2 } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
@@ -50,6 +50,7 @@ import {
   KEYFRAME_COMPONENT_ROW_HEIGHT_PX,
   KEYFRAME_PROPERTY_ROW_HEIGHT_PX,
   KEYFRAME_TITLE_HEIGHT_PX,
+  keyframeSelectionKey,
   laneHeightForRows,
   type KeyframePropertyRow,
   type KeyframeSelection,
@@ -1033,6 +1034,127 @@ function selectedClipBounds(clips: Clip[]): { startSec: number; durationSec: num
   const startSec = Math.min(...clips.map((clip) => clip.startSec));
   const endSec = Math.max(...clips.map((clip) => clip.startSec + clipTimelineDurationSec(clip)));
   return { startSec, durationSec: Math.max(0, endSec - startSec) };
+}
+
+function isKeyframeContentY(
+  contentY: number,
+  tracks: Track[],
+  keyframeLanesByTrack: Map<string, TimelineKeyframeLane[]>,
+): boolean {
+  let y = RULER_HEIGHT_PX;
+  for (const track of tracks) {
+    if (contentY < y + TRACK_HEIGHT_PX) return false;
+    y += TRACK_HEIGHT_PX;
+    for (const lane of keyframeLanesByTrack.get(track.id) ?? []) {
+      if (contentY < y + lane.height) return true;
+      y += lane.height;
+    }
+  }
+  return false;
+}
+
+function collectKeyframesInRect(
+  rect: { x0: number; x1: number; y0: number; y1: number },
+  tracks: Track[],
+  keyframeLanesByTrack: Map<string, TimelineKeyframeLane[]>,
+  pxPerSec: number,
+  fps: number,
+): KeyframeSelection[] {
+  const hits: KeyframeSelection[] = [];
+  const seen = new Set<string>();
+  const safeFps = Math.max(1, fps);
+  let y = RULER_HEIGHT_PX;
+
+  const addHit = (selection: KeyframeSelection) => {
+    const key = keyframeSelectionKey(selection);
+    if (seen.has(key)) return;
+    seen.add(key);
+    hits.push(selection);
+  };
+
+  for (const track of tracks) {
+    y += TRACK_HEIGHT_PX;
+    for (const lane of keyframeLanesByTrack.get(track.id) ?? []) {
+      const laneY = y;
+      const clipDurationSec = Math.max(1e-6, clipTimelineDurationSec(lane.clip));
+      const clipLeftPx = timeToPx(lane.clip.startSec, pxPerSec);
+      const clipWidthPx = Math.max(48, timeToPx(clipDurationSec, pxPerSec));
+      const titleY = laneY + KEYFRAME_TITLE_HEIGHT_PX - 8;
+      const frameGroups = collectFrameGroupsForMarquee(lane.rows, safeFps, lane.clip.id);
+
+      for (const group of frameGroups) {
+        const x = clipLeftPx + Math.max(0, Math.min(clipWidthPx, timeToPx(group.timeSec, pxPerSec)));
+        if (pointInRect(x, titleY, rect)) group.members.forEach(addHit);
+      }
+
+      let rowY = laneY + KEYFRAME_TITLE_HEIGHT_PX;
+      for (const group of groupKeyframeRowsForMarquee(lane.rows)) {
+        rowY += KEYFRAME_COMPONENT_ROW_HEIGHT_PX;
+        for (const row of group.rows) {
+          const pointY = rowY + KEYFRAME_PROPERTY_ROW_HEIGHT_PX / 2;
+          for (const point of row.points) {
+            const frame = Math.round(point.timeSec * safeFps);
+            const frameTimeSec = Math.max(0, Math.min(clipDurationSec, frame / safeFps));
+            const x = clipLeftPx + Math.max(0, Math.min(clipWidthPx, timeToPx(frameTimeSec, pxPerSec)));
+            if (pointInRect(x, pointY, rect)) {
+              addHit({
+                clipId: lane.clip.id,
+                componentIndex: row.componentIndex,
+                componentId: row.componentId,
+                property: row.property,
+                keyframeId: point.id,
+              });
+            }
+          }
+          rowY += KEYFRAME_PROPERTY_ROW_HEIGHT_PX;
+        }
+      }
+
+      y += lane.height;
+    }
+  }
+
+  return hits;
+}
+
+function pointInRect(x: number, y: number, rect: { x0: number; x1: number; y0: number; y1: number }): boolean {
+  return x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1;
+}
+
+function groupKeyframeRowsForMarquee(rows: KeyframePropertyRow[]) {
+  const groups: Array<{ componentId: string; rows: KeyframePropertyRow[] }> = [];
+  for (const row of rows) {
+    const last = groups.at(-1);
+    if (last?.componentId === row.componentId) {
+      last.rows.push(row);
+    } else {
+      groups.push({ componentId: row.componentId, rows: [row] });
+    }
+  }
+  return groups;
+}
+
+function collectFrameGroupsForMarquee(rows: KeyframePropertyRow[], fps: number, clipId: string) {
+  const groups = new Map<number, { timeSec: number; members: KeyframeSelection[] }>();
+  for (const row of rows) {
+    for (const point of row.points) {
+      const frame = Math.round(point.timeSec * fps);
+      const member = {
+        clipId,
+        componentIndex: row.componentIndex,
+        componentId: row.componentId,
+        property: row.property,
+        keyframeId: point.id,
+      };
+      const existing = groups.get(frame);
+      if (existing) {
+        existing.members.push(member);
+      } else {
+        groups.set(frame, { timeSec: frame / fps, members: [member] });
+      }
+    }
+  }
+  return [...groups.values()];
 }
 
 function Key({ children }: { children: React.ReactNode }) {
