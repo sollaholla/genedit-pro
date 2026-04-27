@@ -26,6 +26,8 @@ import {
 import { decryptSecret } from '@/lib/settings/crypto';
 import { useMediaStore } from '@/state/mediaStore';
 import type { CharacterAssetData, CharacterVisualStyle, EditTrailIteration, MediaAsset } from '@/types';
+import gptImageLogo from '@/assets/model-logos/gpt-image-logo.png';
+import nanoBananaLogo from '@/assets/model-logos/nano-banana-logo.png';
 
 type Props = {
   assetId: string | null;
@@ -648,26 +650,13 @@ function StyleSelect({ value, onChange }: { value: CharacterVisualStyle; onChang
 }
 
 function ImageProviderLogo({ provider, size }: { provider: ImageModelProvider; size: number }) {
-  if (provider === 'piapi-gpt-image') return <OpenAiLogo size={size} />;
-  return <GeminiLogo size={size} />;
+  if (provider === 'piapi-gpt-image') return <LogoImage src={gptImageLogo} alt="GPT Image" size={size} />;
+  return <LogoImage src={nanoBananaLogo} alt="Nano Banana" size={size} />;
 }
 
-function OpenAiLogo({ size }: { size: number }) {
+function LogoImage({ src, alt, size }: { src: string; alt: string; size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" className="text-slate-100">
-      <path d="M12 3.3 6.9 6.2v5.9L12 15l5.1-2.9V6.2L12 3.3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-      <path d="m6.9 6.2 5.1 2.9 5.1-2.9M6.9 12.1 12 9.1l5.1 3M12 15V9.1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="12" r="8.7" fill="none" stroke="currentColor" strokeWidth="1.3" opacity="0.55" />
-    </svg>
-  );
-}
-
-function GeminiLogo({ size }: { size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 1.5c1.15 5.25 4.25 8.35 10.5 10.5-6.25 2.15-9.35 5.25-10.5 10.5C10.85 17.25 7.75 14.15 1.5 12 7.75 9.85 10.85 6.75 12 1.5Z" fill="#2488f5" />
-      <path d="M12 1.5c1.15 5.25 4.25 8.35 10.5 10.5-4.3 1.48-7.13 3.42-8.74 6.15C12.66 13.78 9.78 10.84 5.1 8.95 8.88 7.28 10.98 5.02 12 1.5Z" fill="#9b7cff" opacity="0.9" />
-    </svg>
+    <img src={src} alt={alt} width={size} height={size} className="shrink-0 object-contain" draggable={false} />
   );
 }
 
