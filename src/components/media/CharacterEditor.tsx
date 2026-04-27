@@ -26,6 +26,7 @@ import {
 import { decryptSecret } from '@/lib/settings/crypto';
 import { useMediaStore } from '@/state/mediaStore';
 import type { CharacterAssetData, CharacterVisualStyle, EditTrailIteration, MediaAsset } from '@/types';
+import { MediaPicker } from './MediaPicker';
 import gptImageLogo from '@/assets/model-logos/gpt-image-logo.png';
 import nanoBananaLogo from '@/assets/model-logos/nano-banana-logo.png';
 
@@ -76,6 +77,7 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
   const importFiles = useMediaStore((state) => state.importFiles);
   const [form, setForm] = useState<CharacterForm>(() => defaultCharacterForm(assets));
   const [referenceAssetIds, setReferenceAssetIds] = useState<string[]>([]);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [slugTouched, setSlugTouched] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -141,11 +143,13 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      if (referencePickerOpen) setReferencePickerOpen(false);
+      else onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [onClose, referencePickerOpen]);
 
   useEffect(() => {
     const onConnectionsChanged = () => setError(null);
@@ -208,6 +212,12 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
 
   const removeReferenceImage = (assetIdToRemove: string) => {
     setReferenceAssetIds((current) => current.filter((id) => id !== assetIdToRemove));
+  };
+
+  const attachReferenceImage = (reference: MediaAsset) => {
+    if (reference.kind !== 'image' || !isReferenceImageAsset(reference)) return;
+    setReferenceAssetIds((current) => uniqueIds([...current, reference.id]));
+    setReferencePickerOpen(false);
   };
 
   const copyToken = async () => {
@@ -438,11 +448,11 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
                     <button
                       type="button"
                       className="inline-flex h-7 items-center gap-1.5 rounded bg-surface-800 px-2 text-xs text-slate-200 hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => void importReferenceImages()}
+                      onClick={() => setReferencePickerOpen(true)}
                       disabled={working}
                     >
                       <Upload size={12} />
-                      Import
+                      Add
                     </button>
                   </div>
                   {referenceAssets.length > 0 ? (
@@ -535,6 +545,20 @@ export function CharacterEditor({ assetId, folderId = null, onClose, onOpenSetti
           </div>
         </main>
       </div>
+      {referencePickerOpen && (
+        <MediaPicker
+          assets={assets}
+          pickerMode="reference"
+          allowCharacterReferences={false}
+          title="Pick Reference Images"
+          helperText="Choose existing image assets or import new images for this character."
+          importLabel="Import Images"
+          zIndexClassName="z-[120]"
+          onPick={attachReferenceImage}
+          onImportFromComputer={() => void importReferenceImages()}
+          onClose={() => setReferencePickerOpen(false)}
+        />
+      )}
     </div>
   );
 }
