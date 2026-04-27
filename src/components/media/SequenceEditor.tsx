@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { nanoid } from 'nanoid';
 import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import {
@@ -52,6 +52,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const [copied, setCopied] = useState(false);
   const [imagePickerMarkerId, setImagePickerMarkerId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [markerContextMenu, setMarkerContextMenu] = useState<{ x: number; y: number; markerId: string } | null>(null);
   const timelineRef = useRef<SVGSVGElement | null>(null);
   const timelineGestureRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; target: 'timeline' | 'marker' } | null>(null);
   const suppressTimelineDoubleClickUntilRef = useRef(0);
@@ -71,6 +72,11 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     if (selectedMarkerId && sequence.markers.some((marker) => marker.id === selectedMarkerId)) return;
     setSelectedMarkerId(sortedMarkers[0]?.id ?? null);
   }, [selectedMarkerId, sequence.markers, sortedMarkers]);
+
+  useEffect(() => {
+    if (!markerContextMenu) return;
+    if (!sequence.markers.some((marker) => marker.id === markerContextMenu.markerId)) setMarkerContextMenu(null);
+  }, [markerContextMenu, sequence.markers]);
 
   useEffect(() => {
     setCurrentTimeSec((time) => clampTime(time, sequence.durationSec));
@@ -177,11 +183,17 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     setPlaying(true);
   };
   const pausePreview = () => setPlaying(false);
+  const deleteMarker = (markerId: string) => {
+    const remaining = sequence.markers.filter((marker) => marker.id !== markerId);
+    persist({ ...sequence, markers: remaining });
+    if (selectedMarkerId === markerId) setSelectedMarkerId(remaining[0]?.id ?? null);
+    if (imagePickerMarkerId === markerId) setImagePickerMarkerId(null);
+    if (draggingMarkerId === markerId) setDraggingMarkerId(null);
+    setMarkerContextMenu(null);
+  };
   const deleteSelectedMarker = () => {
     if (!selectedMarker) return;
-    const remaining = sequence.markers.filter((marker) => marker.id !== selectedMarker.id);
-    persist({ ...sequence, markers: remaining });
-    setSelectedMarkerId(remaining[0]?.id ?? null);
+    deleteMarker(selectedMarker.id);
   };
   const clientXToTime = (clientX: number) => {
     const rect = timelineRef.current?.getBoundingClientRect();
@@ -419,6 +431,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                       transform={`translate(${x} 0)`}
                       className="cursor-ew-resize"
                       onPointerDown={(event) => {
+                        if (event.button !== 0) return;
                         setPlaying(false);
                         event.stopPropagation();
                         event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
@@ -433,10 +446,24 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                         setDraggingMarkerId(marker.id);
                         setCurrentTimeSec(marker.timeSec);
                       }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setPlaying(false);
+                        setSelectedMarkerId(marker.id);
+                        setCurrentTimeSec(marker.timeSec);
+                        setMarkerContextMenu({ x: event.clientX, y: event.clientY, markerId: marker.id });
+                      }}
                       onDoubleClick={(event) => event.stopPropagation()}
                     >
                       <line x1="0" y1="18" x2="0" y2="66" className={selected ? 'stroke-brand-300' : 'stroke-amber-300'} strokeWidth={selected ? 3 : 2} />
-                      <circle cx="0" cy={TIMELINE_Y} r={selected ? 8 : 6} className={marker.imageAssetId ? 'fill-amber-300' : 'fill-surface-400'} />
+                      <circle
+                        cx="0"
+                        cy={TIMELINE_Y}
+                        r={selected ? 8 : 6}
+                        className={marker.imageAssetId ? 'fill-amber-300 stroke-surface-950' : selected ? 'fill-brand-300 stroke-surface-950' : 'fill-slate-400 stroke-surface-950'}
+                        strokeWidth="2"
+                      />
                       <text x="0" y="12" textAnchor="middle" className={selected ? 'fill-brand-200 text-[11px] font-semibold' : 'fill-slate-400 text-[10px]'}>{index + 1}</text>
                     </g>
                   );
@@ -531,9 +558,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                       aria-label="Delete marker"
                       onClick={(event) => {
                         event.stopPropagation();
-                        const remaining = sequence.markers.filter((candidate) => candidate.id !== marker.id);
-                        persist({ ...sequence, markers: remaining });
-                        if (selectedMarkerId === marker.id) setSelectedMarkerId(remaining[0]?.id ?? null);
+                        deleteMarker(marker.id);
                       }}
                     >
                       <Trash2 size={12} />
@@ -555,6 +580,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
           }}
           onImport={() => void importMarkerImage()}
           onClose={() => setImagePickerMarkerId(null)}
+        />
+      )}
+      {markerContextMenu && (
+        <SequenceMarkerContextMenu
+          x={markerContextMenu.x}
+          y={markerContextMenu.y}
+          onDelete={() => deleteMarker(markerContextMenu.markerId)}
+          onClose={() => setMarkerContextMenu(null)}
         />
       )}
     </div>
@@ -637,6 +670,70 @@ function MarkerInspector({
         </label>
       </div>
     </section>
+  );
+}
+
+function SequenceMarkerContextMenu({
+  x,
+  y,
+  onDelete,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - menu.offsetWidth - margin);
+    const maxTop = Math.max(margin, window.innerHeight - menu.offsetHeight - margin);
+    const left = Math.min(Math.max(margin, x), maxLeft);
+    const top = Math.min(Math.max(margin, y), maxTop);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }, [x, y]);
+
+  useEffect(() => {
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-sequence-marker-context-menu]')) return;
+      onClose();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      ref={menuRef}
+      data-sequence-marker-context-menu
+      className="fixed z-[130] min-w-[130px] rounded-md border border-surface-600 bg-surface-800 py-1 text-xs text-slate-200 shadow-lg"
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 hover:bg-red-900/40"
+        onClick={() => {
+          onDelete();
+          onClose();
+        }}
+      >
+        <Trash2 size={12} />
+        Delete
+      </button>
+    </div>
   );
 }
 
