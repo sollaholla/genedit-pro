@@ -947,7 +947,7 @@ function SequencePromptOutput({
 
 function GeneratedShotLoading({ asset }: { asset: MediaAsset }) {
   const progress = Math.round(asset.generation?.progress ?? 10);
-  const status = asset.generation?.providerTaskStatus ? `PiAPI ${asset.generation.providerTaskStatus}` : 'Queued with PiAPI';
+  const status = asset.generation?.providerTaskStatus === 'requesting' ? 'Starting' : 'In progress';
   return (
     <div className="flex w-full max-w-[260px] flex-col items-center gap-3 px-4 text-center text-slate-300">
       <span className="flex h-12 w-12 items-center justify-center rounded-md bg-brand-500/10 text-brand-300 ring-1 ring-brand-400/25">
@@ -958,7 +958,6 @@ function GeneratedShotLoading({ asset }: { asset: MediaAsset }) {
         <div className="mt-1 text-xs text-slate-500">{status} - {progress}%</div>
       </div>
       <progress value={progress} max={100} className="h-1.5 w-full overflow-hidden rounded bg-surface-800 accent-brand-400" />
-      <div className="text-[11px] leading-4 text-slate-500">This will keep polling when the project is open again.</div>
     </div>
   );
 }
@@ -1009,7 +1008,7 @@ function MarkerInspector({
   const selectedImageGenerating = selectedImage?.generation?.status === 'generating';
   const selectedImageError = selectedImage?.generation?.status === 'error';
   const selectedImageSubtitle = selectedImageGenerating
-    ? `Generating${formatGenerationProgress(selectedImage)} - you can leave and it will resume`
+    ? `Generating${formatGenerationProgress(selectedImage)}`
     : selectedImageError
       ? selectedImage.generation?.errorMessage ?? 'Generation failed'
       : selectedImage
