@@ -349,6 +349,12 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
         <MediaLightbox
           asset={previewAsset}
           onClose={() => setPreviewAssetId(null)}
+          onEdit={previewAsset.kind === 'character'
+            ? () => {
+                setPreviewAssetId(null);
+                onOpenCharacter(previewAsset);
+              }
+            : undefined}
         />
       )}
       {folderMenu && (
@@ -747,7 +753,7 @@ function dragHasAsset(event: DragEvent<HTMLElement>): boolean {
   return types.includes(ASSET_DRAG_MIME) || types.includes('text/plain');
 }
 
-function MediaLightbox({ asset, onClose }: { asset: MediaAsset; onClose: () => void }) {
+function MediaLightbox({ asset, onClose, onEdit }: { asset: MediaAsset; onClose: () => void; onEdit?: () => void }) {
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
   const [url, setUrl] = useState<string | null>(null);
   const Icon = kindIcon[asset.kind];
@@ -788,15 +794,28 @@ function MediaLightbox({ asset, onClose }: { asset: MediaAsset; onClose: () => v
               <div className="text-[11px] uppercase tracking-wide text-slate-500">{asset.kind}</div>
             </div>
           </div>
-          <button
-            type="button"
-            className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-            onClick={onClose}
-            title="Close preview"
-            aria-label="Close preview"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {asset.kind === 'character' && onEdit && (
+              <button
+                type="button"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2 text-xs font-medium text-slate-200 hover:border-brand-300/50 hover:bg-brand-500/15 hover:text-white"
+                onClick={onEdit}
+                title="Edit character"
+              >
+                <SlidersHorizontal size={13} />
+                Edit
+              </button>
+            )}
+            <button
+              type="button"
+              className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+              onClick={onClose}
+              title="Close preview"
+              aria-label="Close preview"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
         <div className="flex min-h-[280px] flex-1 items-center justify-center bg-black p-4">
           {url ? (
