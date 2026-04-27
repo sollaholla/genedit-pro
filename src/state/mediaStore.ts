@@ -822,8 +822,10 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     const id = nanoid(10);
     const sequence: SequenceAssetData = {
       model: 'piapi-seedance-2',
+      imageModel: 'nano-banana-pro',
       durationSec: 8,
       overallPrompt: '',
+      characterAssetIds: [],
       markers: [],
     };
     const asset: MediaAsset = {

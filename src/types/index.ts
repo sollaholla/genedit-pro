@@ -26,8 +26,10 @@ export type SequenceMarker = {
 
 export type SequenceAssetData = {
   model: string;
+  imageModel?: string;
   durationSec: number;
   overallPrompt: string;
+  characterAssetIds?: string[];
   markers: SequenceMarker[];
 };
 

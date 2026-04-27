@@ -3,7 +3,13 @@ import type { SequenceAssetData, SequenceMarker } from '@/types';
 type SequenceReferenceOptions = {
   availableImageAssetIds?: Set<string>;
   characterTokensByAssetId?: Map<string, string>;
+  characterAssetIds?: string[];
   maxImages?: number;
+};
+
+export type SequencePromptLine = {
+  markerId: string | null;
+  text: string;
 };
 
 export function sortedSequenceMarkers(sequence: SequenceAssetData): SequenceMarker[] {
@@ -17,6 +23,12 @@ export function formatSequenceTimestamp(timeSec: number): string {
 export function sequenceReferenceAssetIds(sequence: SequenceAssetData, options: SequenceReferenceOptions = {}): string[] {
   const ids: string[] = [];
   const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY;
+  for (const assetId of options.characterAssetIds ?? sequence.characterAssetIds ?? []) {
+    if (ids.length >= maxImages) break;
+    if (ids.includes(assetId)) continue;
+    if (options.availableImageAssetIds && !options.availableImageAssetIds.has(assetId)) continue;
+    ids.push(assetId);
+  }
   for (const marker of sortedSequenceMarkers(sequence)) {
     if (ids.length >= maxImages) break;
     const assetId = marker.imageAssetId;
@@ -28,9 +40,15 @@ export function sequenceReferenceAssetIds(sequence: SequenceAssetData, options: 
 }
 
 export function composeSequencePrompt(sequence: SequenceAssetData, options: SequenceReferenceOptions = {}): string {
-  const lines: string[] = [];
+  return composeSequencePromptLines(sequence, options).map((line) => line.text).join('\n');
+}
+
+export function composeSequencePromptLines(sequence: SequenceAssetData, options: SequenceReferenceOptions = {}): SequencePromptLine[] {
+  const promptLines: SequencePromptLine[] = [];
   const overallPrompt = sequence.overallPrompt.trim();
-  if (overallPrompt) lines.push(overallPrompt, '');
+  if (overallPrompt) {
+    promptLines.push({ markerId: null, text: overallPrompt }, { markerId: null, text: '' });
+  }
   let referenceIndex = 0;
   const maxImages = options.maxImages ?? Number.POSITIVE_INFINITY;
   for (const marker of sortedSequenceMarkers(sequence)) {
@@ -43,7 +61,8 @@ export function composeSequencePrompt(sequence: SequenceAssetData, options: Sequ
     if (hasImage) referenceIndex += 1;
     const token = hasImage ? ` @${characterToken ?? `image${referenceIndex}`}` : '';
     const prompt = marker.prompt.trim() || 'Shot beat';
-    lines.push(`[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${token}`);
+    const text = `[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${token}`;
+    promptLines.push({ markerId: marker.id, text });
   }
-  return lines.join('\n');
+  return promptLines;
 }

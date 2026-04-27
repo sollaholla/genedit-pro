@@ -1,6 +1,17 @@
 import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { nanoid } from 'nanoid';
 import { Check, Clapperboard, Copy, Image as ImageIcon, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import {
+  CHARACTER_IMAGE_ASPECT_RATIO,
+  CHARACTER_IMAGE_RESOLUTION,
+  DEFAULT_IMAGE_MODELS,
+  defaultImageModel,
+  estimateImageCostUsd,
+  imageModelById,
+  sortImageModelsByPriority,
+  type ImageModelDefinition,
+} from '@/lib/imageModels/capabilities';
 import {
   DEFAULT_VIDEO_MODELS,
   isPiApiKlingModel,
@@ -8,8 +19,14 @@ import {
   sortModelsByPriority,
   type VideoModelDefinition,
 } from '@/lib/videoModels/capabilities';
-import { composeSequencePrompt, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
-import { isReferenceImageAsset } from '@/lib/media/characterReferences';
+import { composeSequencePrompt, composeSequencePromptLines, formatSequenceTimestamp, sortedSequenceMarkers } from '@/lib/media/sequence';
+import { characterTokenForAsset, extractPromptReferenceTokens, isReferenceImageAsset } from '@/lib/media/characterReferences';
+import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
+import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
+import { decryptSecret } from '@/lib/settings/crypto';
+import { PIAPI_API_KEY_STORAGE, PIAPI_KLING_API_KEY_STORAGE, PIAPI_VEO_API_KEY_STORAGE } from '@/lib/settings/connectionStorage';
+import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
+import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
 import { ModelSelect } from './ModelSelect';
@@ -29,9 +46,15 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const assets = useMediaStore((state) => state.assets);
   const importFiles = useMediaStore((state) => state.importFiles);
   const objectUrlFor = useMediaStore((state) => state.objectUrlFor);
+  const addGeneratedAsset = useMediaStore((state) => state.addGeneratedAsset);
+  const updateGenerationProgress = useMediaStore((state) => state.updateGenerationProgress);
+  const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
+  const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
+  const failGeneratedAsset = useMediaStore((state) => state.failGeneratedAsset);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
   const createSequenceAsset = useMediaStore((state) => state.createSequenceAsset);
   const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
+  const imageModels = useMemo(() => sortImageModelsByPriority(DEFAULT_IMAGE_MODELS), []);
   const fallbackModel = sequenceModels[0];
   const [committedAssetId, setCommittedAssetId] = useState<string | null>(null);
   const [draftSequence, setDraftSequence] = useState<SequenceAssetData>(() => createDefaultSequence(fallbackModel));
@@ -42,8 +65,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const isDraft = !effectiveAssetId;
   const sequence = storedAsset?.sequence ?? draftSequence;
   const selectedModel = sequenceModels.find((model) => model.id === sequence.model) ?? fallbackModel;
+  const selectedImageModel = imageModelById(sequence.imageModel ?? '') ?? defaultImageModel();
   const durationOptions = useMemo(() => (selectedModel ? durationsForModel(selectedModel) : [8]), [selectedModel]);
-  const referenceAssets = useMemo(() => assets.filter(isReferenceImageAsset), [assets]);
+  const imageReferenceAssets = useMemo(() => assets.filter((asset) => asset.kind === 'image' && isReferenceImageAsset(asset)), [assets]);
+  const characterAssets = useMemo(() => assets.filter((asset) => asset.kind === 'character' && isReferenceImageAsset(asset)), [assets]);
+  const sequenceCharacterAssets = useMemo(() => {
+    const ids = new Set(sequence.characterAssetIds ?? []);
+    return characterAssets.filter((asset) => ids.has(asset.id));
+  }, [characterAssets, sequence.characterAssetIds]);
   const characterTokensByAssetId = useMemo(() => new Map(assets
     .filter((candidate) => candidate.kind === 'character' && candidate.character?.characterId)
     .map((candidate) => [candidate.id, candidate.character!.characterId])), [assets]);
@@ -55,17 +84,21 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const [scrubbing, setScrubbing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [imagePickerMarkerId, setImagePickerMarkerId] = useState<string | null>(null);
+  const [characterPickerOpen, setCharacterPickerOpen] = useState(false);
+  const [imageGenerationError, setImageGenerationError] = useState<string | null>(null);
+  const [imageGeneratingMarkerId, setImageGeneratingMarkerId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [markerContextMenu, setMarkerContextMenu] = useState<{ x: number; y: number; markerId: string } | null>(null);
   const timelineRef = useRef<SVGSVGElement | null>(null);
   const timelineGestureRef = useRef<{ pointerId: number; startX: number; startY: number; moved: boolean; target: 'timeline' | 'marker' } | null>(null);
   const suppressTimelineDoubleClickUntilRef = useRef(0);
   const selectedMarker = sequence.markers.find((marker) => marker.id === selectedMarkerId) ?? null;
-  const selectedMarkerImage = selectedMarker?.imageAssetId ? referenceAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
+  const selectedMarkerImage = selectedMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === selectedMarker.imageAssetId) ?? null : null;
   const imagePickerMarker = imagePickerMarkerId ? sequence.markers.find((marker) => marker.id === imagePickerMarkerId) ?? null : null;
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
-  const previewImage = previewMarker?.imageAssetId ? referenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
+  const previewImage = previewMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
+  const composedPromptLines = useMemo(() => composeSequencePromptLines(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
 
   useEffect(() => {
     if (isDraft) return;
@@ -131,20 +164,21 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (imagePickerMarkerId) setImagePickerMarkerId(null);
+      else if (characterPickerOpen) setCharacterPickerOpen(false);
       else onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [imagePickerMarkerId, onClose]);
+  }, [characterPickerOpen, imagePickerMarkerId, onClose]);
 
   if (!selectedModel) return null;
   if (!isDraft && !storedAsset) return null;
 
   const shouldCommitDraft = (next: SequenceAssetData): boolean =>
-    next.markers.some((marker) => marker.imageAssetId) || next.markers.length > 0;
+    next.markers.some((marker) => marker.imageAssetId) || next.markers.length > 0 || Boolean(next.characterAssetIds?.length);
 
   const persist = (next: SequenceAssetData) => {
-    const normalized = normalizeSequence(next);
+    const normalized = normalizeSequence(next, assets);
     if (effectiveAssetId) {
       updateSequenceAsset(effectiveAssetId, normalized);
       return;
@@ -158,6 +192,20 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     }
     setDraftSequence(normalized);
   };
+  const addSequenceCharacter = (asset: MediaAsset) => {
+    if (asset.kind !== 'character') return;
+    const latestSequence = effectiveAssetId
+      ? useMediaStore.getState().assets.find((candidate) => candidate.id === effectiveAssetId && candidate.kind === 'sequence')?.sequence ?? sequence
+      : sequence;
+    const ids = uniqueIds([...(latestSequence.characterAssetIds ?? []), asset.id]);
+    persist({ ...latestSequence, characterAssetIds: ids });
+  };
+  const removeSequenceCharacter = (assetId: string) => {
+    const latestSequence = effectiveAssetId
+      ? useMediaStore.getState().assets.find((candidate) => candidate.id === effectiveAssetId && candidate.kind === 'sequence')?.sequence ?? sequence
+      : sequence;
+    persist({ ...latestSequence, characterAssetIds: (latestSequence.characterAssetIds ?? []).filter((id) => id !== assetId) });
+  };
   const updateMarker = (markerId: string, patch: Partial<SequenceMarker>) => {
     persist({
       ...sequence,
@@ -165,6 +213,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         ? { ...marker, ...patch, timeSec: clampTime(patch.timeSec ?? marker.timeSec, sequence.durationSec) }
         : marker)),
     });
+  };
+  const changeImageModel = (modelId: string) => {
+    const nextModel = imageModels.find((model) => model.id === modelId) ?? selectedImageModel;
+    persist({ ...sequence, imageModel: nextModel.id });
   };
   const addMarker = (timeSec = currentTimeSec) => {
     const marker: SequenceMarker = {
@@ -278,6 +330,78 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     };
     input.click();
   };
+  const generateShotImage = async (markerId: string) => {
+    const marker = sequence.markers.find((candidate) => candidate.id === markerId);
+    if (!marker) return;
+    const prompt = buildShotImagePrompt(sequence, marker, assets);
+    if (!prompt.trim()) {
+      setImageGenerationError('Add a shot prompt before generating an image.');
+      return;
+    }
+    const apiKey = await readPiApiKey();
+    if (!apiKey) {
+      setImageGenerationError('Add a PiAPI key in Settings before generating sequence images.');
+      return;
+    }
+
+    setImageGenerationError(null);
+    setImageGeneratingMarkerId(markerId);
+    const shotIndex = Math.max(1, sortedMarkers.findIndex((candidate) => candidate.id === markerId) + 1);
+    const estimatedCostUsd = estimateImageCostUsd(selectedImageModel);
+    const generatedAssetId = addGeneratedAsset(
+      `Sequence shot ${shotIndex}.png`,
+      storedAsset?.folderId ?? draftFolderId ?? null,
+      estimatedCostUsd,
+      undefined,
+      { kind: 'image', mimeType: 'image/png', durationSec: 5 },
+    );
+
+    try {
+      const referenceAssetsForShot = shotImageReferenceAssets(sequence, marker, assets);
+      const referenceInput = await buildImageReferenceInput(referenceAssetsForShot, selectedImageModel, objectUrlFor);
+      const result = await generatePiApiImage({
+        model: selectedImageModel,
+        prompt,
+        aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+        resolution: CHARACTER_IMAGE_RESOLUTION,
+        outputFormat: selectedImageModel.capabilities.defaultOutputFormat,
+        ...referenceInput,
+        onTaskAccepted: (task) => updateGenerationTask(generatedAssetId, {
+          provider: selectedImageModel.provider,
+          providerTaskId: task.task_id,
+          providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : undefined,
+          providerTaskStatus: task.status,
+        }),
+        onProgress: (progress) => updateGenerationProgress(generatedAssetId, progress),
+      }, { apiKey });
+      const file = await downloadGeneratedImageFile(result.url, (progress) => updateGenerationProgress(generatedAssetId, progress));
+      await finalizeGeneratedAssetWithBlob(generatedAssetId, file, {
+        actualCostUsd: estimatedCostUsd,
+        provider: result.provider,
+        providerArtifactUri: result.url,
+        providerArtifactExpiresAt: result.providerArtifactExpiresAt,
+      });
+      const latestAssets = useMediaStore.getState().assets;
+      const latestSequence = latestAssets.find((asset) => asset.id === effectiveAssetId && asset.kind === 'sequence')?.sequence ?? sequence;
+      const nextSequence = {
+        ...latestSequence,
+        imageModel: selectedImageModel.id,
+        markers: latestSequence.markers.map((candidate) => (candidate.id === markerId ? { ...candidate, imageAssetId: generatedAssetId } : candidate)),
+      };
+      if (effectiveAssetId) updateSequenceAsset(effectiveAssetId, normalizeSequence(nextSequence, latestAssets));
+      else persist(nextSequence);
+    } catch (err) {
+      const message = formatGenerationError(err);
+      setImageGenerationError(message);
+      failGeneratedAsset(generatedAssetId, {
+        actualCostUsd: estimatedCostUsd,
+        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+        errorMessage: message,
+      });
+    } finally {
+      setImageGeneratingMarkerId(null);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
@@ -342,6 +466,12 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 </select>
               </label>
             </div>
+
+            <SequenceCharacterStrip
+              characters={sequenceCharacterAssets}
+              onAdd={() => setCharacterPickerOpen(true)}
+              onRemove={removeSequenceCharacter}
+            />
 
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
@@ -503,15 +633,26 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded bg-surface-950 p-3 text-xs leading-relaxed text-slate-300">{composedPrompt || ' '}</pre>
+                <SequencePromptOutput lines={composedPromptLines} selectedMarkerId={selectedMarkerId} />
               </section>
 
               <MarkerInspector
                 marker={selectedMarker}
                 selectedImage={selectedMarkerImage}
+                selectedImageModel={selectedImageModel}
+                imageModels={imageModels}
+                sequenceCharacters={sequenceCharacterAssets}
+                allCharacters={characterAssets}
+                imageGenerationError={selectedMarker?.id === imageGeneratingMarkerId ? null : imageGenerationError}
+                imageGenerating={Boolean(selectedMarker && selectedMarker.id === imageGeneratingMarkerId)}
                 durationSec={sequence.durationSec}
                 onUpdate={updateMarker}
                 onDelete={deleteSelectedMarker}
+                onImageModelChange={changeImageModel}
+                onAcceptCharacterMention={addSequenceCharacter}
+                onGenerateImage={() => {
+                  if (selectedMarker) void generateShotImage(selectedMarker.id);
+                }}
                 onChooseImage={() => {
                   if (selectedMarker) setImagePickerMarkerId(selectedMarker.id);
                 }}
@@ -586,7 +727,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       </div>
       {imagePickerMarker && (
         <SequenceImagePicker
-          assets={referenceAssets}
+          assets={imageReferenceAssets}
           selectedId={imagePickerMarker.imageAssetId ?? null}
           onPick={(reference) => {
             updateMarker(imagePickerMarker.id, { imageAssetId: reference.id });
@@ -594,6 +735,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
           }}
           onImport={() => void importMarkerImage()}
           onClose={() => setImagePickerMarkerId(null)}
+        />
+      )}
+      {characterPickerOpen && (
+        <SequenceCharacterPicker
+          assets={characterAssets}
+          selectedIds={sequence.characterAssetIds ?? []}
+          onPick={(asset) => addSequenceCharacter(asset)}
+          onClose={() => setCharacterPickerOpen(false)}
         />
       )}
       {markerContextMenu && (
@@ -608,19 +757,108 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   );
 }
 
+function SequenceCharacterStrip({
+  characters,
+  onAdd,
+  onRemove,
+}: {
+  characters: MediaAsset[];
+  onAdd: () => void;
+  onRemove: (assetId: string) => void;
+}) {
+  return (
+    <div className="mb-4 rounded-md border border-surface-700 bg-surface-900/70 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sequence Characters</div>
+        <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={onAdd}>
+          <Plus size={12} />
+          Add Character
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {characters.length === 0 && <span className="text-xs text-slate-500">No characters attached to this sequence.</span>}
+        {characters.map((asset) => {
+          const token = bareCharacterToken(asset);
+          return (
+            <span key={asset.id} className="inline-flex max-w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 py-1 text-xs text-slate-200">
+              {asset.thumbnailDataUrl ? (
+                <img src={asset.thumbnailDataUrl} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
+              ) : (
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-surface-800 text-slate-500"><UserRound size={13} /></span>
+              )}
+              <span className="min-w-0">
+                <span className="block max-w-[180px] truncate">{asset.name}</span>
+                {token && <span className="block text-[10px] text-brand-300">@{token}</span>}
+              </span>
+              <button type="button" className="rounded p-0.5 text-slate-500 hover:bg-white/10 hover:text-slate-100" onClick={() => onRemove(asset.id)} title="Remove character" aria-label="Remove character">
+                <X size={12} />
+              </button>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SequencePromptOutput({
+  lines,
+  selectedMarkerId,
+}: {
+  lines: Array<{ markerId: string | null; text: string }>;
+  selectedMarkerId: string | null;
+}) {
+  if (lines.length === 0) {
+    return <div className="min-h-0 flex-1 overflow-auto rounded bg-surface-950 p-3 text-xs leading-relaxed text-slate-500"> </div>;
+  }
+  return (
+    <div className="min-h-0 flex-1 overflow-auto rounded bg-surface-950 p-2 font-mono text-xs leading-relaxed text-slate-300">
+      {lines.map((line, index) => {
+        const highlighted = Boolean(line.markerId && line.markerId === selectedMarkerId);
+        return (
+          <div
+            key={`${line.markerId ?? 'overall'}-${index}`}
+            className={`whitespace-pre-wrap rounded px-2 py-1 ${highlighted ? 'border border-brand-400/50 bg-brand-500/15 text-slate-100 shadow-[inset_3px_0_0_rgba(124,140,255,0.9)]' : ''}`}
+          >
+            {line.text || ' '}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MarkerInspector({
   marker,
   selectedImage,
+  selectedImageModel,
+  imageModels,
+  sequenceCharacters,
+  allCharacters,
+  imageGenerationError,
+  imageGenerating,
   durationSec,
   onUpdate,
   onDelete,
+  onImageModelChange,
+  onAcceptCharacterMention,
+  onGenerateImage,
   onChooseImage,
 }: {
   marker: SequenceMarker | null;
   selectedImage: MediaAsset | null;
+  selectedImageModel: ImageModelDefinition;
+  imageModels: ImageModelDefinition[];
+  sequenceCharacters: MediaAsset[];
+  allCharacters: MediaAsset[];
+  imageGenerationError: string | null;
+  imageGenerating: boolean;
   durationSec: number;
   onUpdate: (markerId: string, patch: Partial<SequenceMarker>) => void;
   onDelete: () => void;
+  onImageModelChange: (modelId: string) => void;
+  onAcceptCharacterMention: (asset: MediaAsset) => void;
+  onGenerateImage: () => void;
   onChooseImage: () => void;
 }) {
   if (!marker) {
@@ -653,7 +891,7 @@ function MarkerInspector({
           />
         </label>
         <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-          Reference
+          Shot Image
           <button
             type="button"
             className="flex min-h-14 w-full items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-left text-sm font-normal normal-case tracking-normal text-slate-100 outline-none hover:border-surface-500 focus-visible:border-brand-400"
@@ -663,32 +901,216 @@ function MarkerInspector({
               <img src={selectedImage.thumbnailDataUrl} alt="" className="h-10 w-10 shrink-0 rounded object-cover" />
             ) : (
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-surface-800 text-slate-500">
-                {selectedImage?.kind === 'character' ? <UserRound size={16} /> : <ImageIcon size={16} />}
+                <ImageIcon size={16} />
               </span>
             )}
             <span className="min-w-0 flex-1">
-              <span className="block truncate">{selectedImage ? selectedImage.name : 'Choose image or character'}</span>
-              {selectedImage?.kind === 'character' && selectedImage.character?.characterId && (
-                <span className="block truncate text-[11px] text-brand-400">@{selectedImage.character.characterId}</span>
-              )}
+              <span className="block truncate">{selectedImage ? selectedImage.name : 'Choose or generate an image'}</span>
+              <span className="block truncate text-[11px] text-slate-500">Characters are referenced in the prompt with @</span>
             </span>
           </button>
           {selectedImage && (
             <button type="button" className="self-start text-[11px] font-normal normal-case tracking-normal text-slate-400 hover:text-slate-100" onClick={() => onUpdate(marker.id, { imageAssetId: null })}>
-              Clear reference
+              Clear shot image
             </button>
           )}
         </div>
-        <label className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <ImageModelSelect value={selectedImageModel.id} options={imageModels} onChange={onImageModelChange} />
+          <button
+            type="button"
+            className="btn-primary h-9 self-end px-3 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={onGenerateImage}
+            disabled={imageGenerating || !marker.prompt.trim()}
+            title={marker.prompt.trim() ? 'Generate this shot image' : 'Add a shot prompt first'}
+          >
+            <Sparkles size={12} />
+            {imageGenerating ? 'Generating' : `$${estimateImageCostUsd(selectedImageModel).toFixed(3)}`}
+          </button>
+        </div>
+        {imageGenerationError && <div className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-rose-200">{imageGenerationError}</div>}
+        <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           Shot Prompt
-          <textarea
-            value={marker.prompt}
-            onChange={(event) => onUpdate(marker.id, { prompt: event.target.value })}
-            className="min-h-[116px] resize-none rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+          <ShotPromptEditor
+            marker={marker}
+            sequenceCharacters={sequenceCharacters}
+            allCharacters={allCharacters}
+            onChange={(value) => onUpdate(marker.id, { prompt: value })}
+            onAcceptCharacter={onAcceptCharacterMention}
           />
-        </label>
+        </div>
       </div>
     </section>
+  );
+}
+
+function ShotPromptEditor({
+  marker,
+  sequenceCharacters,
+  allCharacters,
+  onChange,
+  onAcceptCharacter,
+}: {
+  marker: SequenceMarker;
+  sequenceCharacters: MediaAsset[];
+  allCharacters: MediaAsset[];
+  onChange: (value: string) => void;
+  onAcceptCharacter: (asset: MediaAsset) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [mention, setMention] = useState<{ query: string; start: number; end: number; left: number; top: number } | null>(null);
+  const attachedIds = useMemo(() => new Set(sequenceCharacters.map((asset) => asset.id)), [sequenceCharacters]);
+  const mentionItems = useMemo(() => {
+    const query = mention?.query.trim().toLowerCase() ?? '';
+    return allCharacters
+      .filter((asset) => {
+        if (!query) return true;
+        return [asset.name, asset.character?.characterId, asset.character?.description]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(query);
+      })
+      .slice(0, 8);
+  }, [allCharacters, mention?.query]);
+
+  useEffect(() => {
+    if (!mention) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target)) return;
+      if (textareaRef.current?.contains(target)) return;
+      setMention(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMention(null);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [mention]);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu || !mention) return;
+    const margin = 8;
+    const left = Math.min(Math.max(margin, mention.left), Math.max(margin, window.innerWidth - menu.offsetWidth - margin));
+    const top = Math.min(Math.max(margin, mention.top), Math.max(margin, window.innerHeight - menu.offsetHeight - margin));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }, [mention]);
+
+  const refreshMention = (value: string, cursor: number) => {
+    const prefix = value.slice(0, cursor);
+    const match = prefix.match(/(^|\s)@([a-z0-9_-]{0,32})$/i);
+    if (!match) {
+      setMention(null);
+      return;
+    }
+    const textarea = textareaRef.current;
+    const rect = textarea?.getBoundingClientRect();
+    setMention({
+      query: match[2] ?? '',
+      start: cursor - (match[2]?.length ?? 0) - 1,
+      end: cursor,
+      left: rect ? rect.left + 12 : 0,
+      top: rect ? Math.min(rect.bottom - 4, window.innerHeight - 220) : 0,
+    });
+  };
+
+  const handleChange = (value: string) => {
+    onChange(value);
+    const cursor = textareaRef.current?.selectionStart ?? value.length;
+    refreshMention(value, cursor);
+  };
+
+  const insertCharacter = (asset: MediaAsset) => {
+    const token = bareCharacterToken(asset);
+    if (!token || !mention) return;
+    const value = marker.prompt;
+    const next = `${value.slice(0, mention.start)}@${token} ${value.slice(mention.end)}`;
+    const nextCursor = mention.start + token.length + 2;
+    onChange(next);
+    onAcceptCharacter(asset);
+    setMention(null);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
+  return (
+    <>
+      <textarea
+        ref={textareaRef}
+        value={marker.prompt}
+        onChange={(event) => handleChange(event.target.value)}
+        onKeyUp={(event) => refreshMention(event.currentTarget.value, event.currentTarget.selectionStart)}
+        onClick={(event) => refreshMention(event.currentTarget.value, event.currentTarget.selectionStart)}
+        placeholder="Type @ to reference a sequence character."
+        className="min-h-[116px] resize-none rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-400"
+      />
+      {mention && mentionItems.length > 0 && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[150] w-64 overflow-hidden rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
+        >
+          {mentionItems.map((asset) => {
+            const token = bareCharacterToken(asset);
+            return (
+              <button
+                key={asset.id}
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => insertCharacter(asset)}
+              >
+                {asset.thumbnailDataUrl ? (
+                  <img src={asset.thumbnailDataUrl} alt="" className="h-7 w-7 shrink-0 rounded object-cover" />
+                ) : (
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-surface-950 text-slate-500"><UserRound size={14} /></span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{asset.name}</span>
+                  {token && <span className="block truncate text-[10px] text-brand-300">@{token}</span>}
+                </span>
+                {attachedIds.has(asset.id) && <Check size={13} className="shrink-0 text-emerald-300" />}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function ImageModelSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: ImageModelDefinition[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+      Image Model
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-9 rounded-md border border-surface-700 bg-surface-950 px-2 text-xs font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+      >
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>{option.label}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -798,8 +1220,8 @@ function SequenceImagePicker({
         <div className="border-b border-white/10 p-3">
           <div className="mb-2 flex items-center justify-between">
             <div>
-              <div className="text-sm font-semibold text-slate-100">Pick marker reference</div>
-              <div className="text-xs text-slate-400">Choose an image or character from media, or import a new image.</div>
+              <div className="text-sm font-semibold text-slate-100">Pick shot image</div>
+              <div className="text-xs text-slate-400">Choose an image from media, or import a new image.</div>
             </div>
             <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
               <X size={16} />
@@ -811,7 +1233,7 @@ function SequenceImagePicker({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search references by name, type, size, or character ID"
+                placeholder="Search images by name, type, or size"
                 className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
                 autoFocus
               />
@@ -836,7 +1258,7 @@ function SequenceImagePicker({
         </div>
         <div className="max-h-[520px] overflow-auto p-3">
           <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
-            <span>{filteredAssets.length} of {assets.length} references</span>
+            <span>{filteredAssets.length} of {assets.length} images</span>
             <span>{sortKey === 'recent' ? 'Recent first' : sortKey === 'size' ? 'Largest first' : 'A-Z'}</span>
           </div>
           {filteredAssets.length === 0 ? (
@@ -859,13 +1281,117 @@ function SequenceImagePicker({
                         <img src={asset.thumbnailDataUrl} alt="" className="h-full w-full object-cover" draggable={false} />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-slate-500">
-                          {asset.kind === 'character' ? <UserRound size={22} /> : <ImageIcon size={22} />}
+                          <ImageIcon size={22} />
                         </div>
                       )}
                       <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                        {asset.kind === 'character' ? 'Character' : 'Image'}
+                        Image
                       </span>
                       {selected && (
+                        <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-brand-400 text-slate-950">
+                          <Check size={12} />
+                        </span>
+                      )}
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <div className="truncate text-xs font-medium text-slate-100">{asset.name}</div>
+                      <div className="mt-0.5 truncate text-[10px] text-slate-500">{referenceSubtitle(asset)}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SequenceCharacterPicker({
+  assets,
+  selectedIds,
+  onPick,
+  onClose,
+}: {
+  assets: MediaAsset[];
+  selectedIds: string[];
+  onPick: (asset: MediaAsset) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const filteredAssets = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return [...assets]
+      .filter((asset) => {
+        if (!normalizedQuery) return true;
+        return [asset.name, asset.character?.characterId, asset.character?.description, asset.character?.style]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedQuery);
+      })
+      .sort((a, b) => b.createdAt - a.createdAt || a.name.localeCompare(b.name));
+  }, [assets, query]);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/55 p-4">
+      <div className="w-[min(860px,94vw)] overflow-hidden rounded-xl border border-white/15 bg-[#0b1127] shadow-2xl">
+        <div className="border-b border-white/10 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Attach sequence characters</div>
+              <div className="text-xs text-slate-400">Characters attached here can be referenced from any shot prompt with @.</div>
+            </div>
+            <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
+              <X size={16} />
+            </button>
+          </div>
+          <label className="flex h-9 items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 text-xs text-slate-300">
+            <Search size={14} className="text-slate-500" />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search characters by name or @token"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
+              autoFocus
+            />
+          </label>
+        </div>
+        <div className="max-h-[520px] overflow-auto p-3">
+          <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-slate-500">
+            <span>{filteredAssets.length} of {assets.length} characters</span>
+            <span>{selected.size} attached</span>
+          </div>
+          {filteredAssets.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-white/15 p-8 text-center text-xs text-slate-500">
+              No character references match this search.
+            </div>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2">
+              {filteredAssets.map((asset) => {
+                const active = selected.has(asset.id);
+                const token = bareCharacterToken(asset);
+                return (
+                  <button
+                    key={asset.id}
+                    type="button"
+                    className={`group overflow-hidden rounded-lg border bg-white/[0.03] text-left transition ${active ? 'border-brand-400 ring-1 ring-brand-400/70' : 'border-white/10 hover:border-white/25 hover:bg-white/[0.06]'}`}
+                    onClick={() => onPick(asset)}
+                  >
+                    <div className="relative aspect-video bg-black/45">
+                      {asset.thumbnailDataUrl ? (
+                        <img src={asset.thumbnailDataUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-slate-500">
+                          <UserRound size={24} />
+                        </div>
+                      )}
+                      <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                        @{token ?? 'character'}
+                      </span>
+                      {active && (
                         <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-brand-400 text-slate-950">
                           <Check size={12} />
                         </span>
@@ -890,20 +1416,165 @@ function createDefaultSequence(model?: VideoModelDefinition): SequenceAssetData 
   const duration = model ? durationsForModel(model)[0] ?? 8 : 8;
   return {
     model: model?.id ?? 'piapi-seedance-2',
+    imageModel: defaultImageModel().id,
     durationSec: duration,
     overallPrompt: '',
+    characterAssetIds: [],
     markers: [],
   };
 }
 
-function normalizeSequence(sequence: SequenceAssetData): SequenceAssetData {
+function normalizeSequence(sequence: SequenceAssetData, assets: MediaAsset[] = []): SequenceAssetData {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const characterAssetIds = [...(sequence.characterAssetIds ?? [])];
+  const markers = sequence.markers.map((marker) => {
+    const referenceAsset = marker.imageAssetId ? assetsById.get(marker.imageAssetId) : null;
+    if (referenceAsset?.kind === 'character') {
+      characterAssetIds.push(referenceAsset.id);
+      return { ...marker, imageAssetId: null, timeSec: clampTime(marker.timeSec, sequence.durationSec) };
+    }
+    return { ...marker, timeSec: clampTime(marker.timeSec, sequence.durationSec) };
+  });
   return {
     ...sequence,
+    imageModel: sequence.imageModel ?? defaultImageModel().id,
+    characterAssetIds: uniqueIds(characterAssetIds),
     durationSec: Math.max(1, sequence.durationSec),
-    markers: sequence.markers
-      .map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, sequence.durationSec) }))
-      .sort((a, b) => a.timeSec - b.timeSec),
+    markers: markers.sort((a, b) => a.timeSec - b.timeSec),
   };
+}
+
+function buildShotImagePrompt(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): string {
+  const sortedMarkers = sortedSequenceMarkers(sequence);
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const sequenceCharacters = characterReferenceAssetsForSequence(sequence, assets);
+  const lines: string[] = [];
+  const overallPrompt = sequence.overallPrompt.trim();
+  if (overallPrompt) {
+    lines.push('Sequence direction:', overallPrompt, '');
+  }
+  if (sequenceCharacters.length > 0) {
+    lines.push('Sequence character references:');
+    for (const asset of sequenceCharacters) {
+      const token = bareCharacterToken(asset);
+      const description = asset.character?.description?.trim();
+      if (token) lines.push(`- @${token}: ${asset.name}${description ? `, ${description}` : ''}`);
+    }
+    lines.push('');
+  }
+  const shotReferences = sortedMarkers
+    .map((marker, index) => ({ marker, index, asset: marker.imageAssetId ? assetsById.get(marker.imageAssetId) : null }))
+    .filter((item) => item.marker.id !== targetMarker.id && item.asset?.kind === 'image');
+  if (shotReferences.length > 0) {
+    lines.push('Attached shot image references:');
+    for (const item of shotReferences) {
+      lines.push(`- @shot${item.index + 1}: ${formatSequenceTimestamp(item.marker.timeSec)} ${item.marker.prompt.trim() || 'Shot beat'}`);
+    }
+    lines.push('');
+  }
+  lines.push('Full sequence context:');
+  for (const [index, marker] of sortedMarkers.entries()) {
+    const prompt = marker.prompt.trim() || 'Shot beat';
+    const imageToken = marker.id !== targetMarker.id && marker.imageAssetId ? ` [attached reference: @shot${index + 1}]` : '';
+    const highlight = marker.id === targetMarker.id ? ' >>> GENERATE THIS SHOT <<<' : '';
+    lines.push(`${highlight}[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${imageToken}`);
+  }
+  lines.push('', 'Create one production-ready still image for the highlighted shot only. Preserve the sequence direction, use @character references exactly when they appear, and use attached @shot images only for continuity cues. Do not render text labels, timelines, or prompt annotations.');
+  return lines.join('\n');
+}
+
+function shotImageReferenceAssets(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): MediaAsset[] {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const characterReferences = characterReferenceAssetsForSequence(sequence, assets);
+  const shotImages = sortedSequenceMarkers(sequence)
+    .filter((marker) => marker.id !== targetMarker.id && marker.imageAssetId)
+    .map((marker) => assetsById.get(marker.imageAssetId!))
+    .filter((asset): asset is MediaAsset => Boolean(asset && asset.kind === 'image'));
+  return uniqueAssetReferences([...characterReferences, ...shotImages]);
+}
+
+function characterReferenceAssetsForSequence(sequence: SequenceAssetData, assets: MediaAsset[]): MediaAsset[] {
+  const attached = new Set(sequence.characterAssetIds ?? []);
+  if (attached.size === 0) return [];
+  const promptText = [sequence.overallPrompt, ...sequence.markers.map((marker) => marker.prompt)].join('\n');
+  const tokens = new Set(extractPromptReferenceTokens(promptText));
+  return assets.filter((asset) => {
+    if (!attached.has(asset.id) || asset.kind !== 'character') return false;
+    const token = bareCharacterToken(asset);
+    return token ? tokens.has(token.toLowerCase()) : false;
+  });
+}
+
+async function buildImageReferenceInput(
+  assets: MediaAsset[],
+  model: ImageModelDefinition,
+  objectUrlFor: (assetId: string) => Promise<string | null>,
+): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
+  if (assets.length === 0) return {};
+  if (isGptImageModel(model)) {
+    const files = await Promise.all(assets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
+    return { referenceFiles: files.filter((file): file is File => Boolean(file)) };
+  }
+  return { referenceUrls: await Promise.all(assets.map((asset) => hostLitterboxReference(asset, 'Sequence reference'))) };
+}
+
+async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {
+  const url = await objectUrlFor(asset.id);
+  if (!url) return null;
+  const blob = await fetch(url).then((response) => response.blob());
+  const extension = extensionForMime(blob.type || asset.mimeType);
+  return new File([blob], referenceFileName(asset, extension), { type: blob.type || asset.mimeType || 'image/png' });
+}
+
+function referenceFileName(asset: MediaAsset, extension: string): string {
+  const base = asset.character?.characterId ?? asset.name.replace(/\.[a-z0-9]{2,8}$/i, '') ?? asset.id;
+  const safe = base
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${safe || asset.id}.${extension}`;
+}
+
+function extensionForMime(mimeType: string): string {
+  if (/jpe?g/i.test(mimeType)) return 'jpg';
+  if (/webp/i.test(mimeType)) return 'webp';
+  return 'png';
+}
+
+function uniqueAssetReferences(assets: MediaAsset[]): MediaAsset[] {
+  const seen = new Set<string>();
+  const unique: MediaAsset[] = [];
+  for (const asset of assets) {
+    if (seen.has(asset.id)) continue;
+    seen.add(asset.id);
+    unique.push(asset);
+  }
+  return unique;
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids)];
+}
+
+function formatGenerationError(err: unknown): string {
+  if (err instanceof VideoGenerationProviderError) return err.message;
+  if (err instanceof Error) return err.message;
+  return 'Sequence image generation failed.';
+}
+
+async function readPiApiKey(): Promise<string | null> {
+  for (const key of [PIAPI_API_KEY_STORAGE, PIAPI_VEO_API_KEY_STORAGE, PIAPI_KLING_API_KEY_STORAGE]) {
+    const encrypted = localStorage.getItem(key);
+    if (!encrypted) continue;
+    try {
+      const decrypted = await decryptSecret(encrypted);
+      if (decrypted.trim()) return decrypted.trim();
+    } catch {
+      // Try the next legacy key slot.
+    }
+  }
+  return null;
 }
 
 function durationsForModel(model: VideoModelDefinition): number[] {
@@ -912,11 +1583,15 @@ function durationsForModel(model: VideoModelDefinition): number[] {
 
 function referenceSubtitle(asset: MediaAsset): string {
   if (asset.kind === 'character') {
-    const token = asset.character?.characterId ? `@${asset.character.characterId}` : 'Character';
+    const token = bareCharacterToken(asset) ? `@${bareCharacterToken(asset)}` : 'Character';
     const style = asset.character?.style ? ` · ${asset.character.style}` : '';
     return `${token}${style}`;
   }
   return asset.width && asset.height ? `${asset.width}x${asset.height}` : asset.mimeType;
+}
+
+function bareCharacterToken(asset: MediaAsset): string | null {
+  return characterTokenForAsset(asset)?.replace(/^@/, '') ?? null;
 }
 
 function clampTime(timeSec: number, durationSec: number): number {
