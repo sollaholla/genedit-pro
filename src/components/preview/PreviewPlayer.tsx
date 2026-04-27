@@ -84,6 +84,7 @@ const RECENT_MEDIA_RETAIN_MS = 30_000;
 const MAX_RECENT_MEDIA_RETAINED = 24;
 const STARTUP_AUDIO_SYNC_GRACE_MS = 180;
 const STARTUP_AUDIO_SEEK_TOLERANCE_SEC = 0.08;
+const STARTUP_VIDEO_PRIME_MS = 90;
 const STARTUP_DECODER_SYNC_TIMEOUT_MS = 1000;
 
 function clipEndSec(clip: Clip): number {
@@ -162,6 +163,31 @@ function layerSourceTimeAt(layer: ActiveLayer, timelineTimeSec: number): number 
   const durationSec = clipTimelineDurationSec(layer.clip);
   const localTimeSec = Math.max(0, Math.min(durationSec, timelineTimeSec - layer.clip.startSec));
   return layer.clip.inSec + localTimeSec * clipSpeed(layer.clip);
+}
+
+function timelineTimeFromLayerSourceTime(layer: ActiveLayer, sourceTimeSec: number): number {
+  const speed = clipSpeed(layer.clip);
+  const durationSec = clipTimelineDurationSec(layer.clip);
+  const localTimeSec = speed > 0
+    ? (sourceTimeSec - layer.clip.inSec) / speed
+    : 0;
+  return layer.clip.startSec + Math.max(0, Math.min(durationSec, localTimeSec));
+}
+
+function startupReleaseTimeFromVisualMedia(
+  visualLayers: ActiveLayer[],
+  assetsById: Map<string, MediaAsset>,
+  videoPool: ElementPool,
+  fallbackTimeSec: number,
+): number {
+  for (const layer of visualLayers) {
+    const asset = assetsById.get(layer.clip.assetId);
+    if (asset?.kind !== 'video') continue;
+    const video = videoPool.get(layer.clip.id) as HTMLVideoElement | undefined;
+    if (!video || !Number.isFinite(video.currentTime)) continue;
+    return timelineTimeFromLayerSourceTime(layer, video.currentTime);
+  }
+  return fallbackTimeSec;
 }
 
 type VideoSyncWindow = {
@@ -493,6 +519,7 @@ export function PreviewPlayer() {
   const prevHasVideoRef = useRef(false);
   const needsDecoderSyncOnPlayRef = useRef(false);
   const startupDecoderSyncStartedAtRef = useRef<number | null>(null);
+  const startupVideoPrimeStartedAtRef = useRef<number | null>(null);
   const lastPlayingCanvasFrameKeyRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
@@ -547,6 +574,7 @@ export function PreviewPlayer() {
     requestedSeekTargetsRef.current = new WeakMap();
     needsDecoderSyncOnPlayRef.current = false;
     startupDecoderSyncStartedAtRef.current = null;
+    startupVideoPrimeStartedAtRef.current = null;
     lastPlayingCanvasFrameKeyRef.current = null;
     prerolledRef.current.clear();
     hotPrimedSeekRef.current.clear();
@@ -1077,16 +1105,20 @@ export function PreviewPlayer() {
       }
       if (pausedPlayheadChanged || jumpedBackward || jumpedFar) {
         needsDecoderSyncOnPlayRef.current = true;
+        startupVideoPrimeStartedAtRef.current = null;
         if (state.playing) startupDecoderSyncStartedAtRef.current = ts;
       }
       if (startingPlayback && needsDecoderSyncOnPlayRef.current) {
         startupDecoderSyncStartedAtRef.current = ts;
+        startupVideoPrimeStartedAtRef.current = null;
       } else if (startingPlayback && needsDecoderSyncBeforeReset) {
         needsDecoderSyncOnPlayRef.current = true;
         startupDecoderSyncStartedAtRef.current = ts;
+        startupVideoPrimeStartedAtRef.current = null;
       }
       if (!state.playing) {
         startupDecoderSyncStartedAtRef.current = null;
+        startupVideoPrimeStartedAtRef.current = null;
       }
       lastPlayingStateRef.current = state.playing;
 
@@ -1156,11 +1188,16 @@ export function PreviewPlayer() {
         if (!videoEl) continue;
         keepVideoDecoderElementWarm(videoEl);
         setPitchPreservingRate(videoEl, clipSpeed(layer.clip));
-        if (!mediaPlaying && !videoEl.paused) videoEl.pause();
+        if (!mediaPlaying && !startupDecoderSyncActive && !videoEl.paused) videoEl.pause();
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
         const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, mediaPlaying);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
+        if (startupDecoderSyncActive && canPaintSyncedVideo(videoEl, layer.clip, layerSourceTimeSec, tolerance)) {
+          videoEl.muted = true;
+          if (videoEl.paused) videoEl.play().catch(() => undefined);
+          if (startupVideoPrimeStartedAtRef.current === null) startupVideoPrimeStartedAtRef.current = ts;
+        }
         if (mediaPlaying && videoEl.paused) {
           videoEl.muted = true;
           videoEl.play().catch(() => undefined);
@@ -1410,6 +1447,11 @@ export function PreviewPlayer() {
 
       if (state.playing && startupDecoderSyncStartedAtRef.current !== null) {
         const startupElapsedMs = ts - startupDecoderSyncStartedAtRef.current;
+        const startupHasVisualVideo = visualFrame.videos.some((layer) => assetsById.get(layer.clip.assetId)?.kind === 'video');
+        const startupVideoPrimeElapsedMs = startupVideoPrimeStartedAtRef.current === null
+          ? 0
+          : ts - startupVideoPrimeStartedAtRef.current;
+        const startupVideoPrimed = startupHasVisualVideo && startupVideoPrimeElapsedMs >= STARTUP_VIDEO_PRIME_MS;
         const requireAudioForStartup = startupElapsedMs < STARTUP_AUDIO_SYNC_GRACE_MS;
         const startupReady = activeMediaReadyForStartup(
           visualFrame.videos,
@@ -1423,11 +1465,21 @@ export function PreviewPlayer() {
           requireAudioForStartup,
         );
         const startupTimedOut = startupElapsedMs >= STARTUP_DECODER_SYNC_TIMEOUT_MS;
-        if (startupReady || startupTimedOut) {
+        const startupCanRelease = startupHasVisualVideo
+          ? startupVideoPrimed || startupTimedOut
+          : startupReady || startupTimedOut;
+        if (startupCanRelease) {
+          const releaseTimeSec = startupVideoPrimed
+            ? startupReleaseTimeFromVisualMedia(visualFrame.videos, assetsById, videoPool.current, t)
+            : t;
           needsDecoderSyncOnPlayRef.current = false;
           startupDecoderSyncStartedAtRef.current = null;
+          startupVideoPrimeStartedAtRef.current = null;
           requestedSeekTargetsRef.current = new WeakMap();
-          playbackClockTimeRef.current = t;
+          playbackClockTimeRef.current = releaseTimeSec;
+          if (Math.abs(releaseTimeSec - t) > 1e-4) {
+            state.setCurrentTime(releaseTimeSec, { snapMode: 'floor' });
+          }
           lastTickRef.current = ts;
         }
       }
