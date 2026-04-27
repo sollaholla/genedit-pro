@@ -98,6 +98,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const previewMarker = mostRecentImageMarker(sortedMarkers, currentTimeSec) ?? (selectedMarker?.imageAssetId ? selectedMarker : null);
   const previewImage = previewMarker?.imageAssetId ? imageReferenceAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
+  const selectedImagePrompt = useMemo(() => (selectedMarker ? buildShotImagePrompt(sequence, selectedMarker, assets) : ''), [assets, selectedMarker, sequence]);
 
   useEffect(() => {
     if (isDraft) return;
@@ -249,6 +250,11 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const deleteSelectedMarker = () => {
     if (!selectedMarker) return;
     deleteMarker(selectedMarker.id);
+  };
+  const selectMarker = (marker: SequenceMarker) => {
+    setPlaying(false);
+    setSelectedMarkerId(marker.id);
+    setCurrentTimeSec(marker.timeSec);
   };
   const clientXToTime = (clientX: number) => {
     const rect = timelineRef.current?.getBoundingClientRect();
@@ -637,6 +643,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   markers={sortedMarkers}
                   imageAssets={imageReferenceAssets}
                   selectedMarkerId={selectedMarkerId}
+                  onSelectMarker={selectMarker}
                 />
               </section>
 
@@ -649,6 +656,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 allCharacters={characterAssets}
                 imageGenerationError={selectedMarker?.id === imageGeneratingMarkerId ? null : imageGenerationError}
                 imageGenerating={Boolean(selectedMarker && selectedMarker.id === imageGeneratingMarkerId)}
+                imagePrompt={selectedImagePrompt}
                 durationSec={sequence.durationSec}
                 onUpdate={updateMarker}
                 onDelete={deleteSelectedMarker}
@@ -693,7 +701,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 {sortedMarkers.map((marker, index) => (
                   <div
                     key={marker.id}
-                    className={`group flex w-full items-center gap-2 rounded border px-2 py-1.5 text-xs ${
+                    className={`group flex w-full items-center gap-2 rounded border text-xs ${
                       marker.id === selectedMarkerId
                         ? 'border-brand-400 bg-brand-500/15 text-slate-100'
                         : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500'
@@ -701,18 +709,15 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                   >
                     <button
                       type="button"
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
-                      onClick={() => {
-                        setSelectedMarkerId(marker.id);
-                        setCurrentTimeSec(marker.timeSec);
-                      }}
+                      className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-l px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
+                      onClick={() => selectMarker(marker)}
                     >
                       <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
                       <span className="shrink-0 font-mono text-[11px] text-slate-500">{formatTime(marker.timeSec)}</span>
                     </button>
                     <button
                       type="button"
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/60"
+                      className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/60"
                       title="Delete marker"
                       aria-label="Delete marker"
                       onClick={(event) => {
@@ -810,11 +815,13 @@ function SequencePromptOutput({
   markers,
   imageAssets,
   selectedMarkerId,
+  onSelectMarker,
 }: {
   sequence: SequenceAssetData;
   markers: SequenceMarker[];
   imageAssets: MediaAsset[];
   selectedMarkerId: string | null;
+  onSelectMarker: (marker: SequenceMarker) => void;
 }) {
   const imageAssetsById = useMemo(() => new Map(imageAssets.map((asset) => [asset.id, asset])), [imageAssets]);
   const imageReferenceNumbers = useMemo(() => {
@@ -857,7 +864,15 @@ function SequencePromptOutput({
             return (
               <div
                 key={marker.id}
-                className={`relative grid grid-cols-[2.35rem_minmax(0,1fr)] gap-3 rounded-md border px-3 py-2.5 transition ${selected ? 'border-brand-400/70 bg-brand-500/15 shadow-[inset_3px_0_0_rgba(124,140,255,0.95)]' : 'border-surface-800 bg-surface-900/35'}`}
+                role="button"
+                tabIndex={0}
+                className={`relative grid cursor-pointer grid-cols-[2.35rem_minmax(0,1fr)] gap-3 rounded-md border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 ${selected ? 'border-brand-400/70 bg-brand-500/15 shadow-[inset_3px_0_0_rgba(124,140,255,0.95)]' : 'border-surface-800 bg-surface-900/35 hover:border-surface-600 hover:bg-surface-900/60'}`}
+                onClick={() => onSelectMarker(marker)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  onSelectMarker(marker);
+                }}
               >
                 <div className="relative flex flex-col items-center gap-2 pt-0.5">
                   <span className={`z-10 flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-semibold ${selected ? 'border-brand-300 bg-brand-500 text-white' : 'border-surface-600 bg-surface-950 text-slate-300'}`}>
@@ -898,6 +913,7 @@ function MarkerInspector({
   allCharacters,
   imageGenerationError,
   imageGenerating,
+  imagePrompt,
   durationSec,
   onUpdate,
   onDelete,
@@ -914,6 +930,7 @@ function MarkerInspector({
   allCharacters: MediaAsset[];
   imageGenerationError: string | null;
   imageGenerating: boolean;
+  imagePrompt: string;
   durationSec: number;
   onUpdate: (markerId: string, patch: Partial<SequenceMarker>) => void;
   onDelete: () => void;
@@ -990,6 +1007,27 @@ function MarkerInspector({
           </button>
         </div>
         {imageGenerationError && <div className="rounded-md border border-rose-400/30 bg-rose-500/10 px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-rose-200">{imageGenerationError}</div>}
+        {imagePrompt.trim() && (
+          <div className="rounded-md border border-surface-700 bg-surface-950/80 text-xs font-normal normal-case tracking-normal text-slate-300">
+            <div className="flex items-center justify-between gap-2 border-b border-surface-800 px-2 py-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Image Prompt Used</span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded border border-surface-700 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-slate-300 hover:border-surface-500 hover:bg-surface-800"
+                onClick={() => {
+                  void navigator.clipboard.writeText(imagePrompt);
+                }}
+              >
+                <Copy size={10} />
+                Copy
+              </button>
+            </div>
+            <details>
+              <summary className="cursor-pointer list-none px-2 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 marker:hidden">Show compiled prompt</summary>
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap border-t border-surface-800 p-2 text-[11px] leading-5 text-slate-400">{imagePrompt}</pre>
+            </details>
+          </div>
+        )}
         <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           Shot Prompt
           <ShotPromptEditor
@@ -1507,63 +1545,122 @@ function normalizeSequence(sequence: SequenceAssetData, assets: MediaAsset[] = [
 
 function buildShotImagePrompt(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): string {
   const sortedMarkers = sortedSequenceMarkers(sequence);
-  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-  const sequenceCharacters = characterReferenceAssetsForSequence(sequence, assets);
+  const targetIndex = Math.max(0, sortedMarkers.findIndex((marker) => marker.id === targetMarker.id));
+  const targetShotNumber = targetIndex + 1;
+  const previousMarker = previousMarkerWithPrompt(sortedMarkers, targetIndex);
+  const nextMarker = nextMarkerWithPrompt(sortedMarkers, targetIndex);
+  const frameCharacters = characterReferenceAssetsForTarget(sequence, targetMarker, assets);
+  const adjacentReferences = adjacentShotImageReferences(sequence, targetMarker, assets);
   const lines: string[] = [];
   const overallPrompt = sequence.overallPrompt.trim();
-  if (overallPrompt) {
-    lines.push('Sequence direction:', overallPrompt, '');
-  }
-  if (sequenceCharacters.length > 0) {
-    lines.push('Sequence character references:');
-    for (const asset of sequenceCharacters) {
+
+  lines.push('Generate exactly one still frame for a video sequence.');
+  lines.push('The selected frame below is the only moment to render. Treat every other shot as continuity context, not as visual action to depict.');
+  lines.push('');
+  lines.push('SELECTED FRAME TO RENDER:');
+  lines.push(`- Shot: ${targetShotNumber} of ${sortedMarkers.length || 1}`);
+  lines.push(`- Timecode: ${formatSequenceTimestamp(targetMarker.timeSec)}`);
+  lines.push(`- Frame prompt: ${targetMarker.prompt.trim() || 'Untitled shot'}`);
+  lines.push('');
+  lines.push('FRAME LOCK:');
+  lines.push('- Render this single time slice only.');
+  lines.push('- Do not turn it into a montage, summary, or later beat from the sequence.');
+  lines.push('- If surrounding shots mention future action, use that only for continuity of location, wardrobe, character identity, lighting, and tone.');
+  lines.push('');
+
+  if (frameCharacters.length > 0) {
+    lines.push('CHARACTER REFERENCES FOR THIS FRAME:');
+    for (const asset of frameCharacters) {
       const token = bareCharacterToken(asset);
       const description = asset.character?.description?.trim();
       if (token) lines.push(`- @${token}: ${asset.name}${description ? `, ${description}` : ''}`);
     }
     lines.push('');
   }
-  const shotReferences = sortedMarkers
-    .map((marker, index) => ({ marker, index, asset: marker.imageAssetId ? assetsById.get(marker.imageAssetId) : null }))
-    .filter((item) => item.marker.id !== targetMarker.id && item.asset?.kind === 'image');
-  if (shotReferences.length > 0) {
-    lines.push('Attached shot image references:');
-    for (const item of shotReferences) {
-      lines.push(`- @shot${item.index + 1}: ${formatSequenceTimestamp(item.marker.timeSec)} ${item.marker.prompt.trim() || 'Shot beat'}`);
+
+  if (adjacentReferences.length > 0) {
+    lines.push('SUPPLIED IMAGE REFERENCES:');
+    for (const reference of adjacentReferences) {
+      lines.push(`- ${reference.label}: ${reference.marker.prompt.trim() || 'Adjacent shot'} (${formatSequenceTimestamp(reference.marker.timeSec)}), use for continuity only.`);
     }
     lines.push('');
   }
-  lines.push('Full sequence context:');
-  for (const [index, marker] of sortedMarkers.entries()) {
-    const prompt = marker.prompt.trim() || 'Shot beat';
-    const imageToken = marker.id !== targetMarker.id && marker.imageAssetId ? ` [attached reference: @shot${index + 1}]` : '';
-    const highlight = marker.id === targetMarker.id ? ' >>> GENERATE THIS SHOT <<<' : '';
-    lines.push(`${highlight}[${formatSequenceTimestamp(marker.timeSec)}] ${prompt}${imageToken}`);
+
+  if (overallPrompt) {
+    lines.push('SEQUENCE BRIEF FOR CONTINUITY ONLY:');
+    lines.push(overallPrompt);
+    lines.push('');
   }
-  lines.push('', 'Create one production-ready still image for the highlighted shot only. Preserve the sequence direction, use @character references exactly when they appear, and use attached @shot images only for continuity cues. Do not render text labels, timelines, or prompt annotations.');
+
+  if (previousMarker || nextMarker) {
+    lines.push('ADJACENT STORY CONTEXT, NOT THE IMAGE SUBJECT:');
+    if (previousMarker) lines.push(`- Previous: ${previousMarker.prompt.trim()} (${formatSequenceTimestamp(previousMarker.timeSec)})`);
+    if (nextMarker) lines.push(`- Next: ${nextMarker.prompt.trim()} (${formatSequenceTimestamp(nextMarker.timeSec)})`);
+    lines.push('');
+  }
+
+  lines.push('OUTPUT:');
+  lines.push('Create a production-ready cinematic still image for the selected frame only. Keep later story events outside this frame. No captions, no UI, no text overlays, no timeline graphics.');
   return lines.join('\n');
 }
 
 function shotImageReferenceAssets(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): MediaAsset[] {
-  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-  const characterReferences = characterReferenceAssetsForSequence(sequence, assets);
-  const shotImages = sortedSequenceMarkers(sequence)
-    .filter((marker) => marker.id !== targetMarker.id && marker.imageAssetId)
-    .map((marker) => assetsById.get(marker.imageAssetId!))
-    .filter((asset): asset is MediaAsset => Boolean(asset && asset.kind === 'image'));
+  const characterReferences = characterReferenceAssetsForTarget(sequence, targetMarker, assets);
+  const shotImages = adjacentShotImageReferences(sequence, targetMarker, assets).map((reference) => reference.asset);
   return uniqueAssetReferences([...characterReferences, ...shotImages]);
 }
 
-function characterReferenceAssetsForSequence(sequence: SequenceAssetData, assets: MediaAsset[]): MediaAsset[] {
+function characterReferenceAssetsForTarget(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): MediaAsset[] {
   const attached = new Set(sequence.characterAssetIds ?? []);
   if (attached.size === 0) return [];
-  const promptText = [sequence.overallPrompt, ...sequence.markers.map((marker) => marker.prompt)].join('\n');
+  const promptText = [sequence.overallPrompt, targetMarker.prompt].join('\n');
   const tokens = new Set(extractPromptReferenceTokens(promptText));
-  return assets.filter((asset) => {
+  const referenced = assets.filter((asset) => {
     if (!attached.has(asset.id) || asset.kind !== 'character') return false;
     const token = bareCharacterToken(asset);
     return token ? tokens.has(token.toLowerCase()) : false;
   });
+  if (referenced.length > 0) return referenced;
+  return assets.filter((asset) => attached.has(asset.id) && asset.kind === 'character');
+}
+
+function adjacentShotImageReferences(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[]): Array<{ asset: MediaAsset; marker: SequenceMarker; label: string }> {
+  const sortedMarkers = sortedSequenceMarkers(sequence);
+  const targetIndex = sortedMarkers.findIndex((marker) => marker.id === targetMarker.id);
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const references: Array<{ asset: MediaAsset; marker: SequenceMarker; label: string }> = [];
+  const previous = nearestImageMarker(sortedMarkers, targetIndex, -1);
+  const next = nearestImageMarker(sortedMarkers, targetIndex, 1);
+  if (previous?.imageAssetId) {
+    const asset = assetsById.get(previous.imageAssetId);
+    if (asset?.kind === 'image') references.push({ asset, marker: previous, label: 'Previous shot image reference' });
+  }
+  if (next?.imageAssetId) {
+    const asset = assetsById.get(next.imageAssetId);
+    if (asset?.kind === 'image') references.push({ asset, marker: next, label: 'Next shot image reference' });
+  }
+  return references;
+}
+
+function previousMarkerWithPrompt(markers: SequenceMarker[], targetIndex: number): SequenceMarker | null {
+  for (let index = targetIndex - 1; index >= 0; index -= 1) {
+    if (markers[index]?.prompt.trim()) return markers[index]!;
+  }
+  return null;
+}
+
+function nextMarkerWithPrompt(markers: SequenceMarker[], targetIndex: number): SequenceMarker | null {
+  for (let index = targetIndex + 1; index < markers.length; index += 1) {
+    if (markers[index]?.prompt.trim()) return markers[index]!;
+  }
+  return null;
+}
+
+function nearestImageMarker(markers: SequenceMarker[], targetIndex: number, direction: -1 | 1): SequenceMarker | null {
+  for (let index = targetIndex + direction; index >= 0 && index < markers.length; index += direction) {
+    if (markers[index]?.imageAssetId) return markers[index]!;
+  }
+  return null;
 }
 
 async function buildImageReferenceInput(
