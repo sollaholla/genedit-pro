@@ -75,6 +75,7 @@ const FADE_IN_MS = 40;
 const PREPARE_BACKWARD_SEC = 5.0;
 const PREPARE_FORWARD_SEC = 5.0;
 const HOT_PRIMING_SEC = 0.3;
+const VISUAL_PREROLL_SEC = 1.25;
 const AUDIO_FADE_RETAIN_SEC = 0.25;
 const MAX_PREPARED_CLIPS = 48;
 const RECENT_MEDIA_RETAIN_MS = 30_000;
@@ -443,6 +444,7 @@ export function PreviewPlayer() {
   const prevHasVideoRef = useRef(false);
   const needsDecoderSyncOnPlayRef = useRef(false);
   const startupDecoderSyncStartedAtRef = useRef<number | null>(null);
+  const lastPlayingCanvasFrameKeyRef = useRef<string | null>(null);
   const prerolledRef = useRef<Set<string>>(new Set());
   // Tracks which upcoming clips we've aligned for hot-priming. Alignment seeks
   // `currentTime = inSec - timeUntilActive` so after playing for
@@ -495,6 +497,7 @@ export function PreviewPlayer() {
     requestedSeekTargetsRef.current = new WeakMap();
     needsDecoderSyncOnPlayRef.current = false;
     startupDecoderSyncStartedAtRef.current = null;
+    lastPlayingCanvasFrameKeyRef.current = null;
     prerolledRef.current.clear();
     hotPrimedSeekRef.current.clear();
     fadingOut.current.clear();
@@ -1051,12 +1054,14 @@ export function PreviewPlayer() {
 
       // ---- VIDEO DISPLAY ----
       const visualLayers = visualFrame.videos;
+      const tracksById = new Map(proj.tracks.map((track) => [track.id, track]));
       const activeVisualLayersByClipId = new Map(visualLayers.map((layer) => [layer.clip.id, layer]));
       const activeVisualAssetsByClipId = new Map<string, MediaAsset>();
       for (const layer of visualLayers) {
         const asset = assetsById.get(layer.clip.assetId);
         if (asset?.kind === 'video' || asset?.kind === 'image') activeVisualAssetsByClipId.set(layer.clip.id, asset);
       }
+      const warmVisualClipIds = new Set<string>();
       for (const layer of visualLayers) {
         const activeAsset = activeVisualAssetsByClipId.get(layer.clip.id);
         if (activeAsset?.kind !== 'video') continue;
@@ -1066,7 +1071,7 @@ export function PreviewPlayer() {
         setPitchPreservingRate(videoEl, clipSpeed(layer.clip));
         if (!mediaPlaying && !videoEl.paused) videoEl.pause();
         const tolerance = videoSyncWindow(layer.clip, previewFps, mediaPlaying);
-        const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, state.playing);
+        const layerTimelineTimeSec = layerVisualTimelineTime(layer, t, previewFps, mediaPlaying);
         const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
         seekIfNeeded(videoEl, layerSourceTimeSec, mediaPlaying, tolerance, requestedSeekTargetsRef.current);
         if (mediaPlaying && videoEl.paused) {
@@ -1074,18 +1079,43 @@ export function PreviewPlayer() {
           videoEl.play().catch(() => undefined);
         }
       }
-      if (visualLayers.length > 0) {
-        renderPreviewCanvas(
+      if (mediaPlaying) {
+        for (const clip of preparedClips) {
+          if (activeVisualLayersByClipId.has(clip.id)) continue;
+          const track = tracksById.get(clip.trackId);
+          if (track?.kind !== 'video' || track.hidden) continue;
+          const timeUntilActive = clip.startSec - t;
+          if (timeUntilActive < 0 || timeUntilActive > VISUAL_PREROLL_SEC) continue;
+          const asset = assetsById.get(clip.assetId);
+          if (asset?.kind !== 'video') continue;
+          const videoEl = videoPool.current.get(clip.id) as HTMLVideoElement | undefined;
+          if (!videoEl) continue;
+          warmVisualClipIds.add(clip.id);
+          keepVideoDecoderElementWarm(videoEl);
+          videoEl.muted = true;
+          setPitchPreservingRate(videoEl, clipSpeed(clip));
+          seekIfNeeded(videoEl, clip.inSec, false, 0.04, requestedSeekTargetsRef.current);
+        }
+      }
+      const canvasFrameKey = visualLayers.map((layer) => (
+        `${layer.track.id}:${layer.track.index}:${layer.clip.id}:${projectFrameIndex(Math.max(0, t - layer.clip.startSec), previewFps)}`
+      )).join('|');
+      const shouldRenderCanvas = !mediaPlaying || canvasFrameKey !== lastPlayingCanvasFrameKeyRef.current;
+      if (visualLayers.length > 0 && shouldRenderCanvas) {
+        const rendered = renderPreviewCanvas(
           freezeFrameCanvasRef.current,
           visualLayers,
           assetsById,
           proj,
           t,
           previewFps,
-          state.playing,
+          mediaPlaying,
           videoPool.current,
           imagePool.current,
         );
+        if (mediaPlaying && rendered) lastPlayingCanvasFrameKeyRef.current = canvasFrameKey;
+      } else if (visualLayers.length === 0) {
+        lastPlayingCanvasFrameKeyRef.current = null;
       }
       if (freezeFrameCanvasRef.current) {
         freezeFrameCanvasRef.current.style.display = visualLayers.length > 0 ? 'block' : 'none';
@@ -1094,7 +1124,7 @@ export function PreviewPlayer() {
         const videoEl = el as HTMLVideoElement;
         const activeLayer = activeVisualLayersByClipId.get(clipId);
         const activeAsset = activeVisualAssetsByClipId.get(clipId);
-        if (activeLayer && activeAsset?.kind === 'video') {
+        if ((activeLayer && activeAsset?.kind === 'video') || warmVisualClipIds.has(clipId)) {
           keepVideoDecoderElementWarm(videoEl);
         } else {
           hideVideoElement(videoEl);

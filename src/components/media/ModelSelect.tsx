@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Check, ChevronDown, Volume2, VolumeX } from 'lucide-react';
 import { isKlingModel, isSeedanceModel, isVeoModel, type VideoModelDefinition } from '@/lib/videoModels/capabilities';
 
 type Props = {
@@ -26,6 +27,7 @@ export function ModelSelect({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const [popupPosition, setPopupPosition] = useState<{ left: number; top: number; width: number; placeAbove: boolean } | null>(null);
   const selected = options.find((option) => option.id === value) ?? null;
   const isDisabled = disabled || loading || options.length === 0;
 
@@ -47,6 +49,45 @@ export function ModelSelect({
       window.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPopupPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const margin = 8;
+      const desiredWidth = Math.min(320, window.innerWidth - margin * 2);
+      const estimatedHeight = popupRef.current?.offsetHeight ?? 360;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const spaceAbove = rect.top - margin;
+      const placeAbove = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+      const left = Math.min(Math.max(margin, rect.left), window.innerWidth - desiredWidth - margin);
+      const top = placeAbove
+        ? Math.max(margin, rect.top - estimatedHeight - 4)
+        : Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - margin);
+      setPopupPosition({ left, top, width: desiredWidth, placeAbove });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
+  const popupMaxHeight = (() => {
+    const trigger = triggerRef.current;
+    if (!trigger || !popupPosition) return 360;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const room = popupPosition.placeAbove ? rect.top - margin - 4 : window.innerHeight - rect.bottom - margin - 4;
+    return Math.max(180, Math.min(room, 480));
+  })();
 
   return (
     <div className={`relative inline-flex max-w-full ${className ?? ''}`}>
@@ -73,17 +114,18 @@ export function ModelSelect({
         )}
         <ChevronDown size={12} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
+      {open && popupPosition && typeof document !== 'undefined' && createPortal(
         <div
           ref={popupRef}
-          className="absolute left-0 top-9 z-[120] w-[320px] max-w-[90vw] overflow-hidden rounded-md border border-surface-700 bg-surface-900 shadow-xl"
+          className="fixed z-[200] overflow-hidden rounded-md border border-surface-700 bg-surface-900 shadow-2xl"
+          style={{ left: popupPosition.left, top: popupPosition.top, width: popupPosition.width }}
           role="listbox"
           aria-label="Models"
         >
           <div className="border-b border-surface-700 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Models
           </div>
-          <div className="max-h-[360px] overflow-auto p-1.5">
+          <div className="overflow-auto p-1.5" style={{ maxHeight: popupMaxHeight }}>
             {options.length === 0 ? (
               <div className="px-3 py-4 text-center text-xs text-slate-500">{emptyLabel}</div>
             ) : (
@@ -112,9 +154,20 @@ export function ModelSelect({
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className={`truncate text-sm font-medium ${active ? 'text-slate-100' : 'text-slate-200'}`}>{option.label}</div>
-                      <div className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-slate-400">
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
                         {topResolution && <span className="rounded bg-surface-800 px-1.5 py-0.5">{topResolution}</span>}
                         {durationRange && <span className="rounded bg-surface-800 px-1.5 py-0.5">{durationRange}</span>}
+                        {option.capabilities.audio ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-300">
+                            <Volume2 size={10} />
+                            Audio
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded bg-surface-800 px-1.5 py-0.5 text-slate-500">
+                            <VolumeX size={10} />
+                            Mute
+                          </span>
+                        )}
                       </div>
                     </div>
                     {active && <Check size={14} className="shrink-0 text-brand-300" />}
@@ -123,7 +176,8 @@ export function ModelSelect({
               })
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -187,12 +241,17 @@ function KlingLogo({ size }: { size: number }) {
 function VeoLogo({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="#3b6dff" />
+      <defs>
+        <linearGradient id="veo-swirl" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#5a8aff" />
+          <stop offset="100%" stopColor="#3b56dc" />
+        </linearGradient>
+      </defs>
       <path
-        d="M7.5 8.5 L12 16 L16.5 8.5"
+        d="M 21 12 C 21 17 17 21 12 21 C 7 21 3 17 3 12 C 3 7 7 3 12 3 C 16 3 19 5.5 20 9 C 20.5 10.8 19.8 12.6 18 13 C 16.2 13.4 15 12 15 10.6 C 15 9.4 16 8.5 17.2 8.7"
         fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.2"
+        stroke="url(#veo-swirl)"
+        strokeWidth="2.4"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
