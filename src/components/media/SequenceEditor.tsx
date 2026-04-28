@@ -334,6 +334,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       setCopied(false);
     }
   };
+  const canCopyPrompt = Boolean(composedPrompt.trim());
   const importMarkerImage = async () => {
     if (!imagePickerMarker) return;
     const input = document.createElement('input');
@@ -680,10 +681,12 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
               <section className="flex min-h-[150px] flex-col rounded-md border border-surface-700 bg-surface-900/70 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Prompt Output</div>
-                  <button className="btn-ghost px-2 py-1 text-xs" onClick={() => void copyPrompt()} disabled={!composedPrompt.trim()}>
-                    <Copy size={12} />
-                    {copied ? 'Copied' : 'Copy'}
-                  </button>
+                  {canCopyPrompt && (
+                    <button className="btn-ghost px-2 py-1 text-xs" onClick={() => void copyPrompt()}>
+                      <Copy size={12} />
+                      {copied ? 'Copied' : 'Copy'}
+                    </button>
+                  )}
                 </div>
                 <SequencePromptOutput
                   sequence={sequence}
