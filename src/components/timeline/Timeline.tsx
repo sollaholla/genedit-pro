@@ -702,8 +702,8 @@ export function Timeline() {
         trackEditorHoverRef.current = false;
       }}
     >
-      <div className="flex items-center justify-between border-b border-surface-700 px-3 py-1.5">
-        <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-surface-700 px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-2">
           <TrackCreateMenu
             onVideo={() => update((p) => addTrack(p, 'video'))}
             onAudio={() => update((p) => addTrack(p, 'audio'))}
@@ -1207,7 +1207,7 @@ function TrackCreateMenu({ onVideo, onAudio }: { onVideo: () => void; onAudio: (
 
 function Hint({ keys, label }: { keys: React.ReactNode[]; label: string }) {
   return (
-    <span className="flex items-center gap-0.5">
+    <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap">
       {keys.map((k, i) => <Key key={i}>{k}</Key>)}
       <span className="ml-1 text-slate-500">{label}</span>
     </span>
@@ -1216,7 +1216,7 @@ function Hint({ keys, label }: { keys: React.ReactNode[]; label: string }) {
 
 function ShortcutHints() {
   return (
-    <div className="flex items-center gap-3 text-[11px]">
+    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-1 overflow-hidden text-[11px]">
       <Hint keys={[MOD, 'scroll']} label="zoom" />
       <Hint keys={['S']} label="split" />
       <Hint keys={['Del']} label="remove" />

@@ -51,8 +51,8 @@ export function PlayerControls({
   const step = (dir: 1 | -1) => setCurrentTime(Math.max(0, Math.min(duration, currentTime + dir / fps)));
 
   return (
-    <div className="flex items-center justify-between border-t border-surface-700 bg-surface-900 px-4 py-2">
-      <div className="flex items-center gap-1">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-surface-700 bg-surface-900 px-3 py-1.5">
+      <div className="flex shrink-0 items-center gap-1">
         <button
           className="rounded p-1.5 text-slate-300 hover:bg-surface-700"
           onClick={() => setCurrentTime(0)}
@@ -89,9 +89,9 @@ export function PlayerControls({
           <ChevronLast size={16} />
         </button>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
         <select
-          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          className="w-16 rounded border border-surface-600 bg-surface-800 px-1.5 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
           value={aspectPreset}
           onChange={(e) => onAspectPresetChange(e.target.value)}
           title="Project aspect ratio"
@@ -101,7 +101,7 @@ export function PlayerControls({
           ))}
         </select>
         <select
-          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          className="w-[4.5rem] rounded border border-surface-600 bg-surface-800 px-1.5 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
           value={resolutionPreset}
           onChange={(e) => onResolutionPresetChange(e.target.value)}
           title="Project pixel resolution"
@@ -111,7 +111,7 @@ export function PlayerControls({
           ))}
         </select>
         <select
-          className="rounded border border-surface-600 bg-surface-800 px-2 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
+          className="w-20 rounded border border-surface-600 bg-surface-800 px-1.5 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
           value={frameRatePreset}
           onChange={(e) => onFrameRatePresetChange(e.target.value)}
           title="Project framerate"
@@ -120,7 +120,7 @@ export function PlayerControls({
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
-        <div className="font-mono text-xs tabular-nums text-slate-300">
+        <div className="shrink-0 font-mono text-[11px] tabular-nums text-slate-300">
           {formatTimecode(currentTime, fps)} <span className="text-slate-500">/</span>{' '}
           {formatTimecode(duration, fps)}
         </div>
