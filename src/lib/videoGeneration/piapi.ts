@@ -290,7 +290,7 @@ async function buildPiApiSeedanceRequest(
   const input: Record<string, unknown> = {
     prompt: imageEntries.length > 0 ? rewriteSeedancePromptReferences(mutation.prompt, imageEntries) : mutation.prompt,
     mode,
-    duration: mutation.config.durationSeconds,
+    duration: formatSeedanceDuration(mutation.config.durationSeconds),
     resolution: mutation.config.resolution,
     aspect_ratio: mutation.config.aspectRatio,
   };
@@ -416,6 +416,10 @@ function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImag
     next = next.replaceAll(`__GENEDIT_SEEDANCE_IMAGE_${index + 1}__`, `@image${index + 1}`);
   });
   return `${missingDirectives.join(' ')} ${next}`.trim();
+}
+
+function formatSeedanceDuration(durationSeconds: number): string {
+  return `${durationSeconds}s`;
 }
 
 function promptTokenForReferenceAsset(asset: MediaAsset, counts: Map<string, number>): string {
