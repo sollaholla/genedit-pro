@@ -53,12 +53,20 @@ export function buildVideoGenerationMutation({
     prompt,
     config: {
       aspectRatio,
-      durationSeconds: Number(duration.replace('s', '')),
+      durationSeconds: parseVideoDurationSeconds(duration),
       resolution,
       audioEnabled,
     },
     assets,
   };
+}
+
+export function parseVideoDurationSeconds(duration: string): number {
+  const match = duration.trim().match(/^(\d+)s$/i);
+  if (!match) throw new Error(`Invalid generation duration "${duration}".`);
+  const seconds = Number(match[1]);
+  if (!Number.isSafeInteger(seconds)) throw new Error(`Invalid generation duration "${duration}".`);
+  return seconds;
 }
 
 export function assetsByRole(mutation: VideoGenerationMutation, role: GenerationAssetRole): MediaAsset[] {

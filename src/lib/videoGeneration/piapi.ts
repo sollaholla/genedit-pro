@@ -203,7 +203,7 @@ async function buildPiApiKlingOmniRequest(
   const referenceImages = assetsByRole(mutation, 'reference-image');
   const sourceVideos = assetsByRole(mutation, 'source-video');
 
-  validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos });
+  validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
   const referenceTokenCounts = new Map<string, number>();
   const referenceImageEntries = await Promise.all(referenceImages.map(async (asset, index) => ({
@@ -290,7 +290,7 @@ async function buildPiApiSeedanceRequest(
   const input: Record<string, unknown> = {
     prompt: imageEntries.length > 0 ? rewriteSeedancePromptReferences(mutation.prompt, imageEntries) : mutation.prompt,
     mode,
-    duration: formatSeedanceDuration(mutation.config.durationSeconds),
+    duration: mutation.config.durationSeconds,
     resolution: mutation.config.resolution,
     aspect_ratio: mutation.config.aspectRatio,
   };
@@ -346,12 +346,15 @@ function validatePiApiKlingMutation({
   endFrames,
   referenceImages,
   sourceVideos,
+  mutation,
 }: {
   startFrames: MediaAsset[];
   endFrames: MediaAsset[];
   referenceImages: MediaAsset[];
   sourceVideos: MediaAsset[];
+  mutation: VideoGenerationMutation;
 }) {
+  assertWholeSecondDuration(mutation.config.durationSeconds, 'Kling Omni', 3, 15);
   if (startFrames.length > 1) throw new Error('Kling accepts one start frame.');
   if (endFrames.length > 1) throw new Error('Kling accepts one end frame.');
   if (sourceVideos.length > 1) throw new Error('Kling Omni accepts one video reference.');
@@ -381,9 +384,7 @@ function validatePiApiSeedanceMutation({
   sourceVideos: MediaAsset[];
   mutation: VideoGenerationMutation;
 }) {
-  if (mutation.config.durationSeconds < 4 || mutation.config.durationSeconds > 15) {
-    throw new Error('Seedance 2.0 duration must be between 4 and 15 seconds.');
-  }
+  assertWholeSecondDuration(mutation.config.durationSeconds, 'Seedance 2.0', 4, 15);
   if (startFrames.length > 1) throw new Error('Seedance accepts one start frame.');
   if (endFrames.length > 1) throw new Error('Seedance accepts one end frame.');
   if (endFrames.length > 0 && startFrames.length === 0) throw new Error('A Seedance end frame requires a start frame.');
@@ -402,6 +403,11 @@ function validatePiApiSeedanceMutation({
   }
 }
 
+function assertWholeSecondDuration(durationSeconds: number, label: string, min: number, max: number) {
+  if (!Number.isSafeInteger(durationSeconds)) throw new Error(`${label} duration must be a whole number of seconds.`);
+  if (durationSeconds < min || durationSeconds > max) throw new Error(`${label} duration must be between ${min} and ${max} seconds.`);
+}
+
 function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImageEntry[]): string {
   let next = prompt;
   const missingDirectives: string[] = [];
@@ -416,10 +422,6 @@ function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImag
     next = next.replaceAll(`__GENEDIT_SEEDANCE_IMAGE_${index + 1}__`, `@image${index + 1}`);
   });
   return `${missingDirectives.join(' ')} ${next}`.trim();
-}
-
-function formatSeedanceDuration(durationSeconds: number): string {
-  return `${durationSeconds}s`;
 }
 
 function promptTokenForReferenceAsset(asset: MediaAsset, counts: Map<string, number>): string {

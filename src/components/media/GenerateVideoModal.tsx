@@ -364,7 +364,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setPrompt(composeSequencePrompt(sequence, sequenceReferenceOptions));
     setPromptMode('freeform');
     setStructuredPrompt({});
-    setDuration(`${sequence.durationSec}s`);
+    setDuration(durationOptionForSeconds(sequence.durationSec, sequenceModel));
     setAudioEnabled(true);
     setStartFrame(sequenceStartFrame);
     setEndFrame(null);
@@ -643,6 +643,13 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
           return url;
         },
       });
+      if (import.meta.env.DEV) {
+        console.debug('[GenEdit] PiAPI request', {
+          model: request.body.model,
+          task_type: request.body.task_type,
+          input: request.body.input,
+        });
+      }
       const initialTask = await createPiApiVideoTask(request, { apiKey });
       if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return a task id.');
       taskAccepted = true;
@@ -1336,6 +1343,14 @@ function referenceTokensForAssets(assets: MediaAsset[], idPrefix: string): RefTo
       thumbnail: asset.thumbnailDataUrl,
     };
   });
+}
+
+function durationOptionForSeconds(seconds: number, model: VideoModelDefinition | undefined): string {
+  const roundedSeconds = Math.round(seconds);
+  const duration = Number.isFinite(roundedSeconds) ? `${roundedSeconds}s` : null;
+  if (!model) return duration ?? '4s';
+  if (duration && model.capabilities.durations.includes(duration)) return duration;
+  return model.capabilities.durations[0] ?? '4s';
 }
 
 function uniqueReferenceAssetIds(assetIds: string[]): string[] {
