@@ -71,4 +71,9 @@
   .edit-trail-transform-target {
     transform-origin: center center;
   }
+  .reference-prompt-editor:empty::before {
+    content: attr(data-placeholder);
+    @apply text-slate-600;
+    pointer-events: none;
+  }
 }

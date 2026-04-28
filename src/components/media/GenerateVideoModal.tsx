@@ -20,7 +20,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
   PIAPI_API_KEY_STORAGE,
@@ -67,6 +67,7 @@ import { useMediaStore } from '@/state/mediaStore';
 import type { GenerateRecipe, MediaAsset } from '@/types';
 import { ModelSelect } from './ModelSelect';
 import { MediaPicker } from './MediaPicker';
+import { ReferencePromptEditor, type ReferencePromptEditorHandle, type ReferencePromptMention, type ReferencePromptTokenMeta } from './ReferencePromptEditor';
 
 type Props = {
   open: boolean;
@@ -168,7 +169,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionPos, setMentionPos] = useState({ x: 0, y: 0 });
   const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
-  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<ReferencePromptEditorHandle | null>(null);
   const mentionMenuRef = useRef<HTMLDivElement | null>(null);
   const hoverCardRef = useRef<HTMLDivElement | null>(null);
   const initialRecipeLoadKeyRef = useRef<string | null>(null);
@@ -458,7 +459,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     return out;
   }, [assets, references, sourceVideoToken, startFrame, endFrame]);
 
-  const promptTokens = useMemo(() => uniquePromptReferenceTokens(prompt), [prompt]);
   const recipeAssets = useMemo(() => assets.filter((a) => a.kind === 'recipe' && a.recipe), [assets]);
   const filteredRecipeAssets = useMemo(() => {
     const q = recipeQuery.trim().toLowerCase();
@@ -484,6 +484,38 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     [loadedRecipeId, recipeAssets],
   );
   if (!open) return null;
+
+  const referenceTokenMeta = (token: string): ReferencePromptTokenMeta => {
+    const meta = referenceMap.get(token.toLowerCase());
+    if (!meta) return { valid: false, title: 'Reference is not selected or available.' };
+    if (meta === 'start') return { valid: true, title: 'Start frame' };
+    if (meta === 'end') return { valid: true, title: 'End frame' };
+    return { valid: true, title: meta.name };
+  };
+
+  const showTokenHover = (token: string, event: ReactMouseEvent<HTMLElement>) => {
+    const meta = referenceMap.get(token.toLowerCase());
+    if (!meta || typeof meta === 'string') return;
+    setHoveredToken(meta);
+    setHoverPos({ x: event.clientX + 12, y: event.clientY + 12 });
+  };
+
+  const moveTokenHover = (_token: string, event: ReactMouseEvent<HTMLElement>) => {
+    if (hoveredToken) setHoverPos({ x: event.clientX + 12, y: event.clientY + 12 });
+  };
+
+  const handlePromptMentionChange = (mention: ReferencePromptMention | null) => {
+    if (!mention) {
+      setMentionOpen(false);
+      setMentionQuery('');
+      setMentionRange(null);
+      return;
+    }
+    setMentionQuery(mention.query);
+    setMentionRange({ start: mention.start, end: mention.end });
+    setMentionPos({ x: mention.left, y: mention.top });
+    setMentionOpen(true);
+  };
 
   function buildToken(kind: RefToken['kind'], index: number) {
     return `${kind}${index + 1}`;
@@ -513,43 +545,24 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   }
 
   function insertToken(token: string) {
-    const textarea = editorRef.current;
-    if (!textarea) {
+    const editor = editorRef.current;
+    if (!editor) {
       setPrompt((prev) => `${prev} ${token}`.trim());
       return;
     }
-    const start = mentionRange?.start ?? textarea.selectionStart;
-    const end = mentionRange?.end ?? textarea.selectionEnd;
+    const selection = editor.getSelectionRange();
+    const start = mentionRange?.start ?? selection.start;
+    const end = mentionRange?.end ?? selection.end;
     const next = `${prompt.slice(0, start)}${token} ${prompt.slice(end)}`;
     setPrompt(next);
     requestAnimationFrame(() => {
-      textarea.focus();
+      editor.focus();
       const pos = start + token.length + 1;
-      textarea.setSelectionRange(pos, pos);
+      editor.setSelectionRange(pos, pos);
     });
     setMentionOpen(false);
     setMentionQuery('');
     setMentionRange(null);
-  }
-
-  function onPromptChange(value: string) {
-    setPrompt(value);
-    const textarea = editorRef.current;
-    if (!textarea) return;
-    const cursor = textarea.selectionStart;
-    const prefix = value.slice(0, cursor);
-    const match = prefix.match(/@([a-z0-9-]*)$/i);
-    if (!match) {
-      setMentionOpen(false);
-      setMentionQuery('');
-      setMentionRange(null);
-      return;
-    }
-    setMentionQuery(match[1]);
-    setMentionRange({ start: match.index ?? 0, end: cursor });
-    const rect = textarea.getBoundingClientRect();
-    setMentionPos({ x: rect.left + 18, y: rect.bottom - 12 });
-    setMentionOpen(true);
   }
 
   function removeReference(id: string) {
@@ -844,43 +857,24 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
                 values={structuredPrompt}
                 onChange={(id, value) => setStructuredPrompt((prev) => ({ ...prev, [id]: value }))}
                 missingRequired={missingStructuredRequired.map((section) => section.id)}
+                tokenMeta={referenceTokenMeta}
+                onTokenMouseEnter={showTokenHover}
+                onTokenMouseMove={moveTokenHover}
+                onTokenMouseLeave={() => setHoveredToken(null)}
               />
             ) : (
-              <textarea
+              <ReferencePromptEditor
                 ref={editorRef}
                 value={prompt}
-                onChange={(e) => onPromptChange(e.target.value)}
+                onChange={setPrompt}
+                onMentionChange={handlePromptMentionChange}
+                tokenMeta={referenceTokenMeta}
+                onTokenMouseEnter={showTokenHover}
+                onTokenMouseMove={moveTokenHover}
+                onTokenMouseLeave={() => setHoveredToken(null)}
                 placeholder="Describe your video. Type @ to insert @start-frame, @end-frame, or @image1 references."
-                className="h-32 w-full resize-none rounded-md bg-transparent px-3 pb-11 pt-3 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                className="min-h-32 max-h-52 w-full overflow-y-auto rounded-md bg-transparent px-3 py-3 text-sm leading-6 text-slate-100 outline-none"
               />
-            )}
-            {promptMode === 'freeform' && promptTokens.length > 0 && (
-              <div className="absolute inset-x-2 bottom-2 flex max-h-8 flex-wrap gap-1.5 overflow-y-auto rounded bg-surface-900/85 pr-1 backdrop-blur">
-                {promptTokens.map((token) => {
-                    const key = token.toLowerCase();
-                  const meta = referenceMap.get(key);
-                  const valid = Boolean(meta);
-                  return (
-                    <span
-                        key={key}
-                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${valid ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-400/40 bg-amber-500/10 text-amber-200'}`}
-                      onMouseEnter={(e) => {
-                        if (meta && typeof meta !== 'string') {
-                          setHoveredToken(meta);
-                          setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                        }
-                      }}
-                      onMouseMove={(e) => {
-                        if (hoveredToken) setHoverPos({ x: e.clientX + 12, y: e.clientY + 12 });
-                      }}
-                      onMouseLeave={() => setHoveredToken(null)}
-                    >
-                      {meta && typeof meta !== 'string' && meta.thumbnail && <img src={meta.thumbnail} alt="" className="h-3.5 w-3.5 rounded object-cover" />}
-                      @{token}
-                    </span>
-                  );
-                })}
-              </div>
             )}
           </div>
 
@@ -1113,11 +1107,19 @@ function StructuredPromptEditor({
   values,
   missingRequired,
   onChange,
+  tokenMeta,
+  onTokenMouseEnter,
+  onTokenMouseMove,
+  onTokenMouseLeave,
 }: {
   sections: StructuredPromptSectionDefinition[];
   values: Record<string, string>;
   missingRequired: string[];
   onChange: (sectionId: string, value: string) => void;
+  tokenMeta: (token: string) => ReferencePromptTokenMeta;
+  onTokenMouseEnter: (token: string, event: ReactMouseEvent<HTMLElement>) => void;
+  onTokenMouseMove: (token: string, event: ReactMouseEvent<HTMLElement>) => void;
+  onTokenMouseLeave: () => void;
 }) {
   const missing = new Set(missingRequired);
   return (
@@ -1140,11 +1142,15 @@ function StructuredPromptEditor({
                   {section.optional ? 'Optional' : 'Required'}
                 </span>
               </div>
-              <textarea
+              <ReferencePromptEditor
                 value={values[section.id] ?? ''}
-                onChange={(e) => onChange(section.id, e.target.value)}
+                onChange={(value) => onChange(section.id, value)}
                 placeholder={section.placeholder}
-                className="h-[58px] w-full resize-none rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-400"
+                tokenMeta={tokenMeta}
+                onTokenMouseEnter={onTokenMouseEnter}
+                onTokenMouseMove={onTokenMouseMove}
+                onTokenMouseLeave={onTokenMouseLeave}
+                className="min-h-[58px] w-full rounded-md border border-surface-700 bg-surface-900 px-2 py-1.5 text-xs leading-5 text-slate-100 outline-none focus:border-brand-400"
               />
               <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{section.description}</div>
             </label>
@@ -1360,20 +1366,6 @@ function uniqueReferenceAssetIds(assetIds: string[]): string[] {
     if (seen.has(assetId)) continue;
     seen.add(assetId);
     out.push(assetId);
-  }
-  return out;
-}
-
-function uniquePromptReferenceTokens(prompt: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const match of prompt.matchAll(/@([a-z0-9-]+)/gi)) {
-    const token = match[1];
-    if (!token) continue;
-    const key = token.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(token);
   }
   return out;
 }

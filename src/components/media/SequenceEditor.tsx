@@ -31,6 +31,7 @@ import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
 import { ImageModelSelect } from './ImageModelSelect';
 import { ModelSelect } from './ModelSelect';
+import { ReferencePromptEditor, type ReferencePromptEditorHandle, type ReferencePromptMention, type ReferencePromptTokenMeta } from './ReferencePromptEditor';
 
 type Props = {
   assetId: string | null;
@@ -75,9 +76,21 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     const ids = new Set(sequence.characterAssetIds ?? []);
     return characterAssets.filter((asset) => ids.has(asset.id));
   }, [characterAssets, sequence.characterAssetIds]);
+  const sequenceCharacterTokenSet = useMemo(() => new Set(sequenceCharacterAssets
+    .map((asset) => bareCharacterToken(asset)?.toLowerCase())
+    .filter((token): token is string => Boolean(token))), [sequenceCharacterAssets]);
+  const allCharacterTokenSet = useMemo(() => new Set(characterAssets
+    .map((asset) => bareCharacterToken(asset)?.toLowerCase())
+    .filter((token): token is string => Boolean(token))), [characterAssets]);
   const characterTokensByAssetId = useMemo(() => new Map(assets
     .filter((candidate) => candidate.kind === 'character' && candidate.character?.characterId)
     .map((candidate) => [candidate.id, candidate.character!.characterId])), [assets]);
+  const characterTokenMeta = (token: string): ReferencePromptTokenMeta => {
+    const key = token.toLowerCase();
+    if (sequenceCharacterTokenSet.has(key)) return { valid: true, title: 'Sequence character' };
+    if (allCharacterTokenSet.has(key)) return { valid: false, title: 'Character is not attached to this sequence.' };
+    return { valid: false, title: 'No matching sequence character.' };
+  };
   const sortedMarkers = useMemo(() => sortedSequenceMarkers(sequence), [sequence]);
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(sortedMarkers[0]?.id ?? null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -470,15 +483,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] gap-0 overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(220px,320px)] gap-0 overflow-hidden">
           <main className="flex min-w-0 flex-col overflow-auto p-4">
-            <div className="mb-4 grid grid-cols-[minmax(0,1fr)_190px_120px] gap-3">
+            <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_190px_120px]">
               <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Overall Prompt
-                <textarea
+                <ReferencePromptEditor
                   value={sequence.overallPrompt}
-                  onChange={(event) => persist({ ...sequence, overallPrompt: event.target.value })}
-                  className="min-h-[88px] resize-none rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                  onChange={(value) => persist({ ...sequence, overallPrompt: value })}
+                  tokenMeta={characterTokenMeta}
+                  className="min-h-[88px] w-full rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-sm font-normal normal-case tracking-normal leading-6 text-slate-100 outline-none focus:border-brand-400"
                 />
               </label>
               <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -662,8 +676,8 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
               </svg>
             </div>
 
-            <div className="mt-4 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_280px] gap-4">
-              <section className="flex min-h-0 flex-col rounded-md border border-surface-700 bg-surface-900/70 p-3">
+            <div className="mt-4 grid min-h-[160px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+              <section className="flex min-h-[150px] flex-col rounded-md border border-surface-700 bg-surface-900/70 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Prompt Output</div>
                   <button className="btn-ghost px-2 py-1 text-xs" onClick={() => void copyPrompt()} disabled={!composedPrompt.trim()}>
@@ -687,6 +701,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 imageModels={imageModels}
                 sequenceCharacters={sequenceCharacterAssets}
                 allCharacters={characterAssets}
+                tokenMeta={characterTokenMeta}
                 imageGenerationError={selectedMarker?.id === imageGeneratingMarkerId ? null : imageGenerationError}
                 imageGenerating={Boolean(selectedMarker && selectedMarker.id === imageGeneratingMarkerId)}
                 imagePrompt={selectedImagePrompt}
@@ -878,14 +893,14 @@ function SequencePromptOutput({
   const overallPrompt = sequence.overallPrompt.trim();
   if (!overallPrompt && markers.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center rounded border border-dashed border-surface-700 bg-surface-950/80 p-6 text-center text-sm text-slate-500">
-        Add markers to build a shot sequence.
+      <div className="flex min-h-24 items-center rounded bg-surface-950/45 px-3 text-xs text-slate-600">
+        No compiled prompt yet.
       </div>
     );
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded border border-surface-800 bg-surface-950/90">
+    <div className="overflow-auto rounded border border-surface-800 bg-surface-950/90">
       {overallPrompt && (
         <div className="border-b border-surface-800 bg-surface-900/55 p-3">
           <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -895,10 +910,11 @@ function SequencePromptOutput({
           <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{overallPrompt}</p>
         </div>
       )}
-      <div className="relative p-3">
-        {markers.length > 1 && <div className="absolute bottom-5 left-[2.15rem] top-5 w-px bg-surface-700/80" />}
-        <div className="space-y-2">
-          {markers.map((marker, index) => {
+      {markers.length > 0 && (
+        <div className="relative p-3">
+          {markers.length > 1 && <div className="absolute bottom-5 left-[2.15rem] top-5 w-px bg-surface-700/80" />}
+          <div className="space-y-2">
+            {markers.map((marker, index) => {
             const selected = marker.id === selectedMarkerId;
             const image = marker.imageAssetId ? imageAssetsById.get(marker.imageAssetId) ?? null : null;
             const imageReferenceNumber = imageReferenceNumbers.get(marker.id);
@@ -938,9 +954,10 @@ function SequencePromptOutput({
                 </div>
               </div>
             );
-          })}
+            })}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -969,6 +986,7 @@ function MarkerInspector({
   imageModels,
   sequenceCharacters,
   allCharacters,
+  tokenMeta,
   imageGenerationError,
   imageGenerating,
   imagePrompt,
@@ -986,6 +1004,7 @@ function MarkerInspector({
   imageModels: ImageModelDefinition[];
   sequenceCharacters: MediaAsset[];
   allCharacters: MediaAsset[];
+  tokenMeta: (token: string) => ReferencePromptTokenMeta;
   imageGenerationError: string | null;
   imageGenerating: boolean;
   imagePrompt: string;
@@ -1106,6 +1125,7 @@ function MarkerInspector({
             marker={marker}
             sequenceCharacters={sequenceCharacters}
             allCharacters={allCharacters}
+            tokenMeta={tokenMeta}
             onChange={(value) => onUpdate(marker.id, { prompt: value })}
             onAcceptCharacter={onAcceptCharacterMention}
           />
@@ -1124,18 +1144,20 @@ function ShotPromptEditor({
   marker,
   sequenceCharacters,
   allCharacters,
+  tokenMeta,
   onChange,
   onAcceptCharacter,
 }: {
   marker: SequenceMarker;
   sequenceCharacters: MediaAsset[];
   allCharacters: MediaAsset[];
+  tokenMeta: (token: string) => ReferencePromptTokenMeta;
   onChange: (value: string) => void;
   onAcceptCharacter: (asset: MediaAsset) => void;
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<ReferencePromptEditorHandle | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const [mention, setMention] = useState<{ query: string; start: number; end: number; left: number; top: number } | null>(null);
+  const [mention, setMention] = useState<ReferencePromptMention | null>(null);
   const attachedIds = useMemo(() => new Set(sequenceCharacters.map((asset) => asset.id)), [sequenceCharacters]);
   const mentionItems = useMemo(() => {
     const query = mention?.query.trim().toLowerCase() ?? '';
@@ -1156,7 +1178,8 @@ function ShotPromptEditor({
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (menuRef.current?.contains(target)) return;
-      if (textareaRef.current?.contains(target)) return;
+      const editorRect = editorRef.current?.getBoundingClientRect();
+      if (editorRect && event.clientX >= editorRect.left && event.clientX <= editorRect.right && event.clientY >= editorRect.top && event.clientY <= editorRect.bottom) return;
       setMention(null);
     };
     const onKey = (event: KeyboardEvent) => {
@@ -1180,30 +1203,6 @@ function ShotPromptEditor({
     menu.style.top = `${Math.round(top)}px`;
   }, [mention]);
 
-  const refreshMention = (value: string, cursor: number) => {
-    const prefix = value.slice(0, cursor);
-    const match = prefix.match(/(^|\s)@([a-z0-9_-]{0,32})$/i);
-    if (!match) {
-      setMention(null);
-      return;
-    }
-    const textarea = textareaRef.current;
-    const rect = textarea?.getBoundingClientRect();
-    setMention({
-      query: match[2] ?? '',
-      start: cursor - (match[2]?.length ?? 0) - 1,
-      end: cursor,
-      left: rect ? rect.left + 12 : 0,
-      top: rect ? Math.min(rect.bottom - 4, window.innerHeight - 220) : 0,
-    });
-  };
-
-  const handleChange = (value: string) => {
-    onChange(value);
-    const cursor = textareaRef.current?.selectionStart ?? value.length;
-    refreshMention(value, cursor);
-  };
-
   const insertCharacter = (asset: MediaAsset) => {
     const token = bareCharacterToken(asset);
     if (!token || !mention) return;
@@ -1215,21 +1214,21 @@ function ShotPromptEditor({
     onAcceptCharacter(asset);
     setMention(null);
     requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(nextCursor, nextCursor);
     });
   };
 
   return (
     <>
-      <textarea
-        ref={textareaRef}
+      <ReferencePromptEditor
+        ref={editorRef}
         value={marker.prompt}
-        onChange={(event) => handleChange(event.target.value)}
-        onKeyUp={(event) => refreshMention(event.currentTarget.value, event.currentTarget.selectionStart)}
-        onClick={(event) => refreshMention(event.currentTarget.value, event.currentTarget.selectionStart)}
+        onChange={onChange}
+        onMentionChange={setMention}
+        tokenMeta={tokenMeta}
         placeholder="Type @ to reference a sequence character."
-        className="min-h-[116px] resize-none rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none placeholder:text-slate-600 focus:border-brand-400"
+        className="min-h-[116px] w-full rounded-md border border-surface-700 bg-surface-950 px-2 py-2 text-sm font-normal normal-case tracking-normal leading-6 text-slate-100 outline-none focus:border-brand-400"
       />
       {mention && mentionItems.length > 0 && createPortal(
         <div
