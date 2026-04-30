@@ -160,9 +160,9 @@ async function buildPiApiVeoRequest(
 
   validatePiApiVeoMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
-  const referenceUrls = await Promise.all(
-    referenceImages.map((asset) => resolvePiApiReferenceUrl(asset, 'Veo image reference', options)),
-  );
+  const referenceUrls = await mapSequential(referenceImages, (asset) => (
+    resolvePiApiReferenceUrl(asset, 'Veo image reference', options)
+  ));
   const imageUrl = startFrames[0]
     ? await resolvePiApiReferenceUrl(startFrames[0], 'Veo start frame', options)
     : referenceUrls[0];
@@ -206,12 +206,12 @@ async function buildPiApiKlingOmniRequest(
   validatePiApiKlingMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
   const referenceTokenCounts = new Map<string, number>();
-  const referenceImageEntries = await Promise.all(referenceImages.map(async (asset, index) => ({
-      token: promptTokenForReferenceAsset(asset, referenceTokenCounts),
-      url: await resolvePiApiReferenceUrl(asset, 'Kling image reference', options),
-      purpose: `reference image ${index + 1}`,
-    })));
-  const frameImageEntries = await Promise.all([
+  const referenceImageEntries = await mapSequential(referenceImages, async (asset, index) => ({
+    token: promptTokenForReferenceAsset(asset, referenceTokenCounts),
+    url: await resolvePiApiReferenceUrl(asset, 'Kling image reference', options),
+    purpose: `reference image ${index + 1}`,
+  }));
+  const frameImageEntries = await mapSequential([
     ...(startFrames[0] ? [{
       token: 'start-frame',
       asset: startFrames[0],
@@ -222,16 +222,16 @@ async function buildPiApiKlingOmniRequest(
       asset: endFrames[0],
       purpose: 'end frame',
     }] : []),
-  ].map(async (entry) => ({
+  ], async (entry) => ({
     token: entry.token,
     url: await resolvePiApiReferenceUrl(entry.asset, `Kling ${entry.purpose}`, options),
     purpose: entry.purpose,
-  })));
+  }));
   const imageEntries: PiApiImageEntry[] = [...referenceImageEntries, ...frameImageEntries];
-  const videoEntries: PiApiVideoEntry[] = await Promise.all(sourceVideos.map(async (asset, index) => ({
+  const videoEntries: PiApiVideoEntry[] = await mapSequential(sourceVideos, async (asset, index) => ({
     token: `video${index + 1}`,
     url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options),
-  })));
+  }));
 
   const input: Record<string, unknown> = {
     prompt: rewriteKlingPromptReferences(mutation.prompt, imageEntries, videoEntries),
@@ -271,18 +271,25 @@ async function buildPiApiSeedanceRequest(
   validatePiApiSeedanceMutation({ startFrames, endFrames, referenceImages, sourceVideos, mutation });
 
   const referenceTokenCounts = new Map<string, number>();
-  const imageEntries: PiApiImageEntry[] = await Promise.all([
-    ...startFrames.map((asset) => ({ token: 'start-frame', asset, purpose: 'start frame' })),
-    ...endFrames.map((asset) => ({ token: 'end-frame', asset, purpose: 'end frame' })),
-    ...referenceImages.map((asset, index) => ({ token: promptTokenForReferenceAsset(asset, referenceTokenCounts), asset, purpose: `reference image ${index + 1}` })),
-  ].map(async (entry) => ({
-    token: entry.token,
-    url: await resolvePiApiReferenceUrl(entry.asset, `Seedance ${entry.purpose}`, options),
-    purpose: entry.purpose,
-  })));
-  const videoUrls = await Promise.all(
-    sourceVideos.map((asset, index) => resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)),
+  const imageEntries: PiApiImageEntry[] = await mapSequential(
+    [
+      ...startFrames.map((asset) => ({ token: 'start-frame', asset, purpose: 'start frame' })),
+      ...endFrames.map((asset) => ({ token: 'end-frame', asset, purpose: 'end frame' })),
+      ...referenceImages.map((asset, index) => ({
+        token: promptTokenForReferenceAsset(asset, referenceTokenCounts),
+        asset,
+        purpose: `reference image ${index + 1}`,
+      })),
+    ],
+    async (entry) => ({
+      token: entry.token,
+      url: await resolvePiApiReferenceUrl(entry.asset, `Seedance ${entry.purpose}`, options),
+      purpose: entry.purpose,
+    }),
   );
+  const videoUrls = await mapSequential(sourceVideos, (asset, index) => (
+    resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)
+  ));
 
   const mode = imageEntries.length > 0 || videoUrls.length > 0
       ? 'omni_reference'
@@ -548,6 +555,12 @@ function replacePromptToken(prompt: string, token: string, replacement: string):
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function mapSequential<T, U>(items: T[], mapper: (item: T, index: number) => Promise<U>): Promise<U[]> {
+  const results: U[] = [];
+  for (let index = 0; index < items.length; index += 1) results.push(await mapper(items[index]!, index));
+  return results;
 }
 
 async function resolvePiApiReferenceUrl(

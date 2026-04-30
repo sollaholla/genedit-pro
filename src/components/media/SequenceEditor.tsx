@@ -25,7 +25,7 @@ import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
 import { createPiApiImageGenerationTask, generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { PIAPI_API_KEY_STORAGE, PIAPI_KLING_API_KEY_STORAGE, PIAPI_VEO_API_KEY_STORAGE } from '@/lib/settings/connectionStorage';
-import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
+import { hostLitterboxReferences } from '@/lib/videoGeneration/litterbox';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, SequenceAssetData, SequenceMarker } from '@/types';
@@ -1745,7 +1745,7 @@ async function buildImageReferenceInput(
     const files = await Promise.all(assets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
     return { referenceFiles: files.filter((file): file is File => Boolean(file)) };
   }
-  return { referenceUrls: await Promise.all(assets.map((asset) => hostLitterboxReference(asset, 'Sequence reference'))) };
+  return { referenceUrls: await hostLitterboxReferences(assets, 'Sequence reference') };
 }
 
 async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {

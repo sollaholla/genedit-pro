@@ -13,7 +13,7 @@ import {
 import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
 import { generatePiApiImage, isGptImageModel } from '@/lib/imageGeneration/piapi';
 import { characterTokenForAsset, isReferenceImageAsset, slugifyCharacterId, uniqueCharacterId } from '@/lib/media/characterReferences';
-import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
+import { hostLitterboxReferences } from '@/lib/videoGeneration/litterbox';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
@@ -644,7 +644,7 @@ async function buildReferenceInput(
     const referenceFiles = await Promise.all(assets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
     return { referenceFiles: referenceFiles.filter((file): file is File => Boolean(file)) };
   }
-  return { referenceUrls: await Promise.all(assets.map((asset) => hostLitterboxReference(asset, 'Character reference'))) };
+  return { referenceUrls: await hostLitterboxReferences(assets, 'Character reference') };
 }
 
 async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {
