@@ -1,5 +1,8 @@
+import { artifactProxyUrl, isFetchBlockedError } from '@/lib/media/artifactProxy';
+
 const GENERATED_IMAGE_DOWNLOAD_ATTEMPTS = 10;
 const GENERATED_IMAGE_DOWNLOAD_RETRY_MS = 2500;
+const GENERATED_IMAGE_DIRECT_ATTEMPTS_BEFORE_PROXY = 2;
 const MIN_GENERATED_IMAGE_BYTES = 512;
 
 export async function downloadGeneratedImageFile(
@@ -7,23 +10,54 @@ export async function downloadGeneratedImageFile(
   onProgress?: (progress: number) => void,
 ): Promise<File> {
   onProgress?.(96);
-  const blob = await fetchGeneratedImageBlobWithRetries(url);
+  const blob = await fetchGeneratedImageBlob(url);
   onProgress?.(99);
   return generatedImageFileFromBlob(blob);
 }
 
-async function fetchGeneratedImageBlobWithRetries(url: string): Promise<Blob> {
+async function fetchGeneratedImageBlob(url: string): Promise<Blob> {
+  const proxyUrl = artifactProxyUrl(url);
+  try {
+    return await fetchGeneratedImageBlobWithRetries(url, {
+      attempts: proxyUrl ? GENERATED_IMAGE_DIRECT_ATTEMPTS_BEFORE_PROXY : GENERATED_IMAGE_DOWNLOAD_ATTEMPTS,
+      label: 'generated image',
+      stopOnBlockedFetch: Boolean(proxyUrl),
+    });
+  } catch (error) {
+    if (!proxyUrl || !isFetchBlockedError(error)) throw error;
+  }
+
+  return fetchGeneratedImageBlobWithRetries(proxyUrl, {
+    attempts: GENERATED_IMAGE_DOWNLOAD_ATTEMPTS,
+    label: 'generated image through artifact proxy',
+    stopOnBlockedFetch: false,
+  });
+}
+
+async function fetchGeneratedImageBlobWithRetries(
+  url: string,
+  {
+    attempts,
+    label,
+    stopOnBlockedFetch,
+  }: {
+    attempts: number;
+    label: string;
+    stopOnBlockedFetch: boolean;
+  },
+): Promise<Blob> {
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= GENERATED_IMAGE_DOWNLOAD_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const response = await fetch(url, { cache: 'no-store' });
-      if (!response.ok) throw new Error(await responseErrorMessage(response, 'Failed downloading generated image'));
+      if (!response.ok) throw new Error(await responseErrorMessage(response, `Failed downloading ${label}`));
       const blob = await response.blob();
-      if (blob.size < MIN_GENERATED_IMAGE_BYTES) throw new Error('Failed downloading generated image: received an empty image.');
+      if (blob.size < MIN_GENERATED_IMAGE_BYTES) throw new Error(`Failed downloading ${label}: received an empty image.`);
       return blob;
     } catch (err) {
       lastError = err;
-      if (attempt < GENERATED_IMAGE_DOWNLOAD_ATTEMPTS) await delay(GENERATED_IMAGE_DOWNLOAD_RETRY_MS);
+      if (stopOnBlockedFetch && isFetchBlockedError(err)) throw err;
+      if (attempt < attempts) await delay(GENERATED_IMAGE_DOWNLOAD_RETRY_MS);
     }
   }
   throw lastError instanceof Error ? lastError : new Error('Failed downloading generated image.');

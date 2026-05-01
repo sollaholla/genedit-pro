@@ -1,5 +1,8 @@
+import { artifactProxyUrl, isFetchBlockedError } from '@/lib/media/artifactProxy';
+
 const GENERATED_VIDEO_DOWNLOAD_ATTEMPTS = 18;
 const GENERATED_VIDEO_DOWNLOAD_RETRY_MS = 5000;
+const GENERATED_VIDEO_DIRECT_ATTEMPTS_BEFORE_PROXY = 2;
 const GENERATED_VIDEO_CORS_RELAY_ATTEMPTS = 18;
 const MIN_GENERATED_VIDEO_BYTES = 1024;
 
@@ -8,16 +11,28 @@ export async function downloadGeneratedVideoFile(
   onProgress?: (progress: number) => void,
 ): Promise<File> {
   onProgress?.(96);
+  const proxyUrl = artifactProxyUrl(url);
   try {
     const blob = await fetchGeneratedVideoBlobWithRetries(url, {
-      attempts: GENERATED_VIDEO_DOWNLOAD_ATTEMPTS,
+      attempts: proxyUrl ? GENERATED_VIDEO_DIRECT_ATTEMPTS_BEFORE_PROXY : GENERATED_VIDEO_DOWNLOAD_ATTEMPTS,
       delayMs: GENERATED_VIDEO_DOWNLOAD_RETRY_MS,
       label: 'PiAPI video',
       useCorsRelayAfterNetworkFailures: true,
+      useArtifactProxyAfterNetworkFailures: Boolean(proxyUrl),
     });
     onProgress?.(99);
     return generatedVideoFileFromBlob(blob);
   } catch (directError) {
+    if (proxyUrl && isFetchBlockedError(directError)) {
+      onProgress?.(97);
+      const blob = await fetchGeneratedVideoBlobWithRetries(proxyUrl, {
+        attempts: GENERATED_VIDEO_DOWNLOAD_ATTEMPTS,
+        delayMs: GENERATED_VIDEO_DOWNLOAD_RETRY_MS,
+        label: 'PiAPI video through artifact proxy',
+      });
+      onProgress?.(99);
+      return generatedVideoFileFromBlob(blob);
+    }
     if (!shouldUseCorsRelay(url, directError)) throw directError;
   }
 
@@ -39,11 +54,13 @@ async function fetchGeneratedVideoBlobWithRetries(
     delayMs,
     label,
     useCorsRelayAfterNetworkFailures = false,
+    useArtifactProxyAfterNetworkFailures = false,
   }: {
     attempts: number;
     delayMs: number;
     label: string;
     useCorsRelayAfterNetworkFailures?: boolean;
+    useArtifactProxyAfterNetworkFailures?: boolean;
   },
 ): Promise<Blob> {
   let lastError: unknown = null;
@@ -58,6 +75,7 @@ async function fetchGeneratedVideoBlobWithRetries(
       return blob;
     } catch (err) {
       lastError = err;
+      if (useArtifactProxyAfterNetworkFailures && isFetchBlockedError(err)) throw err;
       if (useCorsRelayAfterNetworkFailures && shouldUseCorsRelay(url, err) && attempt >= 2) throw err;
       if (attempt < attempts) await delay(delayMs);
     }
