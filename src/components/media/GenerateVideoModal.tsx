@@ -247,6 +247,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const shouldSendImageReferences = isReferencesFeatureSupported(selectedModel) &&
     !(isVeoModel(selectedModel) && (startFrame || endFrame)) &&
     !(isVeoModel(selectedModel) && sourceVideo);
+  const includedReferenceImageAssets = useMemo(
+    () => (shouldSendImageReferences ? referenceImageAssets.slice(0, imageReferenceLimit) : []),
+    [imageReferenceLimit, referenceImageAssets, shouldSendImageReferences],
+  );
+  const includedReferenceAssetIds = useMemo(
+    () => new Set(includedReferenceImageAssets.map((asset) => asset.id)),
+    [includedReferenceImageAssets],
+  );
+  const ignoredReferenceCount = Math.max(0, activeReferenceCount - includedReferenceImageAssets.length);
   const loadModels = useCallback(async () => {
     setLoadingModels(true);
     try {
@@ -391,7 +400,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       setEndFrame(null);
     }
     if (!sourceVideoSupported || (sourceVideo && !isSourceVideoReferenceValid(selectedModel, sourceVideo))) setSourceVideo(null);
-    if (imageReferenceLimit > 0 && references.length > imageReferenceLimit) setReferences((prev) => prev.slice(0, imageReferenceLimit));
     if (audioLockedOn) setAudioEnabled(true);
     else if (!isAudioFeatureSupported(selectedModel)) setAudioEnabled(false);
     if (!selectedModel.promptGuidelines?.structuredSections.length && promptMode === 'structured') {
@@ -402,8 +410,6 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     duration,
     durationOptions,
     frameInputsSupported,
-    imageReferenceLimit,
-    references.length,
     resolution,
     resolutionOptions,
     selectedModel,
@@ -641,7 +647,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
         startFrame,
         endFrame,
         sourceVideo,
-        referenceImages: shouldSendImageReferences ? referenceImageAssets : [],
+        referenceImages: includedReferenceImageAssets,
       });
 
       const apiKey = await readPiApiKey();
@@ -914,15 +920,34 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
                 References will not be used since a Veo video reference is specified.
               </div>
             )}
+            {shouldSendImageReferences && ignoredReferenceCount > 0 && (
+              <div className="mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+                Only the first {imageReferenceLimit} image {imageReferenceLimit === 1 ? 'reference' : 'references'} will be used. {ignoredReferenceCount} {ignoredReferenceCount === 1 ? 'reference' : 'references'} will not be included.
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {references.length === 0 && <span className="text-xs text-slate-500">No references selected.</span>}
-              {references.map((ref) => (
-                <button key={ref.id} onClick={() => removeReference(ref.id)} className="inline-flex items-center gap-1 rounded-md border border-surface-700 bg-surface-950 px-2 py-1 text-xs text-slate-200 hover:border-surface-500 hover:bg-surface-800">
-                  {ref.thumbnail ? <img src={ref.thumbnail} alt="" className="h-4 w-4 rounded object-cover" /> : <ImageIcon size={12} />}
-                  @{ref.token}
-                  <X size={11} />
-                </button>
-              ))}
+              {references.map((ref) => {
+                const isIncluded = includedReferenceAssetIds.has(ref.assetId);
+                const isIgnored = activeReferenceCount > 0 && !isIncluded;
+                return (
+                  <button
+                    key={ref.id}
+                    onClick={() => removeReference(ref.id)}
+                    title={isIgnored ? 'This reference stays selected but will not be sent with the current model/settings.' : undefined}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:border-surface-500 hover:bg-surface-800 ${
+                      isIgnored
+                        ? 'border-amber-400/30 bg-amber-500/10 text-amber-100'
+                        : 'border-surface-700 bg-surface-950 text-slate-200'
+                    }`}
+                  >
+                    {ref.thumbnail ? <img src={ref.thumbnail} alt="" className="h-4 w-4 rounded object-cover" /> : <ImageIcon size={12} />}
+                    @{ref.token}
+                    {isIgnored && <span className="rounded bg-amber-400/15 px-1 text-[10px] text-amber-200">Not used</span>}
+                    <X size={11} />
+                  </button>
+                );
+              })}
             </div>
           </div>
 

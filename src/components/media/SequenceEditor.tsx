@@ -1,7 +1,7 @@
 import { type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { nanoid } from 'nanoid';
-import { Check, Clapperboard, Copy, Image as ImageIcon, Loader2, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import { AlertTriangle, Check, Clapperboard, Copy, Image as ImageIcon, Loader2, Pause, Play, Plus, Search, SkipBack, SkipForward, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -92,6 +92,10 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     return { valid: false, title: 'No matching sequence character.' };
   };
   const sortedMarkers = useMemo(() => sortedSequenceMarkers(sequence), [sequence]);
+  const outOfBoundsMarkers = useMemo(
+    () => sortedMarkers.filter((marker) => markerOutOfBounds(marker, sequence.durationSec)),
+    [sequence.durationSec, sortedMarkers],
+  );
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(sortedMarkers[0]?.id ?? null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -225,7 +229,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     persist({
       ...sequence,
       markers: sequence.markers.map((marker) => (marker.id === markerId
-        ? { ...marker, ...patch, timeSec: clampTime(patch.timeSec ?? marker.timeSec, sequence.durationSec) }
+        ? { ...marker, ...patch, timeSec: normalizeMarkerTime(patch.timeSec ?? marker.timeSec) }
         : marker)),
     });
   };
@@ -315,14 +319,12 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
       ...sequence,
       model: nextModel.id,
       durationSec: nextDuration,
-      markers: sequence.markers.map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, nextDuration) })),
     });
   };
   const changeDuration = (durationSec: number) => {
     persist({
       ...sequence,
       durationSec,
-      markers: sequence.markers.map((marker) => ({ ...marker, timeSec: clampTime(marker.timeSec, durationSec) })),
     });
   };
   const copyPrompt = async () => {
@@ -525,6 +527,19 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
               onAdd={() => setCharacterPickerOpen(true)}
               onRemove={removeSequenceCharacter}
             />
+            {outOfBoundsMarkers.length > 0 && (
+              <div className="mb-3 rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-200" />
+                  <div>
+                    <div className="font-medium">{outOfBoundsMarkers.length} {outOfBoundsMarkers.length === 1 ? 'marker is' : 'markers are'} outside the {formatTime(sequence.durationSec)} sequence duration.</div>
+                    <div className="mt-0.5 text-amber-100/75">
+                      {outOfBoundsMarkers.map((marker) => `#${sortedMarkers.findIndex((candidate) => candidate.id === marker.id) + 1} at ${formatTime(marker.timeSec)}`).join(', ')}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
@@ -612,14 +627,19 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 {sortedMarkers.map((marker, index) => {
                   const x = timeToX(marker.timeSec, sequence.durationSec);
                   const selected = marker.id === selectedMarkerId;
+                  const outOfBounds = markerOutOfBounds(marker, sequence.durationSec);
                   const markerLineClassName = selected
                     ? 'stroke-brand-400'
-                    : marker.imageAssetId
+                    : outOfBounds
+                      ? 'stroke-amber-300'
+                      : marker.imageAssetId
                       ? 'stroke-amber-300'
                       : 'stroke-brand-500';
                   const markerCircleClassName = marker.imageAssetId
                     ? 'fill-amber-300 stroke-white'
-                    : selected
+                    : outOfBounds
+                      ? 'fill-amber-300 stroke-white'
+                      : selected
                       ? 'fill-brand-400 stroke-white'
                       : 'fill-brand-500 stroke-white';
                   return (
@@ -653,6 +673,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                       }}
                       onDoubleClick={(event) => event.stopPropagation()}
                     >
+                      {outOfBounds && <title>{`Marker ${index + 1} is outside the ${formatTime(sequence.durationSec)} duration.`}</title>}
                       <line x1="0" y1="18" x2="0" y2="66" className={markerLineClassName} strokeWidth={selected ? 3 : 2} />
                       <circle
                         cx="0"
@@ -757,37 +778,46 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
             <div className="mt-4 min-h-0 overflow-auto">
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Markers</div>
               <div className="space-y-1.5">
-                {sortedMarkers.map((marker, index) => (
-                  <div
-                    key={marker.id}
-                    className={`group flex w-full items-center gap-2 rounded border text-xs ${
-                      marker.id === selectedMarkerId
-                        ? 'border-brand-400 bg-brand-500/15 text-slate-100'
-                        : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-l px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
-                      onClick={() => selectMarker(marker)}
+                {sortedMarkers.map((marker, index) => {
+                  const outOfBounds = markerOutOfBounds(marker, sequence.durationSec);
+                  return (
+                    <div
+                      key={marker.id}
+                      title={outOfBounds ? `Marker ${index + 1} is outside the ${formatTime(sequence.durationSec)} duration.` : undefined}
+                      className={`group flex w-full items-center gap-2 rounded border text-xs ${
+                        marker.id === selectedMarkerId
+                          ? outOfBounds
+                            ? 'border-amber-300/80 bg-amber-500/15 text-amber-50'
+                            : 'border-brand-400 bg-brand-500/15 text-slate-100'
+                          : outOfBounds
+                            ? 'border-amber-400/30 bg-amber-500/10 text-amber-100 hover:border-amber-300/60'
+                            : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500'
+                      }`}
                     >
-                      <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
-                      <span className="shrink-0 font-mono text-[11px] text-slate-500">{formatTime(marker.timeSec)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/60"
-                      title="Delete marker"
-                      aria-label="Delete marker"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        deleteMarker(marker.id);
-                      }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
+                      <button
+                        type="button"
+                        className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-l px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400"
+                        onClick={() => selectMarker(marker)}
+                      >
+                        <span className="min-w-0 truncate">{index + 1}. {marker.prompt || 'Untitled shot'}</span>
+                        <span className={`shrink-0 font-mono text-[11px] ${outOfBounds ? 'text-amber-200' : 'text-slate-500'}`}>{formatTime(marker.timeSec)}</span>
+                        {outOfBounds && <span className="shrink-0 rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] text-amber-200">Out</span>}
+                      </button>
+                      <button
+                        type="button"
+                        className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-500 opacity-0 transition hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/60"
+                        title="Delete marker"
+                        aria-label="Delete marker"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteMarker(marker.id);
+                        }}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </aside>
@@ -918,45 +948,60 @@ function SequencePromptOutput({
           {markers.length > 1 && <div className="absolute bottom-5 left-[2.15rem] top-5 w-px bg-surface-700/80" />}
           <div className="space-y-2">
             {markers.map((marker, index) => {
-            const selected = marker.id === selectedMarkerId;
-            const image = marker.imageAssetId ? imageAssetsById.get(marker.imageAssetId) ?? null : null;
-            const imageReferenceNumber = imageReferenceNumbers.get(marker.id);
-            return (
-              <div
-                key={marker.id}
-                role="button"
-                tabIndex={0}
-                className={`relative grid cursor-pointer grid-cols-[2.35rem_minmax(0,1fr)] gap-3 rounded-md border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 ${selected ? 'border-brand-400/70 bg-brand-500/15 shadow-[inset_3px_0_0_rgba(124,140,255,0.95)]' : 'border-surface-800 bg-surface-900/35 hover:border-surface-600 hover:bg-surface-900/60'}`}
-                onClick={() => onSelectMarker(marker)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return;
-                  event.preventDefault();
-                  onSelectMarker(marker);
-                }}
-              >
-                <div className="relative flex flex-col items-center gap-2 pt-0.5">
-                  <span className={`z-10 flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-semibold ${selected ? 'border-brand-300 bg-brand-500 text-white' : 'border-surface-600 bg-surface-950 text-slate-300'}`}>
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <span className="rounded bg-surface-950 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">{formatTime(marker.timeSec)}</span>
-                </div>
-                <div className="min-w-0">
-                  <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
-                    <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Shot {index + 1}</span>
-                    {imageReferenceNumber && (
-                      <span className="inline-flex min-w-0 items-center gap-1 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200 ring-1 ring-amber-300/20">
-                        <ImageIcon size={10} />
-                        <span>@image{imageReferenceNumber}</span>
-                      </span>
-                    )}
-                    {image && <span className="min-w-0 truncate rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{image.name}</span>}
+              const selected = marker.id === selectedMarkerId;
+              const outOfBounds = markerOutOfBounds(marker, sequence.durationSec);
+              const image = marker.imageAssetId ? imageAssetsById.get(marker.imageAssetId) ?? null : null;
+              const imageReferenceNumber = imageReferenceNumbers.get(marker.id);
+              return (
+                <div
+                  key={marker.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`relative grid cursor-pointer grid-cols-[2.35rem_minmax(0,1fr)] gap-3 rounded-md border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 ${
+                    selected
+                      ? outOfBounds
+                        ? 'border-amber-300/80 bg-amber-500/15 shadow-[inset_3px_0_0_rgba(251,191,36,0.9)]'
+                        : 'border-brand-400/70 bg-brand-500/15 shadow-[inset_3px_0_0_rgba(124,140,255,0.95)]'
+                      : outOfBounds
+                        ? 'border-amber-400/30 bg-amber-500/10 hover:border-amber-300/60 hover:bg-amber-500/15'
+                        : 'border-surface-800 bg-surface-900/35 hover:border-surface-600 hover:bg-surface-900/60'
+                  }`}
+                  onClick={() => onSelectMarker(marker)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    onSelectMarker(marker);
+                  }}
+                >
+                  <div className="relative flex flex-col items-center gap-2 pt-0.5">
+                    <span className={`z-10 flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-semibold ${selected ? 'border-brand-300 bg-brand-500 text-white' : 'border-surface-600 bg-surface-950 text-slate-300'}`}>
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <span className={`rounded bg-surface-950 px-1.5 py-0.5 font-mono text-[10px] ${outOfBounds ? 'text-amber-200' : 'text-slate-500'}`}>{formatTime(marker.timeSec)}</span>
                   </div>
-                  <div className="whitespace-pre-wrap text-sm leading-6 text-slate-200">
-                    {marker.prompt.trim() || <span className="text-slate-500">Untitled shot</span>}
+                  <div className="min-w-0">
+                    <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="rounded bg-surface-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Shot {index + 1}</span>
+                      {outOfBounds && (
+                        <span className="inline-flex items-center gap-1 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200 ring-1 ring-amber-300/20">
+                          <AlertTriangle size={10} />
+                          Out of bounds
+                        </span>
+                      )}
+                      {imageReferenceNumber && (
+                        <span className="inline-flex min-w-0 items-center gap-1 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] text-amber-200 ring-1 ring-amber-300/20">
+                          <ImageIcon size={10} />
+                          <span>@image{imageReferenceNumber}</span>
+                        </span>
+                      )}
+                      {image && <span className="min-w-0 truncate rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-400">{image.name}</span>}
+                    </div>
+                    <div className="whitespace-pre-wrap text-sm leading-6 text-slate-200">
+                      {marker.prompt.trim() || <span className="text-slate-500">Untitled shot</span>}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
+              );
             })}
           </div>
         </div>
@@ -1029,6 +1074,7 @@ function MarkerInspector({
 
   const selectedImageGenerating = selectedImage?.generation?.status === 'generating';
   const selectedImageError = selectedImage?.generation?.status === 'error';
+  const outOfBounds = markerOutOfBounds(marker, durationSec);
   const selectedImageSubtitle = selectedImageGenerating
     ? `Generating${formatGenerationProgress(selectedImage)}`
     : selectedImageError
@@ -1051,13 +1097,20 @@ function MarkerInspector({
           <input
             type="number"
             min={0}
-            max={durationSec}
             step={0.1}
             value={Number(marker.timeSec.toFixed(1))}
             onChange={(event) => onUpdate(marker.id, { timeSec: Number(event.target.value) })}
-            className="rounded-md border border-surface-700 bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+            aria-invalid={outOfBounds ? 'true' : undefined}
+            className={`rounded-md border bg-surface-950 px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none ${
+              outOfBounds ? 'border-amber-400/50 focus:border-amber-300' : 'border-surface-700 focus:border-brand-400'
+            }`}
           />
         </label>
+        {outOfBounds && (
+          <div className="rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-amber-100">
+            This marker is outside the current {formatTime(durationSec)} sequence duration. It has not been moved.
+          </div>
+        )}
         <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           Shot Image
           <button
@@ -1591,9 +1644,9 @@ function normalizeSequence(sequence: SequenceAssetData, assets: MediaAsset[] = [
     const referenceAsset = marker.imageAssetId ? assetsById.get(marker.imageAssetId) : null;
     if (referenceAsset?.kind === 'character') {
       characterAssetIds.push(referenceAsset.id);
-      return { ...marker, imageAssetId: null, timeSec: clampTime(marker.timeSec, sequence.durationSec) };
+      return { ...marker, imageAssetId: null, timeSec: normalizeMarkerTime(marker.timeSec) };
     }
-    return { ...marker, timeSec: clampTime(marker.timeSec, sequence.durationSec) };
+    return { ...marker, timeSec: normalizeMarkerTime(marker.timeSec) };
   });
   return {
     ...sequence,
@@ -1827,6 +1880,15 @@ function bareCharacterToken(asset: MediaAsset): string | null {
 function clampTime(timeSec: number, durationSec: number): number {
   if (!Number.isFinite(timeSec)) return 0;
   return Math.max(0, Math.min(durationSec, Number(timeSec.toFixed(2))));
+}
+
+function normalizeMarkerTime(timeSec: number): number {
+  if (!Number.isFinite(timeSec)) return 0;
+  return Math.max(0, Number(timeSec.toFixed(2)));
+}
+
+function markerOutOfBounds(marker: SequenceMarker, durationSec: number): boolean {
+  return marker.timeSec > durationSec + 0.001;
 }
 
 function timeToX(timeSec: number, durationSec: number): number {
