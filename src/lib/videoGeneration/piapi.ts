@@ -6,6 +6,7 @@ import {
   PIAPI_SEEDANCE_2_MODEL_ID,
   PIAPI_VEO_FAST_MODEL_ID,
   PIAPI_VEO_STANDARD_MODEL_ID,
+  SEEDANCE_DURATIONS,
 } from '@/lib/videoModels/capabilities';
 import { classifyProviderErrorText, VideoGenerationProviderError } from './errors';
 import { assetsByRole, type VideoGenerationMutation } from './mutations';
@@ -391,7 +392,7 @@ function validatePiApiSeedanceMutation({
   sourceVideos: MediaAsset[];
   mutation: VideoGenerationMutation;
 }) {
-  assertWholeSecondDuration(mutation.config.durationSeconds, 'Seedance 2.0', 4, 15);
+  assertDurationOption(mutation.config.durationSeconds, 'Seedance 2.0', SEEDANCE_DURATIONS);
   if (startFrames.length > 1) throw new Error('Seedance accepts one start frame.');
   if (endFrames.length > 1) throw new Error('Seedance accepts one end frame.');
   if (endFrames.length > 0 && startFrames.length === 0) throw new Error('A Seedance end frame requires a start frame.');
@@ -413,6 +414,22 @@ function validatePiApiSeedanceMutation({
 function assertWholeSecondDuration(durationSeconds: number, label: string, min: number, max: number) {
   if (!Number.isSafeInteger(durationSeconds)) throw new Error(`${label} duration must be a whole number of seconds.`);
   if (durationSeconds < min || durationSeconds > max) throw new Error(`${label} duration must be between ${min} and ${max} seconds.`);
+}
+
+function assertDurationOption(durationSeconds: number, label: string, options: readonly string[]) {
+  if (!Number.isSafeInteger(durationSeconds)) throw new Error(`${label} duration must be a whole number of seconds.`);
+  const allowedSeconds = options
+    .map((duration) => Number(duration.replace(/s$/i, '')))
+    .filter((duration) => Number.isSafeInteger(duration));
+  if (!allowedSeconds.includes(durationSeconds)) {
+    throw new Error(`${label} duration must be ${formatList(allowedSeconds.map((duration) => `${duration}`))} seconds.`);
+  }
+}
+
+function formatList(items: string[]) {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} or ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
 }
 
 function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImageEntry[]): string {

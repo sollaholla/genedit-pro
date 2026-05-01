@@ -173,7 +173,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     return () => {
       mounted = false;
     };
-  }, [objectUrlFor, previewImage?.blobKey, previewImage?.editTrail?.activeIterationId, previewImage?.id]);
+  }, [objectUrlFor, previewImage]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

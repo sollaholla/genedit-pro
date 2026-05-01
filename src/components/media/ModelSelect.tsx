@@ -137,9 +137,7 @@ export function ModelSelect({
                 const resolutions = option.capabilities.resolutions;
                 const durations = option.capabilities.durations;
                 const topResolution = resolutions[resolutions.length - 1] ?? '';
-                const durationRange = durations.length > 1
-                  ? `${durations[0]}-${durations[durations.length - 1]}`
-                  : durations[0] ?? '';
+                const durationRange = formatDurationOptions(durations);
                 return (
                   <button
                     key={option.id}
@@ -184,6 +182,16 @@ export function ModelSelect({
       )}
     </div>
   );
+}
+
+function formatDurationOptions(durations: string[]) {
+  if (durations.length <= 1) return durations[0] ?? '';
+  const numericDurations = durations.map((duration) => Number(duration.replace(/s$/i, '')));
+  const isContinuous = numericDurations.every((duration, index) => (
+    Number.isFinite(duration) && (index === 0 || duration === numericDurations[index - 1]! + 1)
+  ));
+  if (isContinuous) return `${durations[0]}-${durations[durations.length - 1]}`;
+  return durations.join(', ');
 }
 
 function ProviderLogo({ model, size = 18 }: { model: VideoModelDefinition; size?: number }) {

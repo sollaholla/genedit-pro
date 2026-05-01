@@ -330,7 +330,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       .filter((a): a is MediaAsset => Boolean(a))
       .filter(isReferenceImageAsset);
     setReferences(referenceTokensForAssets(selectedRefAssets, `recipe-${initialRecipeAsset.id}-${Date.now()}`));
-  }, [open, initialRecipeAsset, assets]);
+  }, [open, initialRecipeAsset, initialSequenceAsset?.sequence, assets]);
 
   useEffect(() => {
     if (!open) {
@@ -374,7 +374,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       .map((assetId) => assets.find((asset) => asset.id === assetId && isReferenceImageAsset(asset)))
       .filter((asset): asset is MediaAsset => Boolean(asset));
     setReferences(referenceTokensForAssets(sequenceRefAssets, `sequence-${initialSequenceAsset.id}`));
-  }, [open, initialSequenceAsset, assets]);
+  }, [open, initialSequenceAsset, assets, models]);
 
   useEffect(() => {
     if (!isResolutionFeatureSupported(selectedModel, resolution) || !resolutionOptions.includes(resolution)) {

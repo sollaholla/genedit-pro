@@ -1242,7 +1242,8 @@ export function PreviewPlayer() {
 
     const timeSec = usePlaybackStore.getState().currentTimeSec;
     const clipsToWarm = new Map<string, Clip>();
-    for (const clip of preparedClipsForTime(project, timeSec)) clipsToWarm.set(clip.id, clip);
+    const warmProject = useProjectStore.getState().project;
+    for (const clip of preparedClipsForTime(warmProject, timeSec)) clipsToWarm.set(clip.id, clip);
     for (const clip of clipsToWarm.values()) {
       const asset = assetsById.get(clip.assetId);
       if (asset) ensureClipElement(clip, asset);
