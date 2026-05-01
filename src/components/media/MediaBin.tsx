@@ -83,6 +83,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
     () => (previewAssetId ? assets.find((asset) => asset.id === previewAssetId) ?? null : null),
     [assets, previewAssetId],
   );
+  const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets]);
   const assetsByFolder = useMemo(() => {
     const map = new Map<string | null, MediaAsset[]>();
     for (const asset of assets) {
@@ -302,6 +303,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
               <MediaTile
                 key={asset.id}
                 asset={asset}
+                assetsById={assetsById}
                 onDelete={() => removeAsset(asset.id)}
                 onRename={(name) => renameAsset(asset.id, name)}
                 onOpenEdit={() => {
@@ -874,6 +876,7 @@ function LightboxMedia({ asset, url }: { asset: MediaAsset; url: string }) {
 
 function MediaTile({
   asset,
+  assetsById,
   onDelete,
   onRename,
   onOpenEdit,
@@ -888,6 +891,7 @@ function MediaTile({
   tileRef,
 }: {
   asset: MediaAsset;
+  assetsById: Map<string, MediaAsset>;
   onDelete: () => void;
   onRename: (name: string) => void;
   onOpenEdit: () => void;
@@ -904,6 +908,7 @@ function MediaTile({
   const Icon = kindIcon[asset.kind];
   const nameParts = splitFilename(asset.name);
   const badgeLabel = assetBadgeLabel(asset);
+  const sequencePreviewAssets = useMemo(() => sequenceThumbnailAssets(asset, assetsById), [asset, assetsById]);
   const statusLabel = asset.generation?.status === 'generating'
       ? 'Generating'
       : asset.kind === 'video' || asset.kind === 'audio'
@@ -1065,7 +1070,9 @@ function MediaTile({
       title={asset.name}
     >
       <div className="relative aspect-video bg-surface-900">
-        {asset.thumbnailDataUrl ? (
+        {sequencePreviewAssets.length > 0 ? (
+          <SequenceThumbnailGrid assets={sequencePreviewAssets} />
+        ) : asset.thumbnailDataUrl ? (
           <img
             src={asset.thumbnailDataUrl}
             alt=""
@@ -1289,6 +1296,53 @@ function MediaTile({
       )}
     </li>
   );
+}
+
+function SequenceThumbnailGrid({ assets }: { assets: MediaAsset[] }) {
+  if (assets.length === 1) {
+    const asset = assets[0]!;
+    return (
+      <img
+        src={asset.thumbnailDataUrl}
+        alt=""
+        className="h-full w-full object-cover"
+        draggable={false}
+      />
+    );
+  }
+
+  return (
+    <div className="grid h-full w-full grid-cols-2 gap-px bg-surface-950">
+      {assets.slice(0, 4).map((asset) => (
+        <img
+          key={asset.id}
+          src={asset.thumbnailDataUrl}
+          alt=""
+          className="h-full w-full object-cover"
+          draggable={false}
+        />
+      ))}
+      {Array.from({ length: Math.max(0, 4 - assets.length) }).map((_, index) => (
+        <div key={index} className="bg-surface-950" />
+      ))}
+    </div>
+  );
+}
+
+function sequenceThumbnailAssets(asset: MediaAsset, assetsById: Map<string, MediaAsset>): MediaAsset[] {
+  if (asset.kind !== 'sequence' || !asset.sequence) return [];
+  const seen = new Set<string>();
+  const out: MediaAsset[] = [];
+  const sortedMarkers = [...asset.sequence.markers].sort((a, b) => a.timeSec - b.timeSec);
+  for (const marker of sortedMarkers) {
+    if (!marker.imageAssetId || seen.has(marker.imageAssetId)) continue;
+    const imageAsset = assetsById.get(marker.imageAssetId);
+    if (!imageAsset?.thumbnailDataUrl) continue;
+    seen.add(marker.imageAssetId);
+    out.push(imageAsset);
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 function splitFilename(name: string): { base: string; extension: string } {
