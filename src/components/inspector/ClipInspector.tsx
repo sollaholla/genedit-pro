@@ -1,12 +1,22 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Clapperboard, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, UserRound, Volume2, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { ArrowDown, ArrowUp, BookOpen, Box, Clapperboard, Contrast, Diamond, Eye, EyeOff, Film, GripVertical, Image as ImageIcon, Mountain, Music, Palette, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, UserRound, Volume2, X } from 'lucide-react';
 import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useMediaStore } from '@/state/mediaStore';
-import { clipFadeInSec, clipFadeOutSec, clipSpeed, clipTimelineDurationSec, setClipProp, withClampedClipFades } from '@/lib/timeline/operations';
+import {
+  clipFadeInSec,
+  clipFadeOutSec,
+  clipSpeed,
+  clipTimelineDurationSec,
+  setClipProp,
+  timelineAtPath,
+  timelineStartOffsetSec,
+  updateTimelineAtPath,
+  withClampedClipFades,
+} from '@/lib/timeline/operations';
 import { resetEnvelope, setEnvelopeEnabled } from '@/lib/timeline/envelope';
 import { formatTimecode } from '@/lib/timeline/geometry';
-import type { Clip, ColorCorrectionComponentData, ColorCorrectionComponentInstance, ColorWheelValue, ComponentInstance, TransformComponentInstance } from '@/types';
+import type { Clip, ColorCorrectionComponentData, ColorCorrectionComponentInstance, ColorWheelValue, ComponentInstance, Project, TransformComponentInstance } from '@/types';
 import {
   COLOR_CORRECTION_PRESETS,
   clampWheel,
@@ -25,7 +35,16 @@ import {
   type TransformProperty,
 } from '@/lib/components/transform';
 
-const kindIcon = { video: Film, audio: Music, image: ImageIcon, character: UserRound, recipe: BookOpen, sequence: Clapperboard };
+const kindIcon = {
+  video: Film,
+  audio: Music,
+  image: ImageIcon,
+  character: UserRound,
+  object: Box,
+  environment: Mountain,
+  recipe: BookOpen,
+  sequence: Clapperboard,
+};
 const SPEED_SLIDER_MIN = 0.25;
 const SPEED_SLIDER_MAX = 3;
 
@@ -34,6 +53,7 @@ function speedTickPercent(value: number): number {
 }
 
 type ProjectHistoryMode = 'normal' | 'silent';
+type ProjectUpdater = (fn: (project: Project) => Project) => void;
 
 function useProjectHistoryGesture() {
   const beginTx = useProjectStore((s) => s.beginTx);
@@ -62,6 +82,7 @@ export function ClipInspector() {
   const [focusedComponentId, setFocusedComponentId] = useState<string | null>(null);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
+  const activeGroupPath = usePlaybackStore((s) => s.activeGroupPath);
   const activeTransformComponentId = usePlaybackStore((s) => s.activeTransformComponentId);
   const setActiveTransformComponentId = usePlaybackStore((s) => s.setActiveTransformComponentId);
   const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
@@ -70,9 +91,17 @@ export function ClipInspector() {
   const hideKeyframeComponent = usePlaybackStore((s) => s.hideKeyframeComponent);
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
   const clipAudioLevel = usePlaybackStore((s) => (selectedId ? s.clipAudioLevels[selectedId] : undefined));
-  const project = useProjectStore((s) => s.project);
-  const update = useProjectStore((s) => s.update);
-  const updateSilent = useProjectStore((s) => s.updateSilent);
+  const rootProject = useProjectStore((s) => s.project);
+  const updateRoot = useProjectStore((s) => s.update);
+  const updateRootSilent = useProjectStore((s) => s.updateSilent);
+  const project = timelineAtPath(rootProject, activeGroupPath);
+  const timelineCurrentTime = Math.max(0, currentTime - timelineStartOffsetSec(rootProject, activeGroupPath));
+  const update = useCallback<ProjectUpdater>((fn) => {
+    updateRoot((root) => updateTimelineAtPath(root, activeGroupPath, fn));
+  }, [activeGroupPath, updateRoot]);
+  const updateSilent = useCallback<ProjectUpdater>((fn) => {
+    updateRootSilent((root) => updateTimelineAtPath(root, activeGroupPath, fn));
+  }, [activeGroupPath, updateRootSilent]);
   const assets = useMediaStore((s) => s.assets);
   const speedGesture = useProjectHistoryGesture();
   const clipVolumeGesture = useProjectHistoryGesture();
@@ -292,6 +321,7 @@ export function ClipInspector() {
             clipId={selectedId}
             enabled={envelopeEnabled}
             hasCustomEnvelope={hasCustomEnvelope}
+            updateProject={update}
           />
         </div>
       </Section>
@@ -470,7 +500,9 @@ export function ClipInspector() {
                 total={components.length}
                 clip={clip}
                 clipId={selectedId}
-                currentTime={currentTime}
+                currentTime={timelineCurrentTime}
+                updateProject={update}
+                updateProjectSilent={updateSilent}
                 keyframesVisible={visibleKeyframeComponentKeys.includes(keyframeComponentVisibilityKey(selectedId, component.id))}
                 dragProps={dragProps}
                 onFocus={() => {
@@ -505,6 +537,8 @@ function TransformComponentCard({
   clip,
   clipId,
   currentTime,
+  updateProject,
+  updateProjectSilent,
   keyframesVisible,
   dragProps,
   onFocus,
@@ -521,6 +555,8 @@ function TransformComponentCard({
   clip: Clip;
   clipId: string;
   currentTime: number;
+  updateProject: ProjectUpdater;
+  updateProjectSilent: ProjectUpdater;
   keyframesVisible: boolean;
   dragProps: ComponentDragProps;
   onFocus: () => void;
@@ -530,14 +566,12 @@ function TransformComponentCard({
   onToggleKeyframes: () => void;
   onShowKeyframes: () => void;
 }) {
-  const update = useProjectStore((s) => s.update);
-  const updateSilent = useProjectStore((s) => s.updateSilent);
   const { beginHistoryGesture, endHistoryGesture } = useProjectHistoryGesture();
   const resolvedTransform = resolveTransformComponentAtTime(clip, component, currentTime);
   const hasKeyframes = hasTransformKeyframes(component);
 
   const setPropertyAtPlayhead = (property: TransformProperty, value: number, mode: ProjectHistoryMode = 'normal') => {
-    const apply = mode === 'silent' ? updateSilent : update;
+    const apply = mode === 'silent' ? updateProjectSilent : updateProject;
     apply((p) => ({
       ...p,
       clips: p.clips.map((candidate) => (
@@ -550,7 +584,7 @@ function TransformComponentCard({
   };
 
   const addPropertyKeyframe = (property: TransformProperty) => {
-    update((p) => ({
+    updateProject((p) => ({
       ...p,
       clips: p.clips.map((candidate) => (
         candidate.id === clipId
@@ -1166,17 +1200,18 @@ function EnvelopeControls({
   clipId,
   enabled,
   hasCustomEnvelope,
+  updateProject,
 }: {
   clipId: string;
   enabled: boolean;
   hasCustomEnvelope: boolean;
+  updateProject: ProjectUpdater;
 }) {
-  const update = useProjectStore((s) => s.update);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
-  const toggle = () => update((p) => setEnvelopeEnabled(p, clipId, !enabled));
+  const toggle = () => updateProject((p) => setEnvelopeEnabled(p, clipId, !enabled));
   const doReset = () => {
-    update((p) => resetEnvelope(p, clipId));
+    updateProject((p) => resetEnvelope(p, clipId));
     setConfirmingReset(false);
   };
 

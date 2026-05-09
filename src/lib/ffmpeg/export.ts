@@ -7,6 +7,7 @@ import {
   clipOpacityAtTimelineTime,
   clipSpeed,
   clipTimelineDurationSec,
+  flattenTimeline,
   projectDurationSec,
 } from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
@@ -457,9 +458,10 @@ async function exportProjectInternal(
   const ffmpeg = await getFFmpeg();
 
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
-  const tracksById = new Map(project.tracks.map((track) => [track.id, track]));
+  const flattenedTimeline = flattenTimeline(project);
+  const tracksById = new Map(flattenedTimeline.tracks.map((track) => [track.id, track]));
   const sourceAssetsById = new Map<string, MediaAsset>();
-  for (const clip of project.clips) {
+  for (const clip of flattenedTimeline.clips) {
     const asset = assetById.get(clip.assetId);
     const track = tracksById.get(clip.trackId);
     if (asset && track) sourceAssetsById.set(asset.id, asset);
@@ -494,7 +496,7 @@ async function exportProjectInternal(
     const timelineInputs: TimelineInput[] = [];
     let nextInputIndex = 0;
 
-    for (const clip of project.clips) {
+    for (const clip of flattenedTimeline.clips) {
       const track = tracksById.get(clip.trackId);
       const asset = assetById.get(clip.assetId);
       if (!track || !asset) continue;

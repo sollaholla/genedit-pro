@@ -1,6 +1,8 @@
 import type { ImageModelDefinition } from '@/lib/imageModels/capabilities';
 import { GPT_IMAGE_1_5_MODEL_ID, GPT_IMAGE_2_PREVIEW_MODEL_ID } from '@/lib/imageModels/capabilities';
 import type { MediaAsset } from '@/types';
+import { referenceDataForAsset } from '@/lib/media/characterReferences';
+import { piApiUsageCostUsd, type PiApiUsage } from '@/lib/piapi/usage';
 import { classifyProviderErrorText, VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 
 export const PIAPI_IMAGE_ARTIFACT_TTL_MS = 48 * 60 * 60 * 1000;
@@ -25,6 +27,7 @@ export type ImageGenerationRequest = {
 export type GeneratedPiApiImage = {
   url: string;
   provider: string;
+  actualCostUsd?: number;
   providerTaskId?: string;
   providerTaskEndpoint?: string;
   providerTaskStatus?: string;
@@ -35,6 +38,9 @@ export type PiApiImageTaskData = {
   task_id?: string;
   status?: string;
   output?: Record<string, unknown> | null;
+  meta?: {
+    usage?: PiApiUsage | null;
+  } | null;
   task_result?: {
     task_output?: {
       image_url?: string;
@@ -201,6 +207,7 @@ async function generateGeminiImage(
   return {
     url: image.url,
     provider: 'piapi-gemini',
+    actualCostUsd: piApiUsageCostUsd(finalTask),
     providerTaskId: finalTask.task_id ?? initialTask.task_id,
     providerTaskEndpoint: `/api/v1/task/${finalTask.task_id ?? initialTask.task_id}`,
     providerTaskStatus: finalTask.status,
@@ -414,5 +421,5 @@ function isObject(value: unknown): value is Record<string, unknown> {
 export function activeCharacterReferenceFile(asset: MediaAsset, blob: Blob | null): File | null {
   if (!blob) return null;
   const extension = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : 'png';
-  return new File([blob], `${asset.character?.characterId ?? asset.id}.${extension}`, { type: blob.type || asset.mimeType || 'image/png' });
+  return new File([blob], `${referenceDataForAsset(asset)?.referenceId ?? asset.id}.${extension}`, { type: blob.type || asset.mimeType || 'image/png' });
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Clip, Project, Track } from '@/types';
-import { Plus, Scissors } from 'lucide-react';
+import { ChevronLeft, FolderInput, Plus, Scissors } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
   TRACK_HEADER_WIDTH_PX,
@@ -28,20 +28,31 @@ import {
   clipTimelineDurationSec,
   duplicateClip,
   extractAudioFromClip,
+  groupPathLabels,
+  groupTrackDurationSec,
+  groupTrackEndSec,
+  groupTracks,
   insertTrack,
   MIN_CLIP_DURATION,
   moveClip,
   moveClipsBy,
+  moveGroupTrackStart,
   moveTrack,
   pasteClipFrom,
   pasteClipsFrom,
   projectDurationSec,
   removeClip,
+  replaceClipAsset,
   sortedTracks,
   splitClipAt,
+  timelineAtPath,
+  timelineStartOffsetSec,
+  ungroupTrack,
+  updateTimelineAtPath,
   withClampedClipFades,
 } from '@/lib/timeline/operations';
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
+import { TrackContextMenu, type TrackMenuAction } from './TrackContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
 import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
 import { useKeyframeController } from './useKeyframeController';
@@ -72,7 +83,7 @@ type TimelineKeyframeLane = {
 };
 
 export function Timeline() {
-  const project = useProjectStore((s) => s.project);
+  const rootProject = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
   const updateSilent = useProjectStore((s) => s.updateSilent);
   const beginTx = useProjectStore((s) => s.beginTx);
@@ -84,10 +95,17 @@ export function Timeline() {
   const pxPerSec = usePlaybackStore((s) => s.pxPerSec);
   const setPxPerSec = usePlaybackStore((s) => s.setPxPerSec);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
+  const selectedTrackIds = usePlaybackStore((s) => s.selectedTrackIds);
+  const activeGroupPath = usePlaybackStore((s) => s.activeGroupPath);
   const selectClip = usePlaybackStore((s) => s.selectClip);
   const toggleClipSelection = usePlaybackStore((s) => s.toggleClipSelection);
   const setClipSelection = usePlaybackStore((s) => s.setClipSelection);
   const commitClipSelection = usePlaybackStore((s) => s.commitClipSelection);
+  const selectTrack = usePlaybackStore((s) => s.selectTrack);
+  const toggleTrackSelection = usePlaybackStore((s) => s.toggleTrackSelection);
+  const setTrackSelection = usePlaybackStore((s) => s.setTrackSelection);
+  const enterGroupTrack = usePlaybackStore((s) => s.enterGroupTrack);
+  const exitGroupTrack = usePlaybackStore((s) => s.exitGroupTrack);
   const visibleKeyframeComponentKeys = usePlaybackStore((s) => s.visibleKeyframeComponentKeys);
   const hideKeyframeComponents = usePlaybackStore((s) => s.hideKeyframeComponents);
   // Convenience: the single-selected clip ID (when exactly one is selected).
@@ -103,6 +121,7 @@ export function Timeline() {
   const [scrollTop, setScrollTop] = useState(0);
   const [dragOverlay, setDragOverlay] = useState<DragOverlay | null>(null);
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
+  const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; trackId: string } | null>(null);
   const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
@@ -111,6 +130,21 @@ export function Timeline() {
   const setClipboard = usePlaybackStore((s) => s.setClipboard);
   // A Set version for O(1) membership checks in the render path.
   const selectedSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
+  const selectedTrackSet = useMemo(() => new Set(selectedTrackIds), [selectedTrackIds]);
+
+  const project = useMemo(() => timelineAtPath(rootProject, activeGroupPath), [rootProject, activeGroupPath]);
+  const timelineOffsetSec = useMemo(() => timelineStartOffsetSec(rootProject, activeGroupPath), [rootProject, activeGroupPath]);
+  const localCurrentTime = Math.max(0, currentTime - timelineOffsetSec);
+  const breadcrumbLabels = useMemo(() => groupPathLabels(rootProject, activeGroupPath), [rootProject, activeGroupPath]);
+  const setLocalCurrentTime = useCallback((timeSec: number) => {
+    setCurrentTime(timeSec + timelineOffsetSec);
+  }, [setCurrentTime, timelineOffsetSec]);
+  const updateActive = useCallback((fn: (p: Project) => Project) => {
+    update((p) => updateTimelineAtPath(p, activeGroupPath, fn));
+  }, [activeGroupPath, update]);
+  const updateActiveSilent = useCallback((fn: (p: Project) => Project) => {
+    updateSilent((p) => updateTimelineAtPath(p, activeGroupPath, fn));
+  }, [activeGroupPath, updateSilent]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -167,18 +201,18 @@ export function Timeline() {
   } = useKeyframeController({
     clips: project.clips,
     selectedClip,
-    currentTimeSec: currentTime,
+    currentTimeSec: localCurrentTime,
     fps: project.fps,
     visibleKeyframeComponentKeys,
-    update,
-    updateSilent,
+    update: updateActive,
+    updateSilent: updateActiveSilent,
     beginTx,
-    setCurrentTime,
+    setCurrentTime: setLocalCurrentTime,
   });
 
   const snapTargets = useMemo(() => {
-    return buildSnapTargets(project.clips, currentTime);
-  }, [project.clips, currentTime]);
+    return buildSnapTargets(project, localCurrentTime);
+  }, [project, localCurrentTime]);
 
   const trackIndexFromContentY = useCallback((contentY: number) => {
     let y = RULER_HEIGHT_PX;
@@ -218,6 +252,17 @@ export function Timeline() {
     return () => el.removeEventListener('wheel', onWheel);
   }, [pxPerSec, setPxPerSec]);
 
+  const groupSelectedTracks = useCallback((trackIds: string[]): string | null => {
+    const selectedIds = new Set(trackIds);
+    const groupable = tracks.filter((track) => selectedIds.has(track.id));
+    if (groupable.length < 2) return null;
+    const groupTrackId = crypto.randomUUID?.().slice(0, 8) ?? `group-${Date.now().toString(36)}`;
+    const groupId = crypto.randomUUID?.().slice(0, 8) ?? `timeline-${Date.now().toString(36)}`;
+    updateActive((p) => groupTracks(p, groupable.map((track) => track.id), groupTrackId, groupId));
+    setTrackSelection([groupTrackId]);
+    return groupTrackId;
+  }, [setTrackSelection, tracks, updateActive]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -228,9 +273,18 @@ export function Timeline() {
 
       if (mod && key === 'a' && isTrackEditorHovered()) {
         e.preventDefault();
-        const allClipIds = useProjectStore.getState().project.clips.map((clip) => clip.id);
+        const allClipIds = project.clips.map((clip) => clip.id);
         setSelectedKeyframe(null);
         setClipSelection(allClipIds);
+        return;
+      }
+
+      if (mod && key === 'g') {
+        const selectedTracks = usePlaybackStore.getState().selectedTrackIds;
+        if (selectedTracks.length < 2) return;
+        e.preventDefault();
+        const groupTrackId = groupSelectedTracks(selectedTracks);
+        if (groupTrackId) selectTrack(groupTrackId);
         return;
       }
 
@@ -238,7 +292,7 @@ export function Timeline() {
         const selected = usePlaybackStore.getState().selectedClipIds;
         if (selected.length === 0) return;
         const idSet = new Set(selected);
-        const copied = useProjectStore.getState().project.clips
+        const copied = project.clips
           .filter((c) => idSet.has(c.id))
           .map((c) => ({
             ...c,
@@ -254,22 +308,22 @@ export function Timeline() {
         if (copied.length === 0) return;
         if (copied.length === 1) {
           const source = copied[0]!;
-          update((p) => pasteClipFrom(p, source, source.trackId, currentTime));
+          updateActive((p) => pasteClipFrom(p, source, source.trackId, localCurrentTime));
         } else {
-          update((p) => pasteClipsFrom(p, copied, currentTime));
+          updateActive((p) => pasteClipsFrom(p, copied, localCurrentTime));
         }
         return;
       }
       if (mod && key === 'd') {
         if (!selectedClipId) return;
         e.preventDefault();
-        update((p) => duplicateClip(p, selectedClipId));
+        updateActive((p) => duplicateClip(p, selectedClipId));
         return;
       }
 
       if (e.key === 's' || e.key === 'S') {
         if (!selectedClipId) return;
-        update((p) => splitClipAt(p, selectedClipId, currentTime));
+        updateActive((p) => splitClipAt(p, selectedClipId, localCurrentTime));
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedKeyframe) {
           e.preventDefault();
@@ -278,7 +332,7 @@ export function Timeline() {
         }
         const ids = usePlaybackStore.getState().selectedClipIds;
         if (ids.length === 0) return;
-        update((p) => ids.reduce((proj, id) => removeClip(proj, id), p));
+        updateActive((p) => ids.reduce((proj, id) => removeClip(proj, id), p));
         selectClip(null);
       } else if (e.key === 'Escape') {
         if (selectedKeyframe) {
@@ -296,7 +350,7 @@ export function Timeline() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedClipId, currentTime, update, selectClip, setClipSelection, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe, isTrackEditorHovered]);
+  }, [selectedClipId, localCurrentTime, project.clips, updateActive, selectClip, selectTrack, setClipSelection, setClipboard, selectedKeyframe, deleteSelectedKeyframe, setSelectedKeyframe, nudgeSelectedKeyframe, isTrackEditorHovered, groupSelectedTracks]);
 
   // ---- Clip right-click context menu ----
   const handleClipContextMenu = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -311,10 +365,10 @@ export function Timeline() {
     const { clipId } = clipMenu;
     switch (action) {
       case 'duplicate':
-        update((p) => duplicateClip(p, clipId));
+        updateActive((p) => duplicateClip(p, clipId));
         break;
       case 'copy': {
-        const source = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
+        const source = project.clips.find((c) => c.id === clipId);
         if (source) {
           const copied = {
             ...source,
@@ -330,11 +384,11 @@ export function Timeline() {
         setReplaceClipId(clipId);
         break;
       case 'delete':
-        update((p) => removeClip(p, clipId));
+        updateActive((p) => removeClip(p, clipId));
         if (selectedClipId === clipId) selectClip(null);
         break;
     }
-  }, [clipMenu, update, selectClip, selectedClipId, setClipboard]);
+  }, [clipMenu, project.clips, updateActive, selectClip, selectedClipId, setClipboard]);
 
   // ---- Clip body drag (cross-track) ----
   const handleClipBodyMouseDown = useCallback((clipId: string, e: React.MouseEvent) => {
@@ -354,7 +408,7 @@ export function Timeline() {
     const isGroupDrag = priorSelection.length > 1 && priorSelection.includes(clipId);
     if (!isGroupDrag) selectClip(clipId);
 
-    const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
+    const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
 
     const origStart = clip.startSec;
@@ -363,7 +417,7 @@ export function Timeline() {
     // The track the clip started on determines extraction eligibility.
     const origTrack = tracks.find((t) => t.id === origTrackId);
     const groupBounds = isGroupDrag
-      ? selectedClipBounds(useProjectStore.getState().project.clips.filter((candidate) => priorSelection.includes(candidate.id)))
+      ? selectedClipBounds(project.clips.filter((candidate) => priorSelection.includes(candidate.id)))
       : null;
 
     const startX = e.clientX;
@@ -398,11 +452,12 @@ export function Timeline() {
       // Audio extraction only applies when dragging FROM a video track TO an audio track.
       // A video-asset clip that is already on an audio track moves normally.
       const isAudioExtraction =
+        !targetTrack.group &&
         origTrack?.kind === 'video' &&
         sourceAsset?.kind === 'video' &&
         targetTrack.kind === 'audio';
       // Compatible = same kind of track, or audio extraction.
-      const compatible = isAudioExtraction || targetTrack.kind === origTrack?.kind;
+      const compatible = !targetTrack.group && (isAudioExtraction || targetTrack.kind === origTrack?.kind);
 
       if (isGroupDrag) {
         // Multi-selection drag: shift all selected clips by dt (time-only, no
@@ -417,25 +472,25 @@ export function Timeline() {
             ) - groupBounds.startSec
           : dt;
         ensureTx();
-        updateSilent((p) => moveClipsBy(p, priorSelection, snappedDelta));
+        updateActiveSilent((p) => moveClipsBy(p, priorSelection, snappedDelta));
         lastGhost = null;
         setDragOverlay(null);
       } else if (isAudioExtraction) {
         // Video stays put; show ghost on target audio track
         ensureTx();
-        updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
+        updateActiveSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         const ghost: DragOverlay = { clipId, ghostTrackIdx: trackIdx, isAudioExtraction: true };
         lastGhost = ghost;
         setDragOverlay(ghost);
       } else if (compatible) {
         ensureTx();
-        updateSilent((p) => moveClip(p, clipId, candidate, targetTrack.id));
+        updateActiveSilent((p) => moveClip(p, clipId, candidate, targetTrack.id));
         lastGhost = null;
         setDragOverlay(null);
       } else {
         // Incompatible — snap back to original
         ensureTx();
-        updateSilent((p) => moveClip(p, clipId, origStart, origTrackId));
+        updateActiveSilent((p) => moveClip(p, clipId, origStart, origTrackId));
         lastGhost = null;
         setDragOverlay(null);
       }
@@ -459,7 +514,7 @@ export function Timeline() {
       if (lastGhost?.isAudioExtraction && targetTrack?.kind === 'audio') {
         // Commit audio extraction as a normal history entry
         if (txStarted) cancelTx(); // cancel the beginTx snapshot (video never moved)
-        update((p) => extractAudioFromClip(p, clipId, targetTrack.id));
+        updateActive((p) => extractAudioFromClip(p, clipId, targetTrack.id));
       } else if (targetTrack && targetTrack.kind !== origTrack?.kind) {
         // Cross-kind drop that isn't an audio extraction — revert
         if (txStarted) cancelTx();
@@ -469,7 +524,7 @@ export function Timeline() {
 
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [tracks, pxPerSec, snapTargets, assetById, selectClip, toggleClipSelection, beginTx, cancelTx, update, updateSilent, trackIndexFromContentY]);
+  }, [project.clips, tracks, pxPerSec, snapTargets, assetById, selectClip, toggleClipSelection, beginTx, cancelTx, updateActive, updateActiveSilent, trackIndexFromContentY]);
 
   // ---- Clip trim ----
   const handleClipTrimMouseDown = useCallback((clipId: string, side: ClipDragSide, e: React.MouseEvent) => {
@@ -479,7 +534,7 @@ export function Timeline() {
     pause();
     selectClip(clipId);
 
-    const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
+    const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
     const sourceAsset = assetById.get(clip.assetId);
     const maxSourceSec = sourceAsset?.durationSec;
@@ -489,8 +544,8 @@ export function Timeline() {
     const origEnd = clip.startSec + clipTimelineDurationSec(clip);
     const editingFade = e.shiftKey;
     const origFade = side === 'l' ? clipFadeInSec(clip) : clipFadeOutSec(clip);
-    const trimSnapTargets = buildSnapTargets(useProjectStore.getState().project.clips, undefined, new Set([clipId]));
-    setCurrentTime(editingFade
+    const trimSnapTargets = buildSnapTargets(project, undefined, new Set([clipId]));
+    setLocalCurrentTime(editingFade
       ? fadePreviewTimeForClip(clip, side, origFade, project.fps)
       : trimPreviewTimeForClip(clip, side, project.fps));
     let txStarted = false;
@@ -508,7 +563,7 @@ export function Timeline() {
       if (editingFade) {
         const nextFadeSec = side === 'l' ? origFade + dt : origFade - dt;
         ensureTx();
-        updateSilent((p) => {
+        updateActiveSilent((p) => {
           const next = setClipFadeFromBaseline(p, clip, side, nextFadeSec);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
           if (nextClip) {
@@ -521,14 +576,14 @@ export function Timeline() {
           }
           return next;
         });
-        setCurrentTime(previewTime);
+        setLocalCurrentTime(previewTime);
         return;
       }
       if (side === 'l') {
         const candidate = Math.max(0, origStart + dt);
         const snapped = ev.altKey ? candidate : snapTime(candidate, trimSnapTargets, pxPerSec, SNAP_TOLERANCE_PX);
         ensureTx();
-        updateSilent((p) => {
+        updateActiveSilent((p) => {
           const next = trimClipLeftFromBaseline(p, clip, snapped);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
           if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
@@ -538,14 +593,14 @@ export function Timeline() {
         const candidate = origEnd + dt;
         const snapped = ev.altKey ? candidate : snapTime(candidate, trimSnapTargets, pxPerSec, SNAP_TOLERANCE_PX);
         ensureTx();
-        updateSilent((p) => {
+        updateActiveSilent((p) => {
           const next = trimClipRightFromBaseline(p, clip, snapped, maxSourceSec);
           const nextClip = next.clips.find((candidate) => candidate.id === clipId);
           if (nextClip) previewTime = trimPreviewTimeForClip(nextClip, side, project.fps);
           return next;
         });
       }
-      setCurrentTime(previewTime);
+      setLocalCurrentTime(previewTime);
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
@@ -553,14 +608,14 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [assetById, pause, project.fps, pxPerSec, selectClip, beginTx, setCurrentTime, updateSilent]);
+  }, [assetById, pause, project, pxPerSec, selectClip, beginTx, setLocalCurrentTime, updateActiveSilent]);
 
   // ---- Asset drop from media bin ----
   const handleDropAsset = useCallback((trackId: string, assetId: string, startSec: number) => {
     const asset = assetById.get(assetId);
     if (!asset) return;
-    update((p) => addClip(p, asset, trackId, startSec));
-  }, [assetById, update]);
+    updateActive((p) => addClip(p, asset, trackId, startSec));
+  }, [assetById, updateActive]);
 
   // ---- Marquee selection from empty track area ----
   const handleEmptyMouseDown = useCallback((e: React.MouseEvent) => {
@@ -582,6 +637,7 @@ export function Timeline() {
       if (!additive) selectKeyframes([]);
     } else {
       setSelectedKeyframe(null);
+      if (!additive) setTrackSelection([]);
       if (!additive) setClipSelection([], { silent: true });
     }
 
@@ -612,7 +668,7 @@ export function Timeline() {
       const idxStart = trackIndexFromContentY(y0);
       const idxEnd = trackIndexFromContentY(y1);
       const hitIds = new Set(clipBaseline);
-      for (const clip of useProjectStore.getState().project.clips) {
+      for (const clip of project.clips) {
         const trackIdx = tracks.findIndex((t) => t.id === clip.trackId);
         if (trackIdx < idxStart || trackIdx > idxEnd) continue;
         const clipEnd = clip.startSec + clipTimelineDurationSec(clip);
@@ -629,7 +685,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [commitClipSelection, keyframeLanesByTrack, project.fps, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, trackIndexFromContentY, tracks]);
+  }, [commitClipSelection, keyframeLanesByTrack, project, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, setTrackSelection, trackIndexFromContentY, tracks]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -642,9 +698,96 @@ export function Timeline() {
   const replaceClip = replaceClipId ? project.clips.find((c) => c.id === replaceClipId) : null;
   const replaceAssetKind = replaceClip ? assetById.get(replaceClip.assetId)?.kind : undefined;
 
+  const handleTrackSelect = useCallback((trackId: string, event: React.MouseEvent) => {
+    setSelectedKeyframe(null);
+    if (event.metaKey || event.ctrlKey) {
+      toggleTrackSelection(trackId);
+      return;
+    }
+    if (event.shiftKey && selectedTrackIds.length > 0) {
+      const lastSelected = selectedTrackIds[selectedTrackIds.length - 1]!;
+      const from = tracks.findIndex((track) => track.id === lastSelected);
+      const to = tracks.findIndex((track) => track.id === trackId);
+      if (from >= 0 && to >= 0) {
+        const [start, end] = from < to ? [from, to] : [to, from];
+        setTrackSelection(tracks.slice(start, end + 1).map((track) => track.id));
+        return;
+      }
+    }
+    selectTrack(trackId);
+  }, [selectTrack, selectedTrackIds, setSelectedKeyframe, setTrackSelection, toggleTrackSelection, tracks]);
+
+  const handleTrackContextMenu = useCallback((trackId: string, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedTrackSet.has(trackId)) selectTrack(trackId);
+    setTrackMenu({ x: event.clientX, y: event.clientY, trackId });
+  }, [selectTrack, selectedTrackSet]);
+
+  const handleTrackMenuAction = useCallback((action: TrackMenuAction) => {
+    if (!trackMenu) return;
+    const menuTrackId = trackMenu.trackId;
+    if (action === 'group') {
+      const ids = selectedTrackSet.has(menuTrackId) ? selectedTrackIds : [menuTrackId];
+      const groupTrackId = groupSelectedTracks(ids);
+      if (groupTrackId) selectTrack(groupTrackId);
+      return;
+    }
+    if (action === 'enter-group') {
+      const track = project.tracks.find((candidate) => candidate.id === menuTrackId);
+      if (track?.group) enterGroupTrack(menuTrackId);
+      return;
+    }
+    if (action === 'ungroup') {
+      updateActive((p) => ungroupTrack(p, menuTrackId));
+      setTrackSelection([]);
+    }
+  }, [enterGroupTrack, groupSelectedTracks, project.tracks, selectTrack, selectedTrackIds, selectedTrackSet, setTrackSelection, trackMenu, updateActive]);
+
+  const handleGroupTrackMouseDown = useCallback((trackId: string, e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleTrackSelect(trackId, e);
+    if (e.metaKey || e.ctrlKey) return;
+
+    const track = project.tracks.find((candidate) => candidate.id === trackId);
+    if (!track?.group) return;
+    const startX = e.clientX;
+    const origStart = track.group.startSec;
+    const durationSec = groupTrackDurationSec(track);
+    const groupSnapTargets = buildSnapTargets(project, localCurrentTime, new Set(), new Set([trackId]));
+    let txStarted = false;
+    const ensureTx = () => {
+      if (txStarted) return;
+      beginTx();
+      txStarted = true;
+    };
+
+    const move = (ev: MouseEvent) => {
+      const dt = pxToTime(ev.clientX - startX, pxPerSec);
+      const candidate = Math.max(0, origStart + dt);
+      const snapped = ev.altKey
+        ? candidate
+        : snapMovedClipStartOrEnd(candidate, durationSec, groupSnapTargets, pxPerSec);
+      ensureTx();
+      updateActiveSilent((p) => moveGroupTrackStart(p, trackId, snapped));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [beginTx, handleTrackSelect, localCurrentTime, project, pxPerSec, updateActiveSilent]);
+
+  const handleGroupTrackContextMenu = useCallback((trackId: string, e: React.MouseEvent) => {
+    handleTrackContextMenu(trackId, e);
+  }, [handleTrackContextMenu]);
+
   const handleTrackDrop = useCallback(() => {
     if (!dragTrackId || !trackDropTarget) return;
-    const ordered = sortedTracks(useProjectStore.getState().project);
+    const ordered = sortedTracks(project);
     const from = ordered.findIndex((t) => t.id === dragTrackId);
     const target = ordered.findIndex((t) => t.id === trackDropTarget.trackId);
     if (from < 0 || target < 0 || from === target) {
@@ -658,10 +801,10 @@ export function Timeline() {
     } else if (from > target) {
       to = target + 1;
     }
-    update((p) => moveTrack(p, dragTrackId, to));
+    updateActive((p) => moveTrack(p, dragTrackId, to));
     setDragTrackId(null);
     setTrackDropTarget(null);
-  }, [dragTrackId, trackDropTarget, update]);
+  }, [dragTrackId, project, trackDropTarget, updateActive]);
 
   const hideTrackKeyframes = useCallback((trackId: string) => {
     const lanes = keyframeLanesByTrack.get(trackId) ?? [];
@@ -704,19 +847,44 @@ export function Timeline() {
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-surface-700 px-3 py-1.5">
         <div className="flex shrink-0 items-center gap-2">
+          {activeGroupPath.length > 0 && (
+            <button
+              className="btn-ghost px-2 py-1 text-xs"
+              onClick={exitGroupTrack}
+              title="Back to parent timeline"
+            >
+              <ChevronLeft size={12} /> Back
+            </button>
+          )}
           <TrackCreateMenu
-            onVideo={() => update((p) => addTrack(p, 'video'))}
-            onAudio={() => update((p) => addTrack(p, 'audio'))}
+            onVideo={() => updateActive((p) => addTrack(p, 'video'))}
+            onAudio={() => updateActive((p) => addTrack(p, 'audio'))}
           />
           <button
             className="btn-ghost px-2 py-1 text-xs disabled:opacity-50"
+            disabled={selectedTrackIds.length < 2}
+            onClick={() => {
+              const groupTrackId = groupSelectedTracks(selectedTrackIds);
+              if (groupTrackId) selectTrack(groupTrackId);
+            }}
+            title={`Group selected tracks (${MOD}+G)`}
+          >
+            <FolderInput size={12} /> Group
+          </button>
+          <button
+            className="btn-ghost px-2 py-1 text-xs disabled:opacity-50"
             disabled={!selectedClipId}
-            onClick={() => selectedClipId && update((p) => splitClipAt(p, selectedClipId, currentTime))}
+            onClick={() => selectedClipId && updateActive((p) => splitClipAt(p, selectedClipId, localCurrentTime))}
             title="Split at playhead (S)"
           >
             <Scissors size={12} /> Split
           </button>
         </div>
+        {breadcrumbLabels.length > 0 && (
+          <div className="min-w-0 flex-1 truncate px-2 text-center text-[11px] text-slate-400">
+            Root / {breadcrumbLabels.join(' / ')}
+          </div>
+        )}
         <ShortcutHints />
       </div>
       <div className="flex min-h-0 flex-1">
@@ -733,6 +901,7 @@ export function Timeline() {
                     isDragging={dragTrackId === t.id}
                     showDropBefore={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'before'}
                     showDropAfter={trackDropTarget?.trackId === t.id && trackDropTarget.position === 'after'}
+                    selected={selectedTrackSet.has(t.id)}
                     onDragStart={() => {
                       setDragTrackId(t.id);
                       setTrackDropTarget(null);
@@ -746,14 +915,19 @@ export function Timeline() {
                       setDragTrackId(null);
                       setTrackDropTarget(null);
                     }}
-                    onInsertVideoBelow={() => update((p) => insertTrack(p, 'video', t.index + 1))}
-                    onInsertAudioBelow={() => update((p) => insertTrack(p, 'audio', t.index + 1))}
+                    onSelect={(event) => handleTrackSelect(t.id, event)}
+                    onContextMenu={(event) => handleTrackContextMenu(t.id, event)}
+                    onEnterGroup={() => {
+                      if (t.group) enterGroupTrack(t.id);
+                    }}
+                    onInsertVideoBelow={() => updateActive((p) => insertTrack(p, 'video', t.index + 1))}
+                    onInsertAudioBelow={() => updateActive((p) => insertTrack(p, 'audio', t.index + 1))}
                   />
                   {(keyframeLanesByTrack.get(t.id) ?? []).map((lane, index) => (
                     <KeyframeSidebarLane
                       key={`h-keyframes-${lane.clip.id}`}
                       clip={lane.clip}
-                      currentTimeSec={currentTime}
+                      currentTimeSec={localCurrentTime}
                       rows={lane.rows}
                       showTitle={index === 0}
                       onHideTrackKeyframes={() => hideTrackKeyframes(t.id)}
@@ -784,7 +958,8 @@ export function Timeline() {
               durationSec={durationSec}
               viewportWidth={viewportWidth}
               scrollLeft={scrollLeft}
-              onScrub={setCurrentTime}
+              clips={project.clips}
+              onScrub={setLocalCurrentTime}
             />
             <div>
               {tracks.map((track) => (
@@ -794,11 +969,15 @@ export function Timeline() {
                     clips={project.clips.filter((c) => c.trackId === track.id)}
                     pxPerSec={pxPerSec}
                     selectedClipIds={selectedSet}
+                    selectedTrackIds={selectedTrackSet}
                     contentWidth={contentWidth}
                     onDropAsset={handleDropAsset}
                     onClipBodyMouseDown={handleClipBodyMouseDown}
                     onClipTrimMouseDown={handleClipTrimMouseDown}
                     onClipContextMenu={handleClipContextMenu}
+                    onGroupTrackMouseDown={handleGroupTrackMouseDown}
+                    onGroupTrackDoubleClick={(trackId) => enterGroupTrack(trackId)}
+                    onGroupTrackContextMenu={handleGroupTrackContextMenu}
                     onEmptyMouseDown={handleEmptyMouseDown}
                   />
                   {(keyframeLanesByTrack.get(track.id) ?? []).map((lane) => (
@@ -853,7 +1032,7 @@ export function Timeline() {
             )}
 
             <Playhead
-              timeSec={currentTime}
+              timeSec={localCurrentTime}
               pxPerSec={pxPerSec}
               height={RULER_HEIGHT_PX + tracks.length * TRACK_HEIGHT_PX + keyframeLaneHeight}
               offsetLeft={0}
@@ -871,10 +1050,25 @@ export function Timeline() {
         />
       )}
 
+      {trackMenu && (
+        <TrackContextMenu
+          x={trackMenu.x}
+          y={trackMenu.y}
+          canGroup={(selectedTrackSet.has(trackMenu.trackId) ? selectedTrackIds.length : 1) >= 2}
+          canEnterGroup={Boolean(project.tracks.find((track) => track.id === trackMenu.trackId)?.group)}
+          canUngroup={Boolean(project.tracks.find((track) => track.id === trackMenu.trackId)?.group)}
+          onPick={handleTrackMenuAction}
+          onClose={() => setTrackMenu(null)}
+        />
+      )}
+
       {replaceClip && replaceAssetKind && (
         <ReplaceClipDialog
           clip={replaceClip}
           requiredKind={replaceAssetKind}
+          onReplace={(assetId, inSec, outSec) => {
+            updateActive((p) => replaceClipAsset(p, replaceClip.id, assetId, inSec, outSec));
+          }}
           onClose={() => setReplaceClipId(null)}
         />
       )}
@@ -903,13 +1097,23 @@ function fadePreviewTimeForClip(clip: Clip, side: ClipDragSide, fadeSec: number,
   return clip.startSec + Math.max(0, durationSec - Math.max(frameDuration, clampedFade));
 }
 
-function buildSnapTargets(clips: Clip[], currentTime?: number, excludedClipIds = new Set<string>()): number[] {
+function buildSnapTargets(
+  project: Project,
+  currentTime?: number,
+  excludedClipIds = new Set<string>(),
+  excludedGroupTrackIds = new Set<string>(),
+): number[] {
   const targets = new Set<number>([0]);
   if (currentTime !== undefined) targets.add(currentTime);
-  for (const clip of clips) {
+  for (const clip of project.clips) {
     if (excludedClipIds.has(clip.id)) continue;
     targets.add(clip.startSec);
     targets.add(clip.startSec + clipTimelineDurationSec(clip));
+  }
+  for (const track of project.tracks) {
+    if (!track.group || excludedGroupTrackIds.has(track.id)) continue;
+    targets.add(track.group.startSec);
+    targets.add(groupTrackEndSec(track));
   }
   return [...targets];
 }
@@ -1223,6 +1427,7 @@ function ShortcutHints() {
       <Hint keys={[MOD, 'Z']} label="undo" />
       <Hint keys={[MOD, IS_MAC ? '⇧' : 'Shift', 'Z']} label="redo" />
       <Hint keys={[MOD, 'A']} label="select all" />
+      <Hint keys={[MOD, 'G']} label="group tracks" />
       <Hint keys={[ALT, '↕ drag']} label="change track" />
     </div>
   );

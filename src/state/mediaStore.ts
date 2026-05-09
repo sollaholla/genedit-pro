@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { CharacterAssetData, EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, MediaKind, SequenceAssetData } from '@/types';
+import type { CharacterAssetData, EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, MediaKind, ReferenceAssetData, SequenceAssetData } from '@/types';
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
-import { isImageLikeAsset } from '@/lib/media/characterReferences';
+import { isImageLikeAsset, isReferenceAssetKind, referenceDataForAsset } from '@/lib/media/characterReferences';
 import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
@@ -17,10 +17,11 @@ const PROJECT_MEDIA_PREFIX = 'genedit-pro:projects:media:';
 export type MediaFolder = { id: string; name: string };
 
 type GeneratedAssetOptions = {
-  kind?: Extract<MediaKind, 'video' | 'image' | 'character'>;
+  kind?: Extract<MediaKind, 'video' | 'image' | 'character' | 'object' | 'environment'>;
   mimeType?: string;
   durationSec?: number;
   character?: CharacterAssetData;
+  reference?: ReferenceAssetData;
 };
 
 type GeneratedEditTrailMetadata = {
@@ -36,6 +37,7 @@ type GeneratedEditTrailMetadata = {
   providerArtifactUri?: string;
   providerArtifactExpiresAt?: number;
   character?: Partial<CharacterAssetData>;
+  reference?: Partial<ReferenceAssetData>;
 };
 
 function projectAssetsKey(projectId: string): string {
@@ -167,6 +169,7 @@ type MediaState = {
     },
   ) => void;
   updateCharacterAsset: (id: string, patch: Partial<CharacterAssetData>) => void;
+  updateReferenceAsset: (id: string, patch: Partial<ReferenceAssetData>) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
   createSequenceAsset: (folderId?: string | null) => string;
   updateSequenceAsset: (id: string, sequence: SequenceAssetData) => void;
@@ -212,6 +215,7 @@ function activeBlobKey(asset: MediaAsset): string {
 
 function originalIterationFor(asset: MediaAsset): EditTrailIteration {
   const generated = asset.generation?.status === 'done' ? asset.generation : null;
+  const reference = referenceDataForAsset(asset);
   return {
     id: nanoid(10),
     label: generated ? 'Generated 1' : 'Original',
@@ -224,8 +228,8 @@ function originalIterationFor(asset: MediaAsset): EditTrailIteration {
     durationSec: asset.durationSec,
     transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
     generation: generated ? {
-      prompt: asset.character?.generatedPrompt ?? asset.character?.prompt ?? asset.recipe?.prompt,
-      model: asset.character?.model ?? asset.recipe?.model,
+      prompt: reference?.generatedPrompt ?? reference?.prompt ?? asset.recipe?.prompt,
+      model: reference?.model ?? asset.recipe?.model,
       estimatedCostUsd: generated.estimatedCostUsd,
       actualCostUsd: generated.actualCostUsd,
       provider: generated.provider,
@@ -270,17 +274,17 @@ function canUseEditTrail(asset: MediaAsset): boolean {
   return isImageLikeAsset(asset) || asset.kind === 'video';
 }
 
-function defaultGeneratedMimeType(kind: Extract<MediaKind, 'video' | 'image' | 'character'>): string {
+function defaultGeneratedMimeType(kind: Extract<MediaKind, 'video' | 'image' | 'character' | 'object' | 'environment'>): string {
   if (kind === 'video') return 'video/mp4';
   return 'image/png';
 }
 
-function defaultGeneratedDuration(kind: Extract<MediaKind, 'video' | 'image' | 'character'>): number {
+function defaultGeneratedDuration(kind: Extract<MediaKind, 'video' | 'image' | 'character' | 'object' | 'environment'>): number {
   return kind === 'video' ? 8 : 5;
 }
 
 function displayKindAfterProbe(existing: MediaAsset | undefined, probedKind: MediaKind): MediaKind {
-  if (existing?.kind === 'character') return 'character';
+  if (existing && isReferenceAssetKind(existing.kind)) return existing.kind;
   return probedKind;
 }
 
@@ -604,6 +608,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       generation: { status: 'generating' as const, progress: 0, estimatedCostUsd },
       recipe,
       character: options.character,
+      reference: options.reference,
       createdAt: Date.now(),
     };
     const next = [...get().assets, asset];
@@ -664,9 +669,9 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     updateAssetsForProject(get, set, projectId, (assets) => assets.map((a) => (a.id === id
       ? {
           ...a,
-          name: a.kind === 'character' ? a.name : file.name,
+          name: isReferenceAssetKind(a.kind) ? a.name : file.name,
           kind: displayKind,
-          durationSec: displayKind === 'character' ? 5 : probed.durationSec || a.durationSec,
+          durationSec: isReferenceAssetKind(displayKind) ? 5 : probed.durationSec || a.durationSec,
           width: probed.width,
           height: probed.height,
           mimeType: file.type || a.mimeType,
@@ -718,7 +723,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       mimeType: file.type || asset.mimeType,
       width: probed.width ?? asset.width,
       height: probed.height ?? asset.height,
-      durationSec: asset.kind === 'character' ? 5 : probed.durationSec || asset.durationSec,
+      durationSec: isReferenceAssetKind(asset.kind) ? 5 : probed.durationSec || asset.durationSec,
       transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
       generation: {
         prompt: metadata.prompt,
@@ -755,7 +760,16 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             updatedAt: now,
           }
         : undefined;
-      return applyIterationToAsset({ ...trailed, editTrail, character: nextCharacter }, iteration);
+      const nextReference = item.reference
+        ? {
+            ...item.reference,
+            ...metadata.reference,
+            prompt: metadata.reference?.prompt ?? metadata.prompt ?? item.reference.prompt,
+            model: metadata.reference?.model ?? metadata.model ?? item.reference.model,
+            updatedAt: now,
+          }
+        : undefined;
+      return applyIterationToAsset({ ...trailed, editTrail, character: nextCharacter, reference: nextReference }, iteration);
     }));
     accountGenerationCost(projectId, actualCostUsd);
   },
@@ -785,6 +799,21 @@ export const useMediaStore = create<MediaState>((set, get) => ({
           ...asset,
           character: {
             ...asset.character,
+            ...patch,
+            updatedAt: Date.now(),
+          },
+        }
+      : asset));
+    saveAssets(next, get().activeProjectId);
+    set({ assets: next });
+  },
+
+  updateReferenceAsset: (id, patch) => {
+    const next = get().assets.map((asset) => (asset.id === id && asset.reference
+      ? {
+          ...asset,
+          reference: {
+            ...asset.reference,
             ...patch,
             updatedAt: Date.now(),
           },

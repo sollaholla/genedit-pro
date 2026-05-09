@@ -126,11 +126,34 @@ function normalizeProject(input: Project): Project {
       ? storedGenerationSpend
       : legacyGenerationSpendFromStoredAssets(),
   };
-  parsed.tracks = parsed.tracks.map((t, i) => ({
-    ...t,
-    name: (t as { name?: string }).name ?? `${t.kind === 'video' ? 'Video' : 'Audio'} ${i + 1}`,
-  }));
-  parsed.clips = parsed.clips.map((c) => ops.withClampedClipFades({
+  parsed.tracks = parsed.tracks.map((t, i) => normalizeTrack(t, i));
+  parsed.clips = parsed.clips.map((c) => normalizeClip(c));
+  return parsed;
+}
+
+function normalizeTrack(input: Project['tracks'][number], index: number): Project['tracks'][number] {
+  const kind = input.kind === 'audio' ? 'audio' : 'video';
+  const groupInput = input.group;
+  return {
+    ...input,
+    kind,
+    index,
+    name: input.name ?? `${kind === 'video' ? 'Video' : 'Audio'} ${index + 1}`,
+    muted: Boolean(input.muted),
+    hidden: Boolean(input.hidden),
+    group: groupInput && Array.isArray(groupInput.tracks) && Array.isArray(groupInput.clips)
+      ? {
+        id: groupInput.id || nanoid(8),
+        startSec: Number.isFinite(groupInput.startSec) ? Math.max(0, groupInput.startSec) : 0,
+        tracks: groupInput.tracks.map((track, childIndex) => normalizeTrack(track, childIndex)),
+        clips: groupInput.clips.map((clip) => normalizeClip(clip)),
+      }
+      : undefined,
+  };
+}
+
+function normalizeClip(c: Project['clips'][number]): Project['clips'][number] {
+  return ops.withClampedClipFades({
     ...c,
     volume: (c as { volume?: number }).volume ?? 1,
     speed: (c as { speed?: number }).speed ?? 1,
@@ -197,8 +220,7 @@ function normalizeProject(input: Project): Project {
         },
       }] as ComponentInstance[];
     })(),
-  }));
-  return parsed;
+  });
 }
 
 function loadLegacyProject(): Project {
@@ -510,7 +532,10 @@ function legacyGenerationSpendFromStoredAssets(): number {
       };
     }>;
     const total = assets.reduce((sum, asset) => {
-      if ((asset.kind !== 'video' && asset.kind !== 'image' && asset.kind !== 'character') || asset.generation?.status !== 'done') return sum;
+      if (
+        (asset.kind !== 'video' && asset.kind !== 'image' && asset.kind !== 'character' && asset.kind !== 'object' && asset.kind !== 'environment') ||
+        asset.generation?.status !== 'done'
+      ) return sum;
       const cost = asset.generation.actualCostUsd ?? asset.generation.estimatedCostUsd ?? 0;
       return Number.isFinite(cost) ? sum + cost : sum;
     }, 0);

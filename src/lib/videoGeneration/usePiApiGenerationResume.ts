@@ -5,6 +5,7 @@ import {
   PIAPI_VEO_API_KEY_STORAGE,
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
+import { piApiUsageCostUsd } from '@/lib/piapi/usage';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset } from '@/types';
 import { downloadGeneratedVideoFile } from './download';
@@ -82,7 +83,7 @@ async function resumePiApiImageGeneration(asset: MediaAsset, apiKey: string): Pr
       useMediaStore.getState().updateGenerationProgress(asset.id, progress);
     });
     await useMediaStore.getState().finalizeGeneratedAssetWithBlob(asset.id, file, {
-      actualCostUsd: generation?.actualCostUsd ?? generation?.estimatedCostUsd,
+      actualCostUsd: piApiUsageCostUsd(task) ?? generation?.actualCostUsd ?? generation?.estimatedCostUsd,
       provider: 'piapi-gemini',
       providerArtifactUri: generatedImage.url,
       providerArtifactExpiresAt: Date.now() + PIAPI_IMAGE_ARTIFACT_TTL_MS,
@@ -124,7 +125,7 @@ async function resumePiApiGeneration(asset: MediaAsset, apiKey: string): Promise
       useMediaStore.getState().updateGenerationProgress(asset.id, progress);
     });
     await useMediaStore.getState().finalizeGeneratedAssetWithBlob(asset.id, file, {
-      actualCostUsd: generation?.actualCostUsd ?? generation?.estimatedCostUsd,
+      actualCostUsd: piApiUsageCostUsd(task) ?? generation?.actualCostUsd ?? generation?.estimatedCostUsd,
       provider: 'piapi',
       providerArtifactUri: generatedVideo.url,
       providerArtifactExpiresAt: Date.now() + PIAPI_ARTIFACT_TTL_MS,

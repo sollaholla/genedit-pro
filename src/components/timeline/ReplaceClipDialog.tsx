@@ -9,10 +9,11 @@ import { formatTimecode } from '@/lib/timeline/geometry';
 type Props = {
   clip: Clip;
   requiredKind: MediaKind;
+  onReplace?: (assetId: string, inSec: number, outSec: number) => void;
   onClose: () => void;
 };
 
-export function ReplaceClipDialog({ clip, requiredKind, onClose }: Props) {
+export function ReplaceClipDialog({ clip, requiredKind, onReplace, onClose }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
   const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
@@ -67,7 +68,8 @@ export function ReplaceClipDialog({ clip, requiredKind, onClose }: Props) {
 
   const apply = () => {
     if (!picked) return;
-    update((p) => replaceClipAsset(p, clip.id, picked.id, inSec, outSec));
+    if (onReplace) onReplace(picked.id, inSec, outSec);
+    else update((p) => replaceClipAsset(p, clip.id, picked.id, inSec, outSec));
     onClose();
   };
 

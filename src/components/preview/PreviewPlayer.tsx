@@ -6,7 +6,16 @@ import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { resolveFrame, type ActiveLayer } from '@/lib/playback/engine';
 import type { Clip, MediaAsset, Project } from '@/types';
-import { clipOpacityAtTimelineTime, clipSpeed, clipTimelineDurationSec, projectDurationSec } from '@/lib/timeline/operations';
+import {
+  clipOpacityAtTimelineTime,
+  clipSpeed,
+  clipTimelineDurationSec,
+  flattenTimeline,
+  projectDurationSec,
+  timelineAtPath,
+  timelineStartOffsetSec,
+  updateTimelineAtPath,
+} from '@/lib/timeline/operations';
 import { evalEnvelopeAt } from '@/lib/timeline/envelope';
 import { activeEditTransform } from '@/lib/media/editTrail';
 import { getBlob } from '@/lib/media/storage';
@@ -155,11 +164,23 @@ function clipEndSec(clip: Clip): number {
 }
 
 function previewTopologySignature(project: Project): string {
-  const tracks = [...project.tracks]
+  const flattened = flattenTimeline(project);
+  const rootTracks = [...project.tracks]
     .sort((first, second) => first.index - second.index)
-    .map((track) => [track.id, track.kind, track.index, track.hidden ? 1 : 0, track.muted ? 1 : 0].join(':'))
+    .map((track) => [
+      track.id,
+      track.kind,
+      track.index,
+      track.hidden ? 1 : 0,
+      track.muted ? 1 : 0,
+      track.group?.startSec.toFixed(6) ?? '',
+    ].join(':'))
     .join(',');
-  const clips = [...project.clips]
+  const tracks = [...flattened.tracks]
+    .sort((first, second) => first.index - second.index)
+    .map((track) => [track.id, track.kind, track.index.toFixed(6), track.hidden ? 1 : 0, track.muted ? 1 : 0].join(':'))
+    .join(',');
+  const clips = [...flattened.clips]
     .sort((first, second) => first.id.localeCompare(second.id))
     .map((clip) => [
       clip.id,
@@ -171,7 +192,7 @@ function previewTopologySignature(project: Project): string {
       (clip.speed ?? 1).toFixed(6),
     ].join(':'))
     .join(',');
-  return `${tracks}|${clips}`;
+  return `${rootTracks}|${tracks}|${clips}`;
 }
 
 function clipIntersectsWindow(clip: Clip, startSec: number, endSec: number): boolean {
@@ -191,7 +212,7 @@ function preparedClipsForTime(project: Project, timeSec: number): Clip[] {
   const requiredIds = new Set<string>();
   for (const layer of [...activeFrame.videos, ...activeFrame.audios]) requiredIds.add(layer.clip.id);
 
-  const candidates = project.clips
+  const candidates = flattenTimeline(project).clips
     .filter((clip) => clipIntersectsWindow(clip, timeSec - PREPARE_BACKWARD_SEC, timeSec + PREPARE_FORWARD_SEC))
     .map((clip) => ({ clip, score: preparedClipScore(clip, timeSec, requiredIds.has(clip.id)) }))
     .sort((first, second) => first.score - second.score);
@@ -563,6 +584,7 @@ export function PreviewPlayer() {
   const assets = useMediaStore((s) => s.assets);
   const currentTime = usePlaybackStore((s) => s.currentTimeSec);
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
+  const activeGroupPath = usePlaybackStore((s) => s.activeGroupPath);
   const setCurrentTime = usePlaybackStore((s) => s.setCurrentTime);
   const pause = usePlaybackStore((s) => s.pause);
   const updateSilent = useProjectStore((s) => s.updateSilent);
@@ -1036,7 +1058,8 @@ export function PreviewPlayer() {
           ownsUrl = true;
           urlCache.current.set(mediaKey, url);
         }
-        const latestClip = useProjectStore.getState().project.clips.find((candidate) => candidate.id === clip.id);
+        const latestProject = useProjectStore.getState().project;
+        const latestClip = flattenTimeline(latestProject).clips.find((candidate) => candidate.id === clip.id);
         const latestAsset = assetsRef.current.find((candidate) => candidate.id === asset.id);
         const latestTimeSec = usePlaybackStore.getState().currentTimeSec;
         if (
@@ -1044,7 +1067,7 @@ export function PreviewPlayer() {
           !latestAsset ||
           latestClip.assetId !== asset.id ||
           latestAsset.blobKey !== asset.blobKey ||
-          !preparedClipsForTime(useProjectStore.getState().project, latestTimeSec).some((candidate) => candidate.id === latestClip.id)
+          !preparedClipsForTime(latestProject, latestTimeSec).some((candidate) => candidate.id === latestClip.id)
         ) {
           if (ownsUrl && urlCache.current.get(mediaKey) === url) {
             URL.revokeObjectURL(url);
@@ -1060,7 +1083,8 @@ export function PreviewPlayer() {
   }, [attachClipElement]);
 
   const pruneMediaElements = useCallback((projectToPrune: Project, timeSec: number, nowMs: number) => {
-    const clipsById = new Map(projectToPrune.clips.map((clip) => [clip.id, clip]));
+    const flattened = flattenTimeline(projectToPrune);
+    const clipsById = new Map(flattened.clips.map((clip) => [clip.id, clip]));
     const keepIds = new Set<string>();
     for (const clip of preparedClipsForTime(projectToPrune, timeSec)) keepIds.add(clip.id);
     const currentPoolIds = new Set([
@@ -1141,13 +1165,16 @@ export function PreviewPlayer() {
     const selectedId = selectedClipIds[0]!;
     const frame = resolveFrame(project, currentTime);
     if (frame.video?.clip.id !== selectedId || getTransformComponents(frame.video.clip).length === 0) return;
+    const activeTimeline = timelineAtPath(project, activeGroupPath);
+    const activeOffsetSec = timelineStartOffsetSec(project, activeGroupPath);
+    const localCurrentTime = Math.max(0, currentTime - activeOffsetSec);
     const stage = previewStageRef.current;
     if (!stage) return;
 
     const onDown = (event: Event) => {
       const e = event as MouseEvent;
       if (e.button !== 0) return;
-      const clip = useProjectStore.getState().project.clips.find((c) => c.id === selectedId);
+      const clip = activeTimeline.clips.find((c) => c.id === selectedId);
       if (!clip) return;
       const components = getTransformComponents(clip);
       if (components.length === 0) return;
@@ -1155,7 +1182,7 @@ export function PreviewPlayer() {
       if (!active) return;
       const startX = e.clientX;
       const startY = e.clientY;
-      const resolved = resolveTransformComponentAtTime(clip, active, currentTime);
+      const resolved = resolveTransformComponentAtTime(clip, active, localCurrentTime);
       const baseX = resolved.offsetX;
       const baseY = resolved.offsetY;
       const pixelScale = previewPixelScale(previewStageRef.current, useProjectStore.getState().project);
@@ -1166,17 +1193,17 @@ export function PreviewPlayer() {
         const dy = (ev.clientY - startY) / pixelScale;
         const nextX = baseX + dx;
         const nextY = baseY + dy;
-        updateSilent((p) => ({
-          ...p,
-          clips: p.clips.map((c) => (c.id === selectedId
+        updateSilent((p) => updateTimelineAtPath(p, activeGroupPath, (timeline) => ({
+          ...timeline,
+          clips: timeline.clips.map((c) => (c.id === selectedId
             ? setTransformPropertyAtTime(
-              setTransformPropertyAtTime(c, { componentId: active.id, property: 'offsetX' }, currentTime, nextX),
+              setTransformPropertyAtTime(c, { componentId: active.id, property: 'offsetX' }, localCurrentTime, nextX),
               { componentId: active.id, property: 'offsetY' },
-              currentTime,
+              localCurrentTime,
               nextY,
             )
             : c)),
-        }));
+        })));
       };
       const onUp = () => {
         window.removeEventListener('mousemove', onMove);
@@ -1192,18 +1219,19 @@ export function PreviewPlayer() {
       stage.removeEventListener('mousedown', onDown);
       stage.style.cursor = '';
     };
-  }, [project, currentTime, selectedClipIds, updateSilent, beginTx, activeTransformComponentId]);
+  }, [project, currentTime, selectedClipIds, updateSilent, beginTx, activeTransformComponentId, activeGroupPath]);
 
   // Reconcile the lazy media pools. Elements are created on demand for the
   // active/preroll window so dense chopped timelines do not exhaust decoders.
   useEffect(() => {
     const assetsById = new Map(assets.map((a) => [a.id, a]));
-    const knownClipIds = new Set(project.clips.map((clip) => clip.id));
+    const flattened = flattenTimeline(project);
+    const knownClipIds = new Set(flattened.clips.map((clip) => clip.id));
 
     const wantedVideoClipIds = new Set<string>();
     const wantedImageClipIds = new Set<string>();
     const wantedAudioClipIds = new Set<string>();
-    for (const clip of project.clips) {
+    for (const clip of flattened.clips) {
       const asset = assetsById.get(clip.assetId);
       if (!asset) continue;
       if (asset.kind === 'image') wantedImageClipIds.add(clip.id);
@@ -1249,7 +1277,7 @@ export function PreviewPlayer() {
       if (asset) ensureClipElement(clip, asset);
     }
     setReady(true);
-  }, [assets, ensureClipElement, project.clips, removeAudioElement, removeClipElements, removeImageElement, removeVideoElement]);
+  }, [assets, ensureClipElement, project, removeAudioElement, removeClipElements, removeImageElement, removeVideoElement]);
 
   // Main RAF loop.
   useEffect(() => {
@@ -1343,7 +1371,8 @@ export function PreviewPlayer() {
 
       // ---- VIDEO DISPLAY ----
       const visualLayers = visualFrame.videos;
-      const tracksById = new Map(proj.tracks.map((track) => [track.id, track]));
+      const flattenedTimeline = flattenTimeline(proj);
+      const tracksById = new Map(flattenedTimeline.tracks.map((track) => [track.id, track]));
       const activeVisualLayersByClipId = new Map(visualLayers.map((layer) => [layer.clip.id, layer]));
       const activeVisualAssetsByClipId = new Map<string, MediaAsset>();
       for (const layer of visualLayers) {
@@ -1505,7 +1534,7 @@ export function PreviewPlayer() {
 
       // Reset preroll markers for clips that moved out of the lookahead window.
       for (const id of prerolledRef.current) {
-        const c = proj.clips.find((cl) => cl.id === id);
+        const c = flattenedTimeline.clips.find((cl) => cl.id === id);
         if (!c || !preparedClipIds.has(id) || t > c.startSec) {
           prerolledRef.current.delete(id);
         }
@@ -1513,7 +1542,7 @@ export function PreviewPlayer() {
       // Reset hot-prime alignment markers when a clip moves past handoff or far
       // away (e.g. user scrubbed backward into the pre-hot-prime range).
       for (const id of hotPrimedSeekRef.current) {
-        const c = proj.clips.find((cl) => cl.id === id);
+        const c = flattenedTimeline.clips.find((cl) => cl.id === id);
         if (!c || t >= c.startSec || c.startSec - t > HOT_PRIMING_SEC + 0.1) {
           hotPrimedSeekRef.current.delete(id);
         }
@@ -1785,7 +1814,7 @@ export function PreviewPlayer() {
         >
           <svg aria-hidden className="pointer-events-none absolute h-0 w-0" focusable="false">
             <defs>
-              {project.clips.map((clip) => (
+              {flattenTimeline(project).clips.map((clip) => (
                 <ColorCorrectionFilterDef
                   key={clip.id}
                   clip={clip}

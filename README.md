@@ -67,7 +67,7 @@ GenEdit Pro is designed so the editor does not become the gatekeeper of your wor
 
 ## Cost-Aware AI Generation
 
-The generation modal estimates cost before dispatch and project summaries roll completed generation spend into the project browser. Pricing changes over time, but the app currently uses these PiAPI estimate rates:
+The generation modal estimates cost before dispatch and project summaries roll completed generation spend into the project browser. Completed PiAPI task spend is recorded from PiAPI's reported task usage when available; the table below is the preflight estimate only:
 
 | Model | Typical inputs | Estimate logic in app |
 | --- | --- | --- |

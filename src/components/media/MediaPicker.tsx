@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Film, Image as ImageIcon, Search, Upload, UserRound, X } from 'lucide-react';
-import { isReferenceImageAsset } from '@/lib/media/characterReferences';
+import { Box, Film, Image as ImageIcon, Mountain, Search, Upload, UserRound, X } from 'lucide-react';
+import { isReferenceAssetKind, isReferenceImageAsset, referenceDataForAsset } from '@/lib/media/characterReferences';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset } from '@/types';
 import { isPiApiKlingModel, isPiApiSeedanceModel, type VideoModelDefinition } from '@/lib/videoModels/capabilities';
@@ -39,7 +39,7 @@ export function MediaPicker({
   const [sortKey, setSortKey] = useState<SortKey>('recent');
   const visibleAssets = useMemo(() => {
     if (pickerMode === 'reference') {
-      return assets.filter((asset) => isReferenceImageAsset(asset) && (allowCharacterReferences || asset.kind !== 'character'));
+      return assets.filter((asset) => isReferenceImageAsset(asset) && (allowCharacterReferences || !isReferenceAssetKind(asset.kind)));
     }
     if (pickerMode === 'source-video') {
       return assets.filter((asset) => selectedModel ? isSourceVideoReferenceValid(selectedModel, asset) : asset.kind === 'video');
@@ -55,8 +55,8 @@ export function MediaPicker({
           asset.name,
           asset.kind,
           asset.mimeType,
-          asset.character?.characterId,
-          asset.character?.description,
+          referenceDataForAsset(asset)?.referenceId,
+          referenceDataForAsset(asset)?.description,
           `${asset.width ?? ''}x${asset.height ?? ''}`,
         ].join(' ').toLowerCase().includes(q);
       })
@@ -68,7 +68,7 @@ export function MediaPicker({
   }, [query, sortKey, visibleAssets]);
   const resolvedHelperText = helperText ?? (pickerMode === 'reference'
     ? allowCharacterReferences
-      ? 'Choose image or character references supported by the selected model.'
+      ? 'Choose image, character, object, or environment references supported by the selected model.'
       : 'Choose image references from media or import new images.'
     : pickerMode === 'source-video'
       ? 'Choose one video reference.'
@@ -138,7 +138,7 @@ function MediaPickerAssetTile({
   const isVideo = asset.kind === 'video';
 
   useEffect(() => {
-    if (asset.kind !== 'image' && asset.kind !== 'character') {
+    if (asset.kind !== 'image' && !isReferenceAssetKind(asset.kind)) {
       setImagePreviewUrl(null);
       return;
     }
@@ -213,7 +213,7 @@ function MediaPickerAssetTile({
         />
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-950 text-slate-500">
-          {isVideo ? <Film size={26} /> : asset.kind === 'character' ? <UserRound size={26} /> : <ImageIcon size={26} />}
+          {isVideo ? <Film size={26} /> : <PickerAssetIcon asset={asset} />}
           <span className="text-[11px] uppercase tracking-[0.18em]">{asset.kind}</span>
         </div>
       )}
@@ -265,6 +265,8 @@ function SortPills({
 
 function mediaAssetBadgeLabel(asset: MediaAsset): string {
   if (asset.kind === 'character') return 'character';
+  if (asset.kind === 'object') return 'object';
+  if (asset.kind === 'environment') return 'environment';
   const trimmed = asset.name.trim();
   const lastDot = trimmed.lastIndexOf('.');
   if (lastDot > 0 && lastDot < trimmed.length - 1) return trimmed.slice(lastDot + 1);
@@ -273,6 +275,13 @@ function mediaAssetBadgeLabel(asset: MediaAsset): string {
   if (subtype === 'jpeg') return 'jpg';
   if (subtype === 'mpeg') return 'mp3';
   return subtype;
+}
+
+function PickerAssetIcon({ asset }: { asset: MediaAsset }) {
+  if (asset.kind === 'character') return <UserRound size={26} />;
+  if (asset.kind === 'object') return <Box size={26} />;
+  if (asset.kind === 'environment') return <Mountain size={26} />;
+  return <ImageIcon size={26} />;
 }
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {

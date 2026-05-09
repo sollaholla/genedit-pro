@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import { MediaBin } from '@/components/media/MediaBin';
 import { ClipInspector } from '@/components/inspector/ClipInspector';
 import { usePlaybackStore } from '@/state/playbackStore';
-import type { MediaAsset } from '@/types';
+import type { MediaAsset, ReferenceAssetKind } from '@/types';
 
 type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
-  onCreateCharacter: (folderId: string | null) => void;
-  onOpenCharacter: (asset: MediaAsset) => void;
+  onCreateReference: (kind: ReferenceAssetKind, folderId: string | null) => void;
+  onOpenReference: (asset: MediaAsset) => void;
   onOpenRecipe: (asset: MediaAsset) => void;
   onGenerateFromSequence: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
@@ -16,7 +16,7 @@ type Props = {
 
 type Tab = 'media' | 'inspector';
 
-export function LeftPanel({ onImportClick, onGenerateClick, onCreateCharacter, onOpenCharacter, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
+export function LeftPanel({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
   const [tab, setTab] = useState<Tab>('media');
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const hasSelection = selectedClipIds.length > 0;
@@ -43,8 +43,8 @@ export function LeftPanel({ onImportClick, onGenerateClick, onCreateCharacter, o
           <MediaBin
             onImportClick={onImportClick}
             onGenerateClick={onGenerateClick}
-            onCreateCharacter={onCreateCharacter}
-            onOpenCharacter={onOpenCharacter}
+            onCreateReference={onCreateReference}
+            onOpenReference={onOpenReference}
             onOpenRecipe={onOpenRecipe}
             onGenerateFromSequence={onGenerateFromSequence}
             highlightedAssetId={highlightedAssetId}

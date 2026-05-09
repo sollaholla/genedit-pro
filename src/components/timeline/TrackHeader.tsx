@@ -1,5 +1,6 @@
-import { Eye, EyeOff, GripVertical, Plus, Trash2, Volume2, VolumeX } from 'lucide-react';
+import { Eye, EyeOff, FolderOpen, GripVertical, Plus, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { Track } from '@/types';
 import { TRACK_HEIGHT_PX } from '@/lib/timeline/geometry';
 import { useProjectStore } from '@/state/projectStore';
@@ -11,10 +12,14 @@ type Props = {
   isDragging: boolean;
   showDropBefore: boolean;
   showDropAfter: boolean;
+  selected: boolean;
   onDragStart: () => void;
   onDragOver: (position: 'before' | 'after') => void;
   onDrop: () => void;
   onDragEnd: () => void;
+  onSelect: (event: ReactMouseEvent) => void;
+  onContextMenu: (event: ReactMouseEvent) => void;
+  onEnterGroup: () => void;
   onInsertVideoBelow: () => void;
   onInsertAudioBelow: () => void;
 };
@@ -25,10 +30,14 @@ export function TrackHeader({
   isDragging,
   showDropBefore,
   showDropAfter,
+  selected,
   onDragStart,
   onDragOver,
   onDrop,
   onDragEnd,
+  onSelect,
+  onContextMenu,
+  onEnterGroup,
   onInsertVideoBelow,
   onInsertAudioBelow,
 }: Props) {
@@ -58,9 +67,25 @@ export function TrackHeader({
     <div
       className={`relative flex shrink-0 flex-col justify-between border-b border-surface-800 border-r border-r-surface-700 bg-surface-900 px-2 py-1 text-[11px] ${
         isDragging ? 'opacity-50' : ''
+      } ${
+        selected ? 'ring-1 ring-inset ring-brand-400' : ''
       }`}
       style={{ height: TRACK_HEIGHT_PX }}
       draggable
+      onClick={(event) => {
+        const target = event.target as HTMLElement;
+        if (target.closest('button,input,[role="menu"]')) return;
+        onSelect(event);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onContextMenu(event);
+      }}
+      onDoubleClick={(event) => {
+        const target = event.target as HTMLElement;
+        if (!track.group || target.closest('button,input,[role="menu"]')) return;
+        onEnterGroup();
+      }}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = 'move';
         onDragStart();
@@ -113,7 +138,16 @@ export function TrackHeader({
               type="button"
               className="truncate text-left hover:text-white"
               title="Rename track"
-              onDoubleClick={() => {
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(event);
+              }}
+              onDoubleClick={(event) => {
+                if (track.group) {
+                  event.stopPropagation();
+                  onEnterGroup();
+                  return;
+                }
                 setDraftName(track.name);
                 setEditingName(true);
               }}
@@ -138,6 +172,15 @@ export function TrackHeader({
               onClick={() => update((p) => setTrackProp(p, track.id, 'muted', !track.muted))}
             >
               {track.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
+            </button>
+          )}
+          {track.group && (
+            <button
+              className="rounded p-0.5 text-slate-400 hover:bg-surface-700 hover:text-slate-200"
+              title="Open group"
+              onClick={onEnterGroup}
+            >
+              <FolderOpen size={12} />
             </button>
           )}
           <button

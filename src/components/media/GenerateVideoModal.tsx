@@ -29,7 +29,8 @@ import {
 } from '@/lib/settings/connectionStorage';
 import { decryptSecret } from '@/lib/settings/crypto';
 import { composeSequencePrompt, sequenceReferenceAssetIds, sortedSequenceMarkers } from '@/lib/media/sequence';
-import { characterTokenForAsset, isReferenceImageAsset, resolveCharacterReferences } from '@/lib/media/characterReferences';
+import { isReferenceAssetKind, isReferenceImageAsset, referenceDataForAsset, referenceTokenForAsset as referenceTokenForAssetMetadata, resolvePromptReferences } from '@/lib/media/characterReferences';
+import { piApiUsageCostUsd } from '@/lib/piapi/usage';
 import { isBillingErrorText, VideoGenerationProviderError, type GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { hostLitterboxReference } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
@@ -84,7 +85,7 @@ type RefToken = {
   token: string;
   assetId: string;
   name: string;
-  kind: 'image' | 'character' | 'video' | 'audio';
+  kind: 'image' | 'character' | 'object' | 'environment' | 'video' | 'audio';
   thumbnail?: string;
 };
 
@@ -198,16 +199,16 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const activePrompt = promptMode === 'structured' ? structuredPromptText : prompt;
   const structuredPromptSupported = structuredSections.length > 0;
   const audioLockedOn = isAudioLockedOnModel(selectedModel);
-  const promptCharacterReferences = useMemo(() => resolveCharacterReferences(activePrompt, assets), [activePrompt, assets]);
+  const promptReferenceAssets = useMemo(() => resolvePromptReferences(activePrompt, assets), [activePrompt, assets]);
   const explicitReferenceAssets = useMemo(() => references
     .map((ref) => assets.find((asset) => asset.id === ref.assetId))
     .filter((asset): asset is MediaAsset => asset !== undefined)
     .filter(isReferenceImageAsset), [assets, references]);
   const referenceImageAssets = useMemo(() => {
     const frameAssetIds = new Set([startFrame?.id, endFrame?.id].filter((id): id is string => Boolean(id)));
-    return uniqueReferenceAssets([...explicitReferenceAssets, ...promptCharacterReferences])
+    return uniqueReferenceAssets([...explicitReferenceAssets, ...promptReferenceAssets])
       .filter((asset) => !frameAssetIds.has(asset.id));
-  }, [endFrame?.id, explicitReferenceAssets, promptCharacterReferences, startFrame?.id]);
+  }, [endFrame?.id, explicitReferenceAssets, promptReferenceAssets, startFrame?.id]);
   const activeReferenceCount = referenceImageAssets.length;
   const referencesIgnoredByFrameMode = Boolean(isVeoModel(selectedModel) && (startFrame || endFrame) && activeReferenceCount > 0);
   const referencesIgnoredByVideoMode = Boolean(isVeoModel(selectedModel) && sourceVideo && activeReferenceCount > 0);
@@ -352,8 +353,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const sequence = initialSequenceAsset.sequence;
     const imageAssetIds = new Set(assets.filter(isReferenceImageAsset).map((asset) => asset.id));
     const characterTokensByAssetId = new Map(assets
-      .filter((asset) => asset.kind === 'character' && asset.character?.characterId)
-      .map((asset) => [asset.id, asset.character!.characterId]));
+      .filter((asset) => asset.kind === 'character' && referenceDataForAsset(asset)?.referenceId)
+      .map((asset) => [asset.id, referenceDataForAsset(asset)!.referenceId]));
     const sequenceModel = models.find((candidate) => candidate.id === sequence.model) ?? DEFAULT_VIDEO_MODELS.find((candidate) => candidate.id === sequence.model);
     const sequenceStartFrame = sequenceModel?.capabilities.assetInputs.startFrame
       ? startFrameAssetForSequence(sequence, assets)
@@ -434,9 +435,9 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     ...(sourceVideoToken ? [{ key: sourceVideoToken.id, label: '@video1', action: () => insertToken('@video1') }] : []),
     ...references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) })),
     ...assets
-      .filter((asset) => asset.kind === 'character' && asset.character?.characterId && asset.generation?.status !== 'generating')
+      .filter((asset) => isReferenceAssetKind(asset.kind) && referenceTokenForAssetMetadata(asset) && asset.generation?.status !== 'generating')
       .map((asset) => {
-        const token = characterTokenForAsset(asset) ?? '';
+        const token = referenceTokenForAssetMetadata(asset) ?? '';
         return { key: asset.id, label: token, action: () => insertToken(token) };
       }),
   ];
@@ -449,13 +450,14 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const out = new Map<string, RefToken | 'start' | 'end'>();
     for (const ref of references) out.set(ref.token.toLowerCase(), ref);
     for (const asset of assets) {
-      if (asset.kind !== 'character' || !asset.character?.characterId || asset.generation?.status === 'generating') continue;
-      out.set(asset.character.characterId.toLowerCase(), {
+      const reference = referenceDataForAsset(asset);
+      if (!reference || !isReferenceAssetKind(asset.kind) || asset.generation?.status === 'generating') continue;
+      out.set(reference.referenceId.toLowerCase(), {
         id: asset.id,
-        token: asset.character.characterId,
+        token: reference.referenceId,
         assetId: asset.id,
         name: asset.name,
-        kind: 'character',
+        kind: asset.kind,
         thumbnail: asset.thumbnailDataUrl,
       });
     }
@@ -535,9 +537,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     if (references.length >= imageReferenceLimit) return;
     const kind = asset.kind as RefToken['kind'];
     const countForKind = references.filter((r) => r.kind === kind).length;
-    const token = asset.kind === 'character'
-      ? asset.character?.characterId ?? buildToken(kind, countForKind)
-      : buildToken(kind, countForKind);
+    const token = referenceTokenForAssetMetadata(asset)?.replace(/^@/, '') ?? buildToken(kind, countForKind);
     const entry: RefToken = {
       id: `${asset.id}-${Date.now()}`,
       token,
@@ -628,6 +628,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     }
     setIsGenerating(true);
     const generationCostUsd = estimatedCostUsd || undefined;
+    let actualCostUsd = generationCostUsd;
     const generationRecipe = buildCurrentRecipe();
     const id = addGeneratedAsset(
       `Generating_${Date.now()}.mp4`,
@@ -687,6 +688,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
         initialTask,
         onProgress: (progress) => updateGenerationProgress(id, progress),
       });
+      actualCostUsd = piApiUsageCostUsd(finalTask) ?? generationCostUsd;
       updateGenerationTask(id, {
         provider: 'piapi',
         providerTaskId: finalTask.task_id ?? initialTask.task_id,
@@ -698,7 +700,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
       const file = await downloadGeneratedVideoFile(generatedVideo.url, (progress) => updateGenerationProgress(id, progress));
       await finalizeGeneratedAssetWithBlob(id, file, {
-        actualCostUsd: generationCostUsd,
+        actualCostUsd,
         provider: 'piapi',
         providerArtifactUri: generatedVideo.url,
         providerArtifactExpiresAt: Date.now() + PIAPI_ARTIFACT_TTL_MS,
@@ -706,7 +708,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     } catch (err) {
       const message = formatGenerationError(err);
       failGeneratedAsset(id, {
-        actualCostUsd: generationCostUsd,
+        actualCostUsd,
         errorMessage: message,
         errorType: generationErrorType(err),
       });
@@ -1349,7 +1351,8 @@ function formatShortDate(timestamp: number) {
 }
 
 function referenceTokenForAsset(asset: MediaAsset, index: number): string {
-  if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
+  const referenceToken = referenceTokenForAssetMetadata(asset);
+  if (referenceToken) return referenceToken.replace(/^@/, '');
   return `image${index + 1}`;
 }
 

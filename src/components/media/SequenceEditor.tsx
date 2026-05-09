@@ -413,7 +413,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         }, { apiKey });
         const file = await downloadGeneratedImageFile(result.url, (progress) => updateGenerationProgress(generatedAssetId, progress));
         await finalizeGeneratedAssetWithBlob(generatedAssetId, file, {
-          actualCostUsd: estimatedCostUsd,
+          actualCostUsd: result.actualCostUsd ?? estimatedCostUsd,
           provider: result.provider,
           providerArtifactUri: result.url,
           providerArtifactExpiresAt: result.providerArtifactExpiresAt,

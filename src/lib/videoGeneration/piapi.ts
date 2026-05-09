@@ -1,5 +1,6 @@
 import type { MediaAsset } from '@/types';
-import { isImageLikeAsset } from '@/lib/media/characterReferences';
+import { isImageLikeAsset, referenceTokenForAsset } from '@/lib/media/characterReferences';
+import type { PiApiUsage } from '@/lib/piapi/usage';
 import {
   PIAPI_KLING_3_OMNI_MODEL_ID,
   PIAPI_SEEDANCE_2_FAST_MODEL_ID,
@@ -33,6 +34,9 @@ export type PiApiTaskData = {
   task_id?: string;
   status?: string;
   output?: Record<string, unknown> | null;
+  meta?: {
+    usage?: PiApiUsage | null;
+  } | null;
   error?: {
     code?: number | string;
     message?: string;
@@ -449,7 +453,8 @@ function rewriteSeedancePromptReferences(prompt: string, imageEntries: PiApiImag
 }
 
 function promptTokenForReferenceAsset(asset: MediaAsset, counts: Map<string, number>): string {
-  if (asset.kind === 'character' && asset.character?.characterId) return asset.character.characterId;
+  const referenceToken = referenceTokenForAsset(asset);
+  if (referenceToken) return referenceToken.replace(/^@/, '');
   const count = counts.get('image') ?? 0;
   counts.set('image', count + 1);
   return `image${count + 1}`;

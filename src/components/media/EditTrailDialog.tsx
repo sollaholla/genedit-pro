@@ -129,18 +129,13 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="flex h-[min(760px,92vh)] w-[min(1120px,96vw)] overflow-hidden rounded-xl border border-white/12 bg-[#0b1020] text-slate-100 shadow-2xl">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/20">
-          <div className="border-b border-white/10 px-3 py-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Edit Trail</div>
-                <div className="truncate text-sm font-semibold text-slate-100">{asset.name}</div>
-              </div>
-              <button className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-slate-100" onClick={onClose} title="Close" aria-label="Close">
-                <X size={16} />
-              </button>
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="flex h-[min(760px,92vh)] w-[min(1120px,96vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 text-slate-100 shadow-2xl">
+        <aside className="flex w-64 shrink-0 flex-col border-r border-surface-700 bg-surface-900/70">
+          <div className="border-b border-surface-700 px-3 py-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Edit Trail</div>
+              <div className="truncate text-sm font-semibold text-slate-100">{asset.name}</div>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -155,8 +150,8 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                     onClick={() => setActiveEditTrailIteration(asset.id, iteration.id)}
                     className={`w-full rounded-lg border p-2 text-left transition ${
                       active
-                        ? 'border-emerald-400/80 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(52,211,153,0.18)]'
-                        : 'border-white/10 bg-white/[0.03] hover:border-brand-300/70 hover:bg-brand-500/10 focus-visible:border-brand-300/80 focus-visible:outline-none'
+                        ? 'border-brand-400/80 bg-brand-500/10 shadow-[0_0_0_1px_rgba(124,140,255,0.18)]'
+                        : 'border-surface-700 bg-surface-950/60 hover:border-brand-400/70 hover:bg-surface-800 focus-visible:border-brand-400/80 focus-visible:outline-none'
                     }`}
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
@@ -166,7 +161,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                           {active ? 'Current source' : iteration.source}
                         </div>
                       </div>
-                      {active && <span className="rounded-full bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200">Active</span>}
+                      {active && <span className="rounded-full bg-brand-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-brand-400">Active</span>}
                     </div>
                     <div className="aspect-video overflow-hidden rounded bg-black/35">
                       {iteration.thumbnailDataUrl ? (
@@ -190,13 +185,18 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
             <div>
               <div className="text-sm font-semibold">{asset.kind === 'video' ? 'Video Edit' : 'Image Edit'}</div>
               <div className="text-xs text-slate-500">Zoom and offset update the active edit.</div>
             </div>
-            <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-slate-400">
-              {iterations.length} {iterations.length === 1 ? 'iteration' : 'iterations'}
+            <div className="flex items-center gap-2">
+              <div className="rounded-full border border-surface-700 bg-surface-900 px-2.5 py-1 text-xs text-slate-400">
+                {iterations.length} {iterations.length === 1 ? 'iteration' : 'iterations'}
+              </div>
+              <button className="rounded-md p-1 text-slate-400 hover:bg-surface-800 hover:text-white" onClick={onClose} title="Close" aria-label="Close">
+                <X size={16} />
+              </button>
             </div>
           </div>
 
@@ -266,7 +266,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
               </div>
             </div>
 
-            <div className="border-l border-white/10 bg-black/20 p-3">
+            <div className="border-l border-surface-700 bg-surface-900/60 p-3">
               <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Transform</div>
               <ControlSlider
                 label="Zoom"
@@ -291,7 +291,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 onChange={(value) => setDraft((prev) => ({ ...prev, offsetY: value }))}
               />
               <button
-                className="mt-2 inline-flex h-8 items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 text-xs text-slate-300 hover:bg-white/10"
+                className="mt-2 inline-flex h-8 items-center gap-1 rounded-md border border-surface-600 bg-surface-800 px-3 text-xs text-slate-300 hover:bg-surface-700 hover:text-slate-100"
                 onClick={() => setDraft(DEFAULT_EDIT_TRAIL_TRANSFORM)}
               >
                 <RotateCcw size={13} />
@@ -300,11 +300,11 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3 border-t border-surface-700 px-4 py-3">
             <div className="min-w-0 text-xs text-rose-300">{error}</div>
             <div className="flex shrink-0 items-center gap-2">
               <button
-                className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 text-sm text-slate-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-9 items-center gap-1 rounded-md border border-surface-600 bg-surface-800 px-3 text-sm text-slate-300 hover:bg-surface-700 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
                 disabled={!canUndo || saving}
                 onClick={undoIteration}
               >
@@ -312,7 +312,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 Undo
               </button>
               <button
-                className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 text-sm text-slate-400 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-9 items-center gap-1 rounded-md border border-surface-600 bg-surface-800 px-3 text-sm text-slate-400 disabled:cursor-not-allowed disabled:opacity-45"
                 disabled
                 title="Prompt-based generation will plug into this edit trail next."
               >
@@ -320,7 +320,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 Generate
               </button>
               <button
-                className="inline-flex h-9 items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 text-sm text-slate-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-9 items-center gap-1 rounded-md border border-surface-600 bg-surface-800 px-3 text-sm text-slate-300 hover:bg-surface-700 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
                 disabled={saving || !sourceUrl}
                 onClick={() => commitIteration('add-new')}
                 title="Create a new edit from the active frame"
@@ -329,7 +329,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                 Add edit
               </button>
               <button
-                className="inline-flex h-9 items-center gap-1 rounded-full bg-emerald-400 px-4 text-sm font-semibold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-slate-500"
+                className="inline-flex h-9 items-center gap-1 rounded-md bg-brand-500 px-4 text-sm font-semibold text-white hover:bg-brand-400 disabled:cursor-not-allowed disabled:bg-surface-600 disabled:text-slate-400"
                 disabled={saving || !sourceUrl}
                 onClick={() => commitIteration('save-active')}
                 title={activeIsBase ? 'Create a new edit from the base frame' : 'Overwrite the selected edit'}
@@ -372,7 +372,7 @@ function ControlSlider({
         max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-emerald-400"
+        className="w-full accent-brand-500"
       />
     </label>
   );

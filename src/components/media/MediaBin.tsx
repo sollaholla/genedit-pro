@@ -1,23 +1,23 @@
 import { type ComponentType, type DragEvent, type MouseEvent, type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Clapperboard, Copy, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import { BookOpen, Box, Clapperboard, Copy, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Mountain, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
-import { characterTokenForAsset } from '@/lib/media/characterReferences';
+import { isReferenceAssetKind, referenceTokenForAsset } from '@/lib/media/characterReferences';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
 import { PIAPI_BILLING_URL } from '@/lib/videoGeneration/piapi';
 import { type MediaFolder, useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { addClip, sortedTracks } from '@/lib/timeline/operations';
-import type { MediaAsset } from '@/types';
+import type { MediaAsset, ReferenceAssetKind } from '@/types';
 import { EditTrailDialog } from './EditTrailDialog';
 import { SequenceEditor } from './SequenceEditor';
 
 type Props = {
   onImportClick: () => void;
   onGenerateClick: () => void;
-  onCreateCharacter: (folderId: string | null) => void;
-  onOpenCharacter: (asset: MediaAsset) => void;
+  onCreateReference: (kind: ReferenceAssetKind, folderId: string | null) => void;
+  onOpenReference: (asset: MediaAsset) => void;
   onOpenRecipe: (asset: MediaAsset) => void;
   onGenerateFromSequence: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
@@ -28,6 +28,8 @@ const kindIcon = {
   audio: Music,
   image: ImageIcon,
   character: UserRound,
+  object: Box,
+  environment: Mountain,
   recipe: BookOpen,
   sequence: Clapperboard,
 };
@@ -37,7 +39,7 @@ const MEDIA_CONTEXT_MENU_WIDTH_PX = 210;
 const MEDIA_CONTEXT_MENU_MAX_HEIGHT_PX = 270;
 const MEDIA_CONTEXT_MENU_MARGIN_PX = 8;
 
-export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, onOpenCharacter, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
+export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
@@ -99,7 +101,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
     .filter((asset) => asset.thumbnailDataUrl)
     .slice(0, 4);
   const addAssetToTimeline = (asset: MediaAsset) => {
-    if (asset.kind === 'recipe' || asset.kind === 'sequence' || asset.kind === 'character' || asset.generation?.status === 'generating') return;
+    if (asset.kind === 'recipe' || asset.kind === 'sequence' || isReferenceAssetKind(asset.kind) || asset.generation?.status === 'generating') return;
     const targetKind = asset.kind === 'audio' ? 'audio' : 'video';
     const track = sortedTracks(project).find((candidate) => candidate.kind === targetKind);
     if (!track) return;
@@ -199,7 +201,9 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
         <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Media</div>
         <div className="flex items-center gap-1.5">
           <ToolbarIconButton icon={Clapperboard} label="New sequence" onClick={createSequence} />
-          <ToolbarIconButton icon={UserRound} label="New character" onClick={() => onCreateCharacter(activeFolderId)} />
+          <ToolbarIconButton icon={UserRound} label="New character" onClick={() => onCreateReference('character', activeFolderId)} />
+          <ToolbarIconButton icon={Box} label="New object" onClick={() => onCreateReference('object', activeFolderId)} />
+          <ToolbarIconButton icon={Mountain} label="New environment" onClick={() => onCreateReference('environment', activeFolderId)} />
           <ToolbarIconButton icon={Sparkles} label="Generate video" onClick={onGenerateClick} />
           <ToolbarIconButton icon={Upload} label={importing ? 'Importing…' : 'Import media'} onClick={onImportClick} disabled={importing} />
         </div>
@@ -307,7 +311,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
                 onDelete={() => removeAsset(asset.id)}
                 onRename={(name) => renameAsset(asset.id, name)}
                 onOpenEdit={() => {
-                  if (asset.kind === 'character') onOpenCharacter(asset);
+                  if (isReferenceAssetKind(asset.kind)) onOpenReference(asset);
                   else setEditingAssetId(asset.id);
                 }}
                 onOpenRecipe={() => onOpenRecipe(asset)}
@@ -351,10 +355,10 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateCharacter, on
         <MediaLightbox
           asset={previewAsset}
           onClose={() => setPreviewAssetId(null)}
-          onEdit={previewAsset.kind === 'character'
+          onEdit={isReferenceAssetKind(previewAsset.kind)
             ? () => {
                 setPreviewAssetId(null);
-                onOpenCharacter(previewAsset);
+                onOpenReference(previewAsset);
               }
             : undefined}
         />
@@ -797,12 +801,12 @@ function MediaLightbox({ asset, onClose, onEdit }: { asset: MediaAsset; onClose:
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            {asset.kind === 'character' && onEdit && (
+            {isReferenceAssetKind(asset.kind) && onEdit && (
               <button
                 type="button"
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2 text-xs font-medium text-slate-200 hover:border-brand-300/50 hover:bg-brand-500/15 hover:text-white"
                 onClick={onEdit}
-                title="Edit character"
+                title={`Edit ${asset.kind}`}
               >
                 <SlidersHorizontal size={13} />
                 Edit
@@ -856,7 +860,7 @@ function LightboxMedia({ asset, url }: { asset: MediaAsset; url: string }) {
       </div>
     );
   }
-  if (asset.kind === 'image' || asset.kind === 'character') {
+  if (asset.kind === 'image' || isReferenceAssetKind(asset.kind)) {
     return (
       <img
         src={url}
@@ -924,7 +928,7 @@ function MediaTile({
   const failureTooltipPositionRef = useRef({ x: 12, y: 12 });
   const skipRenameCommitRef = useRef(false);
   const pointerButtonRef = useRef(0);
-  const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && asset.kind !== 'character' && asset.generation?.status !== 'generating';
+  const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && !isReferenceAssetKind(asset.kind) && asset.generation?.status !== 'generating';
   const canEdit = isEditableMedia(asset);
   const canReusePrompt = Boolean(asset.recipe) &&
     asset.kind !== 'recipe' &&
@@ -1256,14 +1260,14 @@ function MediaTile({
               }}
             >
               <SlidersHorizontal size={12} />
-              {asset.kind === 'character' ? 'Edit Character' : 'Edit'}
+              {isReferenceAssetKind(asset.kind) ? `Edit ${assetBadgeLabel(asset)}` : 'Edit'}
             </button>
           )}
-          {asset.kind === 'character' && (
+          {isReferenceAssetKind(asset.kind) && (
             <button
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
               onClick={() => {
-                const token = characterTokenForAsset(asset);
+                const token = referenceTokenForAsset(asset);
                 if (token) void navigator.clipboard?.writeText(token);
                 onMenuClose();
               }}
@@ -1371,6 +1375,8 @@ function clampMediaMenuPosition(
 
 function assetBadgeLabel(asset: MediaAsset): string {
   if (asset.kind === 'character') return 'Character';
+  if (asset.kind === 'object') return 'Object';
+  if (asset.kind === 'environment') return 'Environment';
   if (asset.kind === 'recipe') return 'Recipe';
   if (asset.kind === 'sequence') return 'Sequence';
   const extension = splitFilename(asset.name).extension;

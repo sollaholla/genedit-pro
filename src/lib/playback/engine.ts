@@ -1,5 +1,5 @@
 import type { Clip, Project, Track } from '@/types';
-import { clipSpeed, clipTimelineDurationSec } from '@/lib/timeline/operations';
+import { clipSpeed, clipTimelineDurationSec, flattenTimeline } from '@/lib/timeline/operations';
 
 const CLIP_BOUNDARY_EPSILON_SEC = 0.001;
 
@@ -18,13 +18,14 @@ export type ResolvedFrame = {
 };
 
 export function resolveFrame(project: Project, t: number): ResolvedFrame {
-  const sorted = [...project.tracks].sort((a, b) => a.index - b.index);
+  const flattened = flattenTimeline(project);
+  const sorted = [...flattened.tracks].sort((a, b) => a.index - b.index);
   let video: ActiveLayer | null = null;
   const videos: ActiveLayer[] = [];
   const audios: ActiveLayer[] = [];
 
   for (const track of sorted) {
-    const clip = activeClipOnTrack(project.clips, track.id, t);
+    const clip = activeClipOnTrack(flattened.clips, track.id, t);
     if (!clip) continue;
     const timelineLocalSec = Math.max(0, Math.min(clipTimelineDurationSec(clip), t - clip.startSec));
     const layer: ActiveLayer = {
@@ -70,7 +71,7 @@ function activeClipOnTrack(clips: Clip[], trackId: string, t: number): Clip | nu
 export function upcomingClips(project: Project, t: number, lookaheadSec: number): Clip[] {
   const out: Clip[] = [];
   const horizon = t + lookaheadSec;
-  for (const c of project.clips) {
+  for (const c of flattenTimeline(project).clips) {
     if (c.startSec > t && c.startSec <= horizon) out.push(c);
   }
   return out;

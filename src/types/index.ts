@@ -1,11 +1,13 @@
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 
-export type MediaKind = 'video' | 'audio' | 'image' | 'character' | 'recipe' | 'sequence';
+export type MediaKind = 'video' | 'audio' | 'image' | 'character' | 'object' | 'environment' | 'recipe' | 'sequence';
+export type ReferenceAssetKind = 'character' | 'object' | 'environment';
 
 export type CharacterVisualStyle = 'real-life' | 'anime' | '3d' | 'lego';
 
-export type CharacterAssetData = {
-  characterId: string;
+export type ReferenceAssetData = {
+  referenceId: string;
+  referenceKind?: ReferenceAssetKind;
   description: string;
   prompt: string;
   generatedPrompt?: string;
@@ -15,6 +17,10 @@ export type CharacterAssetData = {
   resolution: string;
   updatedAt: number;
   sourceImageAssetIds?: string[];
+};
+
+export type CharacterAssetData = ReferenceAssetData & {
+  characterId: string;
 };
 
 export type SequenceMarker = {
@@ -121,10 +127,18 @@ export type MediaAsset = {
   recipe?: GenerateRecipe;
   sequence?: SequenceAssetData;
   character?: CharacterAssetData;
+  reference?: ReferenceAssetData;
   createdAt: number;
 };
 
 export type TrackKind = 'video' | 'audio';
+
+export type TrackGroup = {
+  id: string;
+  startSec: number;
+  tracks: Track[];
+  clips: Clip[];
+};
 
 export type Track = {
   id: string;
@@ -133,6 +147,7 @@ export type Track = {
   index: number;
   muted: boolean;
   hidden: boolean;
+  group?: TrackGroup;
 };
 
 export type EnvelopePoint = {

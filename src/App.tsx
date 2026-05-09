@@ -15,7 +15,7 @@ import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useExportStore } from '@/state/exportStore';
 import { useMediaStore } from '@/state/mediaStore';
-import type { MediaAsset } from '@/types';
+import type { MediaAsset, ReferenceAssetKind } from '@/types';
 import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
 export default function App() {
@@ -24,7 +24,7 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
-  const [characterEditor, setCharacterEditor] = useState<{ assetId: string | null; folderId: string | null } | null>(null);
+  const [referenceEditor, setReferenceEditor] = useState<{ assetId: string | null; folderId: string | null; kind: ReferenceAssetKind } | null>(null);
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const [sequenceToGenerate, setSequenceToGenerate] = useState<MediaAsset | null>(null);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
@@ -61,7 +61,7 @@ export default function App() {
     playback.setClipSelection([]);
     setExportOpen(false);
     setGenerateOpen(false);
-    setCharacterEditor(null);
+    setReferenceEditor(null);
     setRecipeToOpen(null);
     setSequenceToGenerate(null);
     setHighlightedMediaAssetId(null);
@@ -125,8 +125,8 @@ export default function App() {
               setSequenceToGenerate(asset);
               setGenerateOpen(true);
             }}
-            onCreateCharacter={(folderId) => setCharacterEditor({ assetId: null, folderId })}
-            onOpenCharacter={(asset) => setCharacterEditor({ assetId: asset.id, folderId: asset.folderId ?? null })}
+            onCreateReference={(kind, folderId) => setReferenceEditor({ assetId: null, folderId, kind })}
+            onOpenReference={(asset) => setReferenceEditor({ assetId: asset.id, folderId: asset.folderId ?? null, kind: asset.kind as ReferenceAssetKind })}
             highlightedAssetId={highlightedMediaAssetId}
           />
         }
@@ -149,13 +149,14 @@ export default function App() {
         initialRecipeAsset={recipeToOpen}
         initialSequenceAsset={sequenceToGenerate}
       />
-      {characterEditor && (
+      {referenceEditor && (
         <CharacterEditor
-          assetId={characterEditor.assetId}
-          folderId={characterEditor.folderId}
-          onClose={() => setCharacterEditor(null)}
+          assetId={referenceEditor.assetId}
+          referenceKind={referenceEditor.kind}
+          folderId={referenceEditor.folderId}
+          onClose={() => setReferenceEditor(null)}
           onOpenSettings={() => {
-            setCharacterEditor(null);
+            setReferenceEditor(null);
             setSettingsOpen(true);
           }}
           onGenerationQueued={(assetId) => setHighlightedMediaAssetId(assetId)}

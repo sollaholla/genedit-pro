@@ -22,6 +22,8 @@ type PlaybackState = {
   pxPerSec: number;
   /** IDs of all currently selected clips. Empty = nothing selected. */
   selectedClipIds: string[];
+  selectedTrackIds: string[];
+  activeGroupPath: string[];
   _selectionPast: string[][];
   _selectionFuture: string[][];
   _selectionPastSeq: number[];
@@ -52,6 +54,12 @@ type PlaybackState = {
   setClipSelection: (ids: string[], options?: { silent?: boolean }) => void;
   /** Commit a silent selection gesture using the provided previous selection. */
   commitClipSelection: (previousIds: string[]) => void;
+  selectTrack: (id: string | null) => void;
+  toggleTrackSelection: (id: string) => void;
+  setTrackSelection: (ids: string[]) => void;
+  enterGroupTrack: (trackId: string) => void;
+  exitGroupTrack: () => void;
+  setActiveGroupPath: (path: string[]) => void;
   undoSelection: () => void;
   redoSelection: () => void;
   peekSelectionUndoSeq: () => number | null;
@@ -72,6 +80,8 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   currentTimeSec: 0,
   pxPerSec: DEFAULT_PX_PER_SEC,
   selectedClipIds: [],
+  selectedTrackIds: [],
+  activeGroupPath: [],
   _selectionPast: [],
   _selectionFuture: [],
   _selectionPastSeq: [],
@@ -93,6 +103,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
       silent: options?.silent,
       activeTransformComponentId: null,
     });
+    if (id) set({ selectedTrackIds: [] });
   },
   toggleClipSelection: (id, options) => {
     const cur = get().selectedClipIds;
@@ -100,12 +111,14 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
       silent: options?.silent,
       activeTransformComponentId: get().activeTransformComponentId,
     });
+    set({ selectedTrackIds: [] });
   },
   setClipSelection: (ids, options) => {
     commitSelection(set, get, ids, {
       silent: options?.silent,
       activeTransformComponentId: ids.length === 1 ? get().activeTransformComponentId : null,
     });
+    if (ids.length > 0) set({ selectedTrackIds: [] });
   },
   commitClipSelection: (previousIds) => {
     const cur = normalizeSelection(get().selectedClipIds);
@@ -120,6 +133,42 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     });
     notifyHistoryMutation('selection');
   },
+  selectTrack: (id) => set({
+    selectedTrackIds: id ? [id] : [],
+    selectedClipIds: id ? [] : get().selectedClipIds,
+    activeTransformComponentId: id ? null : get().activeTransformComponentId,
+  }),
+  toggleTrackSelection: (id) => {
+    const cur = get().selectedTrackIds;
+    set({
+      selectedTrackIds: cur.includes(id) ? cur.filter((candidate) => candidate !== id) : [...cur, id],
+      selectedClipIds: [],
+      activeTransformComponentId: null,
+    });
+  },
+  setTrackSelection: (ids) => set({
+    selectedTrackIds: [...new Set(ids)],
+    selectedClipIds: ids.length > 0 ? [] : get().selectedClipIds,
+    activeTransformComponentId: ids.length > 0 ? null : get().activeTransformComponentId,
+  }),
+  enterGroupTrack: (trackId) => set({
+    activeGroupPath: [...get().activeGroupPath, trackId],
+    selectedClipIds: [],
+    selectedTrackIds: [],
+    activeTransformComponentId: null,
+  }),
+  exitGroupTrack: () => set({
+    activeGroupPath: get().activeGroupPath.slice(0, -1),
+    selectedClipIds: [],
+    selectedTrackIds: [],
+    activeTransformComponentId: null,
+  }),
+  setActiveGroupPath: (path) => set({
+    activeGroupPath: [...path],
+    selectedClipIds: [],
+    selectedTrackIds: [],
+    activeTransformComponentId: null,
+  }),
   undoSelection: () => {
     const { selectedClipIds, _selectionPast, _selectionPastSeq, _selectionFuture, _selectionFutureSeq } = get();
     if (_selectionPast.length === 0) return;

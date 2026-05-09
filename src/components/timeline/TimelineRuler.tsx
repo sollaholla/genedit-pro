@@ -1,14 +1,15 @@
 import { useMemo } from 'react';
 import { RULER_HEIGHT_PX, timeToPx } from '@/lib/timeline/geometry';
-import { useProjectStore } from '@/state/projectStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { clipTimelineDurationSec } from '@/lib/timeline/operations';
+import type { Clip } from '@/types';
 
 type Props = {
   pxPerSec: number;
   durationSec: number;
   viewportWidth: number;
   scrollLeft: number;
+  clips: Clip[];
   onScrub: (timeSec: number) => void;
 };
 
@@ -22,7 +23,7 @@ function niceStep(pxPerSec: number): number {
   return steps[steps.length - 1]!;
 }
 
-export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft, onScrub }: Props) {
+export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft, clips, onScrub }: Props) {
   const pause = usePlaybackStore((s) => s.pause);
   const step = niceStep(pxPerSec);
   const visibleEndSec = (scrollLeft + viewportWidth) / pxPerSec + step;
@@ -79,7 +80,7 @@ export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft
             {formatTickLabel(t)}
           </div>
         ))}
-      <BufferBar pxPerSec={pxPerSec} />
+      <BufferBar pxPerSec={pxPerSec} clips={clips} />
     </div>
   );
 }
@@ -90,8 +91,7 @@ export function TimelineRuler({ pxPerSec, durationSec, viewportWidth, scrollLeft
  * from clips whose media element has readyState >= HAVE_FUTURE_DATA, as
  * published by PreviewPlayer on each RAF frame.
  */
-function BufferBar({ pxPerSec }: { pxPerSec: number }) {
-  const clips = useProjectStore((s) => s.project.clips);
+function BufferBar({ pxPerSec, clips }: { pxPerSec: number; clips: Clip[] }) {
   const readiness = usePlaybackStore((s) => s.clipReadiness);
 
   const segments = useMemo(() => {
