@@ -89,6 +89,15 @@ type RefToken = {
   thumbnail?: string;
 };
 
+type MentionSuggestion = {
+  key: string;
+  label: string;
+  name?: string;
+  thumbnail?: string;
+  icon: LucideIcon;
+  action: () => void;
+};
+
 type PromptMode = 'freeform' | 'structured';
 
 type VideoProviderCredentialAvailability = {
@@ -97,6 +106,7 @@ type VideoProviderCredentialAvailability = {
 
 const GENERATION_ASPECT_STORAGE_KEY = 'genedit-pro:generation-aspect';
 const GENERATION_ASPECTS: readonly Aspect[] = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+const MENTION_MENU_MARGIN_PX = 8;
 
 const STRUCTURED_PROMPT_ICON: Record<StructuredPromptSectionIcon, LucideIcon> = {
   subject: UserRound,
@@ -292,8 +302,12 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   useLayoutEffect(() => {
     const menu = mentionMenuRef.current;
     if (!mentionOpen || !menu) return;
-    menu.style.left = `${mentionPos.x}px`;
-    menu.style.top = `${mentionPos.y}px`;
+    const maxLeft = Math.max(MENTION_MENU_MARGIN_PX, window.innerWidth - menu.offsetWidth - MENTION_MENU_MARGIN_PX);
+    const maxTop = Math.max(MENTION_MENU_MARGIN_PX, window.innerHeight - menu.offsetHeight - MENTION_MENU_MARGIN_PX);
+    const left = Math.min(Math.max(MENTION_MENU_MARGIN_PX, mentionPos.x), maxLeft);
+    const top = Math.min(Math.max(MENTION_MENU_MARGIN_PX, mentionPos.y), maxTop);
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
   }, [mentionOpen, mentionPos]);
 
   useLayoutEffect(() => {
@@ -429,16 +443,51 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     thumbnail: sourceVideo.thumbnailDataUrl,
   } : null, [sourceVideo]);
 
-  const allMentionItems = [
-    ...(startFrame ? [{ key: 'start-frame', label: '@start-frame', action: () => insertToken('@start-frame') }] : []),
-    ...(endFrame ? [{ key: 'end-frame', label: '@end-frame', action: () => insertToken('@end-frame') }] : []),
-    ...(sourceVideoToken ? [{ key: sourceVideoToken.id, label: '@video1', action: () => insertToken('@video1') }] : []),
-    ...references.map((ref) => ({ key: ref.id, label: `@${ref.token}`, action: () => insertToken(`@${ref.token}`) })),
+  const allMentionItems: MentionSuggestion[] = [
+    ...(startFrame ? [{
+      key: 'start-frame',
+      label: '@start-frame',
+      name: startFrame.name,
+      thumbnail: startFrame.thumbnailDataUrl,
+      icon: ImageIcon,
+      action: () => insertToken('@start-frame'),
+    }] : []),
+    ...(endFrame ? [{
+      key: 'end-frame',
+      label: '@end-frame',
+      name: endFrame.name,
+      thumbnail: endFrame.thumbnailDataUrl,
+      icon: ImageIcon,
+      action: () => insertToken('@end-frame'),
+    }] : []),
+    ...(sourceVideoToken ? [{
+      key: sourceVideoToken.id,
+      label: '@video1',
+      name: sourceVideoToken.name,
+      thumbnail: sourceVideoToken.thumbnail,
+      icon: Film,
+      action: () => insertToken('@video1'),
+    }] : []),
+    ...references.map((ref) => ({
+      key: ref.id,
+      label: `@${ref.token}`,
+      name: ref.name,
+      thumbnail: ref.thumbnail,
+      icon: ImageIcon,
+      action: () => insertToken(`@${ref.token}`),
+    })),
     ...assets
       .filter((asset) => isReferenceAssetKind(asset.kind) && referenceTokenForAssetMetadata(asset) && asset.generation?.status !== 'generating')
       .map((asset) => {
         const token = referenceTokenForAssetMetadata(asset) ?? '';
-        return { key: asset.id, label: token, action: () => insertToken(token) };
+        return {
+          key: asset.id,
+          label: token,
+          name: asset.name,
+          thumbnail: asset.thumbnailDataUrl,
+          icon: ImageIcon,
+          action: () => insertToken(token),
+        };
       }),
   ];
 
@@ -1035,13 +1084,31 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       {mentionOpen && filteredMentionItems.length > 0 && (
         <div
           ref={mentionMenuRef}
-          className="fixed z-[60] w-52 rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
+          className="fixed z-[60] w-64 rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
         >
-          {filteredMentionItems.map((item) => (
-            <button key={item.key} className="block w-full rounded px-2 py-1 text-left text-xs text-slate-200 hover:bg-surface-700" onClick={item.action}>
-              {item.label}
-            </button>
-          ))}
+          {filteredMentionItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.key}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={item.action}
+              >
+                {item.thumbnail ? (
+                  <img src={item.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
+                ) : (
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-surface-950 text-slate-500">
+                    <Icon size={12} />
+                  </span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{item.label}</span>
+                  {item.name && <span className="block truncate text-[10px] text-slate-400">{item.name}</span>}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

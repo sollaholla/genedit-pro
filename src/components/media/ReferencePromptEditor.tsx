@@ -6,11 +6,17 @@ import {
   type ClipboardEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
 
 type TextRange = {
   start: number;
   end: number;
+};
+
+type PointerAnchor = {
+  left: number;
+  top: number;
 };
 
 export type ReferencePromptMention = TextRange & {
@@ -48,6 +54,8 @@ type Props = {
 
 const TOKEN_PATTERN = /@([a-z0-9][a-z0-9_-]*)/gi;
 const MENTION_PATTERN = /(^|\s)@([a-z0-9_-]{0,64})$/i;
+const MENTION_POINTER_OFFSET = { x: 12, y: 18 };
+const MENTION_CARET_OFFSET_Y = 8;
 
 export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Props>(function ReferencePromptEditor({
   value,
@@ -66,6 +74,7 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
   const lastSelectionRef = useRef<TextRange>({ start: value.length, end: value.length });
   const pendingSelectionRef = useRef<TextRange | null>(null);
   const hoveredTokenRef = useRef<string | null>(null);
+  const pointerAnchorRef = useRef<PointerAnchor | null>(null);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -96,14 +105,14 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
       return;
     }
     const root = rootRef.current;
-    const rect = root?.getBoundingClientRect();
     const query = match[2] ?? '';
+    const anchor = mentionAnchorFor(root, cursor, pointerAnchorRef.current);
     onMentionChange({
       query,
       start: cursor - query.length - 1,
       end: cursor,
-      left: rect ? rect.left + 12 : 0,
-      top: rect ? Math.min(rect.bottom - 4, window.innerHeight - 220) : 0,
+      left: anchor.left,
+      top: anchor.top,
     });
   };
 
@@ -194,6 +203,10 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
     onTokenMouseLeave?.(token, event);
   };
 
+  const rememberPointerAnchor = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointerAnchorRef.current = { left: event.clientX, top: event.clientY };
+  };
+
   return (
     <div
       ref={rootRef}
@@ -211,6 +224,11 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
       onMouseOver={handleMouseOver}
       onMouseUp={refreshCurrentMention}
       onPaste={handlePaste}
+      onPointerDown={rememberPointerAnchor}
+      onPointerLeave={() => {
+        pointerAnchorRef.current = null;
+      }}
+      onPointerMove={rememberPointerAnchor}
       spellCheck
       suppressContentEditableWarning
       tabIndex={0}
@@ -297,6 +315,43 @@ function setEditableSelection(root: HTMLDivElement, selectionRange: TextRange) {
   range.setEnd(endPosition.node, endPosition.offset);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function mentionAnchorFor(root: HTMLDivElement | null, cursor: number, pointerAnchor: PointerAnchor | null): PointerAnchor {
+  const rootRect = root?.getBoundingClientRect();
+  if (rootRect && pointerAnchor && isPointInsideRect(pointerAnchor, rootRect)) {
+    return {
+      left: pointerAnchor.left + MENTION_POINTER_OFFSET.x,
+      top: pointerAnchor.top + MENTION_POINTER_OFFSET.y,
+    };
+  }
+  if (root) {
+    const caretRect = caretRectAtOffset(root, cursor);
+    if (caretRect) {
+      return {
+        left: caretRect.left,
+        top: caretRect.bottom + MENTION_CARET_OFFSET_Y,
+      };
+    }
+  }
+  return {
+    left: rootRect ? rootRect.left + 12 : 0,
+    top: rootRect ? rootRect.bottom + MENTION_CARET_OFFSET_Y : 0,
+  };
+}
+
+function caretRectAtOffset(root: HTMLDivElement, offset: number): DOMRect | null {
+  const position = positionAtOffset(root, offset);
+  const range = document.createRange();
+  range.setStart(position.node, position.offset);
+  range.collapse(true);
+  const rect = range.getBoundingClientRect();
+  if (rect.width > 0 || rect.height > 0) return rect;
+  return range.getClientRects()[0] ?? null;
+}
+
+function isPointInsideRect(point: PointerAnchor, rect: DOMRect): boolean {
+  return point.left >= rect.left && point.left <= rect.right && point.top >= rect.top && point.top <= rect.bottom;
 }
 
 function positionAtOffset(root: HTMLDivElement, offset: number): { node: Node; offset: number } {
