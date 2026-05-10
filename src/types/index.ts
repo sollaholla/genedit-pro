@@ -58,6 +58,7 @@ export type EditTrailIteration = {
   transform: EditTrailTransform;
   generation?: {
     prompt?: string;
+    editPrompt?: string;
     model?: string;
     estimatedCostUsd?: number;
     actualCostUsd?: number;
@@ -68,6 +69,9 @@ export type EditTrailIteration = {
     providerTaskCreatedAt?: number;
     providerArtifactUri?: string;
     providerArtifactExpiresAt?: number;
+    paintOverlayBlobKey?: string | null;
+    paintOverlayWidth?: number;
+    paintOverlayHeight?: number;
     costAccountedUsd?: number;
     costAccountedAt?: number;
   };
@@ -83,6 +87,7 @@ export type EditTrailGeneration = {
   status: 'generating' | 'error';
   progress?: number;
   prompt?: string;
+  editPrompt?: string;
   model?: string;
   estimatedCostUsd?: number;
   actualCostUsd?: number;

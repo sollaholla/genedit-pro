@@ -944,7 +944,7 @@ function MediaTile({
   const hasMediaPrompt = Boolean(asset.recipe) &&
     asset.kind !== 'recipe' &&
     (asset.kind === 'video' || asset.kind === 'image');
-  const canReusePrompt = hasMediaPrompt && asset.generation?.status !== 'generating';
+  const canReusePrompt = hasMediaPrompt;
   const copyablePrompt = promptTextForRecipe(asset.recipe);
   const canCopyPrompt = hasMediaPrompt && Boolean(copyablePrompt);
   const failureMessage = generationFailureMessage(asset);

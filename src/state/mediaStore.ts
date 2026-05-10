@@ -26,6 +26,7 @@ type GeneratedAssetOptions = {
 
 type GeneratedEditTrailMetadata = {
   prompt?: string;
+  editPrompt?: string;
   model?: string;
   estimatedCostUsd?: number;
   actualCostUsd?: number;
@@ -36,13 +37,16 @@ type GeneratedEditTrailMetadata = {
   providerTaskCreatedAt?: number;
   providerArtifactUri?: string;
   providerArtifactExpiresAt?: number;
+  paintOverlayBlobKey?: string | null;
+  paintOverlayWidth?: number;
+  paintOverlayHeight?: number;
   character?: Partial<CharacterAssetData>;
   reference?: Partial<ReferenceAssetData>;
 };
 
 type EditTrailGenerationMetadata = Pick<
   EditTrailGeneration,
-  'prompt' | 'model' | 'estimatedCostUsd' | 'actualCostUsd' | 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt'
+  'prompt' | 'editPrompt' | 'model' | 'estimatedCostUsd' | 'actualCostUsd' | 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt'
 >;
 
 function projectAssetsKey(projectId: string): string {
@@ -91,10 +95,7 @@ export async function deleteProjectMedia(projectId: string): Promise<void> {
   const assets = loadAssets(projectId);
   const blobKeys = new Set<string>();
   for (const asset of assets) {
-    if (asset.blobKey) blobKeys.add(asset.blobKey);
-    for (const iteration of asset.editTrail?.iterations ?? []) {
-      if (iteration.blobKey) blobKeys.add(iteration.blobKey);
-    }
+    for (const blobKey of blobKeysForAsset(asset)) blobKeys.add(blobKey);
   }
   await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
   for (const asset of assets) revokeCachedUrl(asset.id);
@@ -230,6 +231,38 @@ function revokeCachedUrl(assetId: string) {
 function revokeAllCachedUrls() {
   for (const cached of urlCache.values()) URL.revokeObjectURL(cached.url);
   urlCache.clear();
+}
+
+function blobKeysForAsset(asset: MediaAsset): string[] {
+  const keys = new Set<string>();
+  if (asset.blobKey) keys.add(asset.blobKey);
+  for (const iteration of asset.editTrail?.iterations ?? []) {
+    if (iteration.blobKey) keys.add(iteration.blobKey);
+    const overlayBlobKey = iteration.generation?.paintOverlayBlobKey;
+    if (overlayBlobKey) keys.add(overlayBlobKey);
+  }
+  return [...keys];
+}
+
+async function deleteUnreferencedIterationBlobs(
+  removed: EditTrailIteration,
+  remaining: EditTrailIteration[],
+) {
+  const remainingBlobKeys = new Set<string>();
+  for (const iteration of remaining) {
+    if (iteration.blobKey) remainingBlobKeys.add(iteration.blobKey);
+    const overlayBlobKey = iteration.generation?.paintOverlayBlobKey;
+    if (overlayBlobKey) remainingBlobKeys.add(overlayBlobKey);
+  }
+
+  const removedBlobKeys = [
+    removed.blobKey,
+    removed.generation?.paintOverlayBlobKey,
+  ].filter((key): key is string => Boolean(key));
+
+  await Promise.all(removedBlobKeys
+    .filter((blobKey) => !remainingBlobKeys.has(blobKey))
+    .map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
 }
 
 function projectIdForAssetMutation(state: MediaState, assetId: string): string {
@@ -438,11 +471,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
   removeAsset: async (id) => {
     const asset = get().assets.find((a) => a.id === id);
     if (!asset) return;
-    const blobKeys = new Set([
-      asset.blobKey,
-      ...(asset.editTrail?.iterations.map((iteration) => iteration.blobKey) ?? []),
-    ].filter(Boolean));
-    await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
+    await Promise.all(blobKeysForAsset(asset).map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
     revokeCachedUrl(asset.id);
     const next = get().assets.filter((a) => a.id !== id);
     saveAssets(next, get().activeProjectId);
@@ -528,7 +557,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       label: active.label,
       createdAt: Date.now(),
     });
-    const replacedBlobKey = active.blobKey;
+    const replacedIteration = active;
 
     revokeCachedUrl(assetId);
     const next = get().assets.map((item) => {
@@ -543,12 +572,8 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     saveAssets(next, get().activeProjectId);
     set({ assets: next });
 
-    const stillUsed = next
-      .find((item) => item.id === assetId)
-      ?.editTrail?.iterations.some((candidate) => candidate.blobKey === replacedBlobKey);
-    if (replacedBlobKey !== iteration.blobKey && !stillUsed) {
-      await deleteBlob(replacedBlobKey).catch(() => undefined);
-    }
+    const remainingIterations = next.find((item) => item.id === assetId)?.editTrail?.iterations ?? [];
+    await deleteUnreferencedIterationBlobs(replacedIteration, remainingIterations);
   },
 
   setActiveEditTrailIteration: (assetId, iterationId) => {
@@ -580,10 +605,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     const removed = iterations[activeIndex]!;
     const remaining = iterations.filter((_, index) => index !== activeIndex);
     const nextActive = remaining[Math.max(0, activeIndex - 1)]!;
-    const remainingBlobKeys = new Set(remaining.map((iteration) => iteration.blobKey));
-    if (!remainingBlobKeys.has(removed.blobKey)) {
-      await deleteBlob(removed.blobKey).catch(() => undefined);
-    }
+    await deleteUnreferencedIterationBlobs(removed, remaining);
     revokeCachedUrl(assetId);
     const next = get().assets.map((item) => {
       if (item.id !== assetId) return item;
@@ -619,10 +641,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       const doomed = nextAssets.filter((asset) => asset.folderId === id);
       const blobKeys = new Set<string>();
       for (const asset of doomed) {
-        if (asset.blobKey) blobKeys.add(asset.blobKey);
-        for (const iteration of asset.editTrail?.iterations ?? []) {
-          if (iteration.blobKey) blobKeys.add(iteration.blobKey);
-        }
+        for (const blobKey of blobKeysForAsset(asset)) blobKeys.add(blobKey);
       }
       await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
       for (const asset of doomed) revokeCachedUrl(asset.id);
@@ -837,6 +856,7 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       transform: DEFAULT_EDIT_TRAIL_TRANSFORM,
       generation: {
         prompt: metadata.prompt,
+        editPrompt: metadata.editPrompt,
         model: metadata.model,
         estimatedCostUsd: metadata.estimatedCostUsd,
         actualCostUsd,
@@ -847,6 +867,9 @@ export const useMediaStore = create<MediaState>((set, get) => ({
         providerTaskCreatedAt: metadata.providerTaskCreatedAt,
         providerArtifactUri: metadata.providerArtifactUri,
         providerArtifactExpiresAt: metadata.providerArtifactExpiresAt,
+        paintOverlayBlobKey: metadata.paintOverlayBlobKey,
+        paintOverlayWidth: metadata.paintOverlayWidth,
+        paintOverlayHeight: metadata.paintOverlayHeight,
         costAccountedUsd: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? actualCostUsd : undefined,
         costAccountedAt: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? now : undefined,
       },
