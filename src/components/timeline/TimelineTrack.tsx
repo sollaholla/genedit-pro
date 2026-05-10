@@ -131,8 +131,10 @@ function BridgeGapOverlay({
       style={{ left, width, height: TRACK_HEIGHT_PX - 8 }}
       data-bridge-gap="true"
       onMouseDown={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
+        if (event.target === event.currentTarget) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
       }}
     >
       <button
@@ -140,7 +142,9 @@ function BridgeGapOverlay({
         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/40 bg-brand-500 text-white shadow-lg transition hover:bg-brand-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
         title="Bridge Generate"
         aria-label="Bridge Generate"
+        onMouseDown={(event) => event.stopPropagation()}
         onClick={(event) => onClick(gap, event)}
+        onContextMenu={(event) => onClick(gap, event)}
       >
         <Sparkles size={15} />
       </button>
