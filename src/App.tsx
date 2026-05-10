@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { TopBar } from '@/components/layout/TopBar';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -51,7 +51,7 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [highlightedMediaAssetId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setActiveMediaProject(projectId);
     if (previousProjectIdRef.current === projectId) return;
     previousProjectIdRef.current = projectId;

@@ -8,7 +8,11 @@ const LITTERBOX_API_URL = 'https://litterbox.catbox.moe/resources/internals/api.
 const LITTERBOX_TIME = '24h';
 const CACHE_SAFETY_WINDOW_MS = 5 * 60 * 1000;
 const LITTERBOX_UPLOAD_COOLDOWN_MS = 2000;
+const LITTERBOX_UPLOAD_MAX_ATTEMPTS = 4;
+const LITTERBOX_UPLOAD_RETRY_BASE_MS = 1500;
+const LITTERBOX_UPLOAD_RETRY_MAX_MS = 12_000;
 const MAX_ERROR_DETAIL_LENGTH = 180;
+const RETRYABLE_UPLOAD_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 type HostedReference = {
   url: string;
@@ -71,6 +75,31 @@ function enqueueLitterboxUpload(file: File): Promise<string> {
 }
 
 async function uploadLitterboxFile(file: File): Promise<string> {
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= LITTERBOX_UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await uploadLitterboxFileOnce(file);
+    } catch (err) {
+      const error = err instanceof LitterboxUploadError ? err : new LitterboxUploadError(err instanceof Error ? err.message : 'Litterbox temporary upload failed.', true);
+      lastError = error;
+      const shouldRetry = error.retryable && attempt < LITTERBOX_UPLOAD_MAX_ATTEMPTS;
+      if (!shouldRetry) break;
+      const delayMs = retryDelayMs(attempt);
+      if (import.meta.env.DEV) {
+        console.warn('[GenEdit] Retrying Litterbox temporary upload', {
+          attempt,
+          nextAttempt: attempt + 1,
+          delayMs,
+          error: error.message,
+        });
+      }
+      await wait(delayMs);
+    }
+  }
+  throw lastError ?? new Error('Litterbox temporary upload failed.');
+}
+
+async function uploadLitterboxFileOnce(file: File): Promise<string> {
   const form = new FormData();
   form.set('reqtype', 'fileupload');
   form.set('time', LITTERBOX_TIME);
@@ -89,13 +118,33 @@ async function uploadLitterboxFile(file: File): Promise<string> {
         bodyPreview: compactResponseText(text, 500),
       });
     }
-    throw new Error(formatHttpUploadError(response, text));
+    throw new LitterboxUploadError(formatHttpUploadError(response, text), isRetryableHttpUploadFailure(response, text));
   }
   if (!isLitterboxUrl(text)) {
-    throw new Error(`Litterbox temporary upload failed: ${compactResponseText(text) || 'No download URL returned.'}`);
+    throw new LitterboxUploadError(
+      `Litterbox temporary upload failed: ${compactResponseText(text) || 'No download URL returned.'}`,
+      looksLikeHtml(text),
+    );
   }
 
   return text;
+}
+
+class LitterboxUploadError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = 'LitterboxUploadError';
+  }
+}
+
+function isRetryableHttpUploadFailure(response: Response, text: string): boolean {
+  return RETRYABLE_UPLOAD_STATUSES.has(response.status) || looksLikeHtml(text);
+}
+
+function retryDelayMs(attempt: number): number {
+  const exponentialDelay = LITTERBOX_UPLOAD_RETRY_BASE_MS * (2 ** (attempt - 1));
+  const jitter = Math.floor(Math.random() * 500);
+  return Math.min(LITTERBOX_UPLOAD_RETRY_MAX_MS, exponentialDelay + jitter);
 }
 
 function wait(ms: number): Promise<void> {

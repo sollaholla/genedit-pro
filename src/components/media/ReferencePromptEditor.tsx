@@ -6,7 +6,6 @@ import {
   type ClipboardEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react';
 
 type TextRange = {
@@ -14,7 +13,7 @@ type TextRange = {
   end: number;
 };
 
-type PointerAnchor = {
+type CaretAnchor = {
   left: number;
   top: number;
 };
@@ -54,7 +53,6 @@ type Props = {
 
 const TOKEN_PATTERN = /@([a-z0-9][a-z0-9_-]*)/gi;
 const MENTION_PATTERN = /(^|\s)@([a-z0-9_-]{0,64})$/i;
-const MENTION_POINTER_OFFSET = { x: 12, y: 18 };
 const MENTION_CARET_OFFSET_Y = 8;
 
 export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Props>(function ReferencePromptEditor({
@@ -74,7 +72,6 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
   const lastSelectionRef = useRef<TextRange>({ start: value.length, end: value.length });
   const pendingSelectionRef = useRef<TextRange | null>(null);
   const hoveredTokenRef = useRef<string | null>(null);
-  const pointerAnchorRef = useRef<PointerAnchor | null>(null);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -106,7 +103,7 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
     }
     const root = rootRef.current;
     const query = match[2] ?? '';
-    const anchor = mentionAnchorFor(root, cursor, pointerAnchorRef.current);
+    const anchor = mentionAnchorFor(root, cursor);
     onMentionChange({
       query,
       start: cursor - query.length - 1,
@@ -203,10 +200,6 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
     onTokenMouseLeave?.(token, event);
   };
 
-  const rememberPointerAnchor = (event: ReactPointerEvent<HTMLDivElement>) => {
-    pointerAnchorRef.current = { left: event.clientX, top: event.clientY };
-  };
-
   return (
     <div
       ref={rootRef}
@@ -224,11 +217,6 @@ export const ReferencePromptEditor = forwardRef<ReferencePromptEditorHandle, Pro
       onMouseOver={handleMouseOver}
       onMouseUp={refreshCurrentMention}
       onPaste={handlePaste}
-      onPointerDown={rememberPointerAnchor}
-      onPointerLeave={() => {
-        pointerAnchorRef.current = null;
-      }}
-      onPointerMove={rememberPointerAnchor}
       spellCheck
       suppressContentEditableWarning
       tabIndex={0}
@@ -317,14 +305,8 @@ function setEditableSelection(root: HTMLDivElement, selectionRange: TextRange) {
   selection.addRange(range);
 }
 
-function mentionAnchorFor(root: HTMLDivElement | null, cursor: number, pointerAnchor: PointerAnchor | null): PointerAnchor {
+function mentionAnchorFor(root: HTMLDivElement | null, cursor: number): CaretAnchor {
   const rootRect = root?.getBoundingClientRect();
-  if (rootRect && pointerAnchor && isPointInsideRect(pointerAnchor, rootRect)) {
-    return {
-      left: pointerAnchor.left + MENTION_POINTER_OFFSET.x,
-      top: pointerAnchor.top + MENTION_POINTER_OFFSET.y,
-    };
-  }
   if (root) {
     const caretRect = caretRectAtOffset(root, cursor);
     if (caretRect) {
@@ -348,10 +330,6 @@ function caretRectAtOffset(root: HTMLDivElement, offset: number): DOMRect | null
   const rect = range.getBoundingClientRect();
   if (rect.width > 0 || rect.height > 0) return rect;
   return range.getClientRects()[0] ?? null;
-}
-
-function isPointInsideRect(point: PointerAnchor, rect: DOMRect): boolean {
-  return point.left >= rect.left && point.left <= rect.right && point.top >= rect.top && point.top <= rect.bottom;
 }
 
 function positionAtOffset(root: HTMLDivElement, offset: number): { node: Node; offset: number } {

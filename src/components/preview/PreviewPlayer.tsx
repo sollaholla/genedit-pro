@@ -916,6 +916,41 @@ export function PreviewPlayer() {
     removeImageElement(clipId);
   }, [removeAudioElement, removeImageElement, removeVideoElement]);
 
+  const clearPreviewCanvas = useCallback(() => {
+    const canvas = freezeFrameCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (ctx && canvas.width > 0 && canvas.height > 0) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.style.display = 'none';
+  }, []);
+
+  useLayoutEffect(() => {
+    for (const clipId of new Set([
+      ...videoPool.current.keys(),
+      ...imagePool.current.keys(),
+      ...audioPool.current.keys(),
+    ])) {
+      removeClipElements(clipId);
+    }
+    for (const url of urlCache.current.values()) URL.revokeObjectURL(url);
+    urlCache.current.clear();
+    pendingClipLoadsRef.current.clear();
+    clipAssetRef.current.clear();
+    clipMediaTouchedAtRef.current.clear();
+    clearPreviewCanvas();
+    resetTransientPlaybackState();
+    previewTopologySignatureRef.current = '';
+    lastTimelineTimeRef.current = null;
+    playbackClockTimeRef.current = usePlaybackStore.getState().currentTimeSec;
+    prevReadinessRef.current = {};
+    prevHasVideoRef.current = false;
+    setHasActiveVideo(false);
+    setReady(false);
+    setPreviewContextMenu(null);
+    usePlaybackStore.getState().setClipReadiness({});
+    usePlaybackStore.getState().setClipAudioLevels({});
+  }, [clearPreviewCanvas, project.id, removeClipElements, resetTransientPlaybackState]);
+
   const attachClipElement = useCallback((clip: Clip, asset: MediaAsset, url: string, mediaKey: string) => {
     if (asset.kind === 'image') {
       removeVideoElement(clip.id);
@@ -1047,6 +1082,7 @@ export function PreviewPlayer() {
     if (cachedUrl) return attachClipElement(clip, asset, cachedUrl, mediaKey);
 
     if (!pendingClipLoadsRef.current.has(clip.id)) {
+      const requestProjectId = useProjectStore.getState().project.id;
       pendingClipLoadsRef.current.add(clip.id);
       void getBlob(asset.blobKey).then((blob) => {
         pendingClipLoadsRef.current.delete(clip.id);
@@ -1063,6 +1099,7 @@ export function PreviewPlayer() {
         const latestAsset = assetsRef.current.find((candidate) => candidate.id === asset.id);
         const latestTimeSec = usePlaybackStore.getState().currentTimeSec;
         if (
+          latestProject.id !== requestProjectId ||
           !latestClip ||
           !latestAsset ||
           latestClip.assetId !== asset.id ||
