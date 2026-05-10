@@ -5,11 +5,12 @@ import { isEditableMedia } from '@/lib/media/editTrail';
 import { isReferenceAssetKind, referenceTokenForAsset } from '@/lib/media/characterReferences';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
 import { PIAPI_BILLING_URL } from '@/lib/videoGeneration/piapi';
+import { buildStructuredPromptText, DEFAULT_VIDEO_MODELS } from '@/lib/videoModels/capabilities';
 import { type MediaFolder, useMediaStore } from '@/state/mediaStore';
 import { usePlaybackStore } from '@/state/playbackStore';
 import { useProjectStore } from '@/state/projectStore';
 import { addClip, sortedTracks } from '@/lib/timeline/operations';
-import type { MediaAsset, ReferenceAssetKind } from '@/types';
+import type { GenerateRecipe, MediaAsset, ReferenceAssetKind } from '@/types';
 import { EditTrailDialog } from './EditTrailDialog';
 import { SequenceEditor } from './SequenceEditor';
 
@@ -75,9 +76,16 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, on
     () => (activeFolderId ? folders.find((folder) => folder.id === activeFolderId) ?? null : null),
     [activeFolderId, folders],
   );
+  const knownFolderIds = useMemo(() => new Set(folders.map((folder) => folder.id)), [folders]);
+  const topLevelAssets = useMemo(
+    () => assets.filter((asset) => !asset.folderId || !knownFolderIds.has(asset.folderId)),
+    [assets, knownFolderIds],
+  );
   const visibleAssets = useMemo(
-    () => assets.filter((a) => (activeFolderId ? a.folderId === activeFolderId : true)),
-    [assets, activeFolderId],
+    () => (activeFolderId
+      ? assets.filter((asset) => asset.folderId === activeFolderId)
+      : topLevelAssets),
+    [assets, activeFolderId, topLevelAssets],
   );
   const folderTiles = activeFolderId ? [] : folders;
   const hasGridItems = folderTiles.length > 0 || visibleAssets.length > 0;
@@ -132,8 +140,11 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, on
     if (!highlightedAssetId) return;
     const highlightedAsset = assets.find((asset) => asset.id === highlightedAssetId);
     if (!highlightedAsset) return;
-    if (activeFolderId && highlightedAsset.folderId !== activeFolderId) {
-      setActiveFolderId(null);
+    const highlightedFolderId = highlightedAsset.folderId && knownFolderIds.has(highlightedAsset.folderId)
+      ? highlightedAsset.folderId
+      : null;
+    if (highlightedFolderId !== activeFolderId) {
+      setActiveFolderId(highlightedFolderId);
       return;
     }
     requestAnimationFrame(() => {
@@ -142,7 +153,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, on
         block: 'center',
       });
     });
-  }, [activeFolderId, assets, highlightedAssetId]);
+  }, [activeFolderId, assets, highlightedAssetId, knownFolderIds]);
 
   useEffect(() => {
     if (!creatingFolder) return;
@@ -225,7 +236,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, on
         <div className="flex flex-wrap gap-1">
           <FolderFilterButton
             label="All"
-            count={assets.length}
+            count={topLevelAssets.length}
             active={activeFolderId === null}
             onClick={() => setActiveFolderId(null)}
             onDropToFolder={(event) => moveDroppedMediaToFolder(event, null)}
@@ -930,10 +941,12 @@ function MediaTile({
   const pointerButtonRef = useRef(0);
   const canInsert = asset.kind !== 'recipe' && asset.kind !== 'sequence' && !isReferenceAssetKind(asset.kind) && asset.generation?.status !== 'generating';
   const canEdit = isEditableMedia(asset);
-  const canReusePrompt = Boolean(asset.recipe) &&
+  const hasMediaPrompt = Boolean(asset.recipe) &&
     asset.kind !== 'recipe' &&
-    (asset.kind === 'video' || asset.kind === 'image') &&
-    asset.generation?.status !== 'generating';
+    (asset.kind === 'video' || asset.kind === 'image');
+  const canReusePrompt = hasMediaPrompt && asset.generation?.status !== 'generating';
+  const copyablePrompt = promptTextForRecipe(asset.recipe);
+  const canCopyPrompt = hasMediaPrompt && Boolean(copyablePrompt);
   const failureMessage = generationFailureMessage(asset);
   const failureIsBilling = asset.generation?.errorType === 'Billing' || Boolean(failureMessage && isBillingErrorText(failureMessage));
   const generatedWithUi = Boolean(asset.generation) && asset.kind !== 'recipe';
@@ -1224,18 +1237,32 @@ function MediaTile({
           className="fixed z-[80] min-w-[150px] rounded-md border border-surface-600 bg-surface-800 p-1 shadow-xl"
           onContextMenu={(e) => e.preventDefault()}
         >
-          {canReusePrompt && (
+          {(canReusePrompt || canCopyPrompt) && (
             <>
-              <button
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
-                onClick={() => {
-                  onMenuClose();
-                  onOpenRecipe();
-                }}
-              >
-                <Sparkles size={12} />
-                Reuse Prompt
-              </button>
+              {canReusePrompt && (
+                <button
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+                  onClick={() => {
+                    onMenuClose();
+                    onOpenRecipe();
+                  }}
+                >
+                  <Sparkles size={12} />
+                  Reuse Prompt
+                </button>
+              )}
+              {canCopyPrompt && (
+                <button
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-700"
+                  onClick={() => {
+                    void copyTextToClipboard(copyablePrompt);
+                    onMenuClose();
+                  }}
+                >
+                  <Copy size={12} />
+                  Copy Prompt
+                </button>
+              )}
               <div className="my-1 h-px bg-surface-700" />
             </>
           )}
@@ -1391,6 +1418,24 @@ function assetBadgeLabel(asset: MediaAsset): string {
 function generationFailureMessage(asset: MediaAsset): string | null {
   if (asset.generation?.status !== 'error') return null;
   return asset.generation.errorMessage || 'Generation failed. No provider error was returned.';
+}
+
+function promptTextForRecipe(recipe: GenerateRecipe | undefined): string {
+  if (!recipe) return '';
+  if (recipe.promptMode !== 'structured') return recipe.prompt.trim();
+  const model = DEFAULT_VIDEO_MODELS.find((candidate) => candidate.id === recipe.model) ?? DEFAULT_VIDEO_MODELS[0];
+  const structured = buildStructuredPromptText(model, recipe.structuredPrompt ?? {}).trim();
+  return structured || recipe.prompt.trim();
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  try {
+    await navigator.clipboard?.writeText(trimmed);
+  } catch {
+    // The context-menu action is still safe if clipboard permissions are unavailable.
+  }
 }
 
 function ToolbarIconButton({
