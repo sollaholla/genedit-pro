@@ -15,14 +15,23 @@ import {
 import { hostLitterboxFile } from '@/lib/videoGeneration/litterbox';
 import { downloadGeneratedVideoFile } from '@/lib/videoGeneration/download';
 import {
+  buildPiApiCreateTaskRequest,
   createPiApiVideoTask,
   generatedPiApiVideoFromTask,
   PIAPI_ARTIFACT_TTL_MS,
   PIAPI_BILLING_URL,
   pollPiApiVideoTask,
 } from '@/lib/videoGeneration/piapi';
+import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
-import { PIAPI_SEEDANCE_2_MODEL_ID, type Aspect } from '@/lib/videoModels/capabilities';
+import {
+  DEFAULT_VIDEO_MODELS,
+  isPiApiSeedanceModel,
+  isPiApiVeoModel,
+  sortModelsByPriority,
+  type Aspect,
+  type VideoModelDefinition,
+} from '@/lib/videoModels/capabilities';
 import { piApiUsageCostUsd } from '@/lib/piapi/usage';
 import {
   PIAPI_API_KEY_STORAGE,
@@ -32,6 +41,7 @@ import {
 import { decryptSecret } from '@/lib/settings/crypto';
 import { useMediaStore } from '@/state/mediaStore';
 import { useProjectStore } from '@/state/projectStore';
+import { ModelSelect } from '@/components/media/ModelSelect';
 
 export type BridgeGap = {
   trackId: string;
@@ -49,8 +59,12 @@ type Props = {
   onHighlightMediaAsset: (assetId: string) => void;
 };
 
-const RESOLUTION_OPTIONS = ['480p', '720p', '1080p'] as const;
-const DURATION_OPTIONS = [5, 10, 15] as const;
+const BRIDGE_MODELS = sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => (
+  model.provider === 'piapi' &&
+  model.capabilities.assetInputs.startFrame &&
+  model.capabilities.assetInputs.endFrame
+)));
+const DEFAULT_BRIDGE_MODEL = BRIDGE_MODELS[0] ?? DEFAULT_VIDEO_MODELS[0]!;
 type DurationMode = 'auto' | 'manual';
 
 export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlightMediaAsset }: Props) {
@@ -65,19 +79,30 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const leftAsset = assets.find((asset) => asset.id === gap.leftClip.assetId) ?? null;
   const rightAsset = assets.find((asset) => asset.id === gap.rightClip.assetId) ?? null;
   const [prompt, setPrompt] = useState(() => defaultBridgePrompt(gap));
-  const [resolution, setResolution] = useState<(typeof RESOLUTION_OPTIONS)[number]>('720p');
+  const [modelId, setModelId] = useState(DEFAULT_BRIDGE_MODEL.id);
+  const selectedModel = useMemo(
+    () => BRIDGE_MODELS.find((model) => model.id === modelId) ?? DEFAULT_BRIDGE_MODEL,
+    [modelId],
+  );
+  const [resolution, setResolution] = useState(() => defaultResolutionForModel(DEFAULT_BRIDGE_MODEL));
   const [durationMode, setDurationMode] = useState<DurationMode>('auto');
-  const [manualDurationSec, setManualDurationSec] = useState(seedanceDurationForGap(gap.durationSec));
+  const [manualDurationSec, setManualDurationSec] = useState(() => durationForGap(DEFAULT_BRIDGE_MODEL, gap.durationSec));
   const [working, setWorking] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [fitAssetId, setFitAssetId] = useState<string | null>(null);
   const [lastMatch, setLastMatch] = useState<BridgeFrameMatch | null>(null);
 
-  const aspect = useMemo(() => aspectForProject(project), [project]);
-  const autoDurationSec = useMemo(() => seedanceDurationForGap(gap.durationSec), [gap.durationSec]);
+  const projectAspect = useMemo(() => aspectForProject(project), [project]);
+  const aspect = useMemo(() => aspectForModel(selectedModel, projectAspect), [projectAspect, selectedModel]);
+  const durationOptions = useMemo(() => durationOptionsForModel(selectedModel), [selectedModel]);
+  const resolutionOptions = selectedModel.capabilities.resolutions;
+  const autoDurationSec = useMemo(() => durationForGap(selectedModel, gap.durationSec), [gap.durationSec, selectedModel]);
   const durationSec = durationMode === 'auto' ? autoDurationSec : manualDurationSec;
-  const estimatedCostUsd = useMemo(() => estimateSeedanceCostUsd(resolution, durationSec), [durationSec, resolution]);
+  const estimatedCostUsd = useMemo(
+    () => estimateBridgeCostUsd(selectedModel, resolution, durationSec),
+    [durationSec, resolution, selectedModel],
+  );
   const fitAsset = fitAssetId ? assets.find((asset) => asset.id === fitAssetId) ?? null : null;
   const referencePlan = useMemo(
     () => planBridgeReferenceSegments(gap.leftClip, gap.rightClip, leftAsset?.durationSec, rightAsset?.durationSec),
@@ -91,6 +116,11 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, working]);
+
+  useEffect(() => {
+    if (!resolutionOptions.includes(resolution)) setResolution(defaultResolutionForModel(selectedModel));
+    if (!durationOptions.includes(manualDurationSec)) setManualDurationSec(autoDurationSec);
+  }, [autoDurationSec, durationOptions, manualDurationSec, resolution, resolutionOptions, selectedModel]);
 
   const insertBridgeClip = useCallback((asset: MediaAsset, inSec: number, outSec: number) => {
     updateProject((current) => addClipWithTiming(current, asset, gap.trackId, {
@@ -119,7 +149,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
       `Bridge_${Date.now()}.mp4`,
       null,
       estimatedCostUsd,
-      bridgeRecipe({ prompt, aspect, resolution, durationSec, leftAsset, rightAsset }),
+      bridgeRecipe({ prompt, modelId: selectedModel.id, aspect, resolution, durationSec, leftAsset, rightAsset }),
     );
     let actualCostUsd: number | undefined = estimatedCostUsd;
     let taskAccepted = false;
@@ -143,25 +173,29 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
       const endFrameUrl = await hostLitterboxFile(endFrameReference.file);
       updateGenerationProgress(assetId, 30);
 
-      const request = {
-        body: {
-          model: 'seedance',
-          task_type: 'seedance-2',
-          input: {
-            prompt: seedanceBridgeFramePrompt(prompt),
-            mode: 'omni_reference',
-            duration: durationSec,
-            resolution,
-            aspect_ratio: aspect,
-            image_urls: [startFrameUrl, endFrameUrl],
-          },
-          config: {
-            service_mode: 'public',
-          },
+      const startFrameAsset = bridgeFrameAsset('bridge-start-frame', 'Bridge start frame');
+      const endFrameAsset = bridgeFrameAsset('bridge-end-frame', 'Bridge end frame');
+      const mutation = buildVideoGenerationMutation({
+        modelId: selectedModel.id,
+        prompt: bridgeFramePromptForModel(prompt, selectedModel),
+        aspectRatio: aspect,
+        duration: `${durationSec}s`,
+        resolution,
+        audioEnabled: false,
+        startFrame: startFrameAsset,
+        endFrame: endFrameAsset,
+        sourceVideo: null,
+        referenceImages: [],
+      });
+      const request = await buildPiApiCreateTaskRequest(mutation, {
+        resolveReferenceUrl: async (asset) => {
+          if (asset.id === startFrameAsset.id) return startFrameUrl;
+          if (asset.id === endFrameAsset.id) return endFrameUrl;
+          throw new Error(`Unexpected bridge reference "${asset.name}".`);
         },
-      };
+      });
       if (import.meta.env.DEV) {
-        console.debug('[GenEdit] Seedance bridge request', request.body);
+        console.debug('[GenEdit] Bridge generation request', request.body);
       }
 
       setStatus('Generating bridge...');
@@ -323,11 +357,19 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
           </label>
 
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-surface-700 bg-surface-900/70 p-2.5">
+            <ModelSelect
+              value={selectedModel.id}
+              options={BRIDGE_MODELS}
+              onChange={setModelId}
+              disabled={working}
+              showInlineLabel
+              className="min-w-[220px] flex-1"
+            />
             <PillGroup
               label="Resolution"
               value={resolution}
-              options={RESOLUTION_OPTIONS.map((value) => ({ value, label: value }))}
-              onChange={(value) => setResolution(value as (typeof RESOLUTION_OPTIONS)[number])}
+              options={resolutionOptions.map((value) => ({ value, label: value }))}
+              onChange={setResolution}
               disabled={working}
             />
             <PillGroup
@@ -335,7 +377,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               value={durationMode === 'auto' ? 'auto' : `${manualDurationSec}s`}
               options={[
                 { value: 'auto', label: `Auto ${autoDurationSec}s` },
-                ...DURATION_OPTIONS.map((value) => ({ value: `${value}s`, label: `${value}s` })),
+                ...durationOptions.map((value) => ({ value: `${value}s`, label: `${value}s` })),
               ]}
               onChange={(value) => {
                 if (value === 'auto') {
@@ -348,7 +390,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               disabled={working}
             />
             <div className="ml-auto rounded bg-surface-950 px-2 py-1 text-[11px] text-slate-400">
-              {aspect} · Seedance 2.0
+              {aspect} · {selectedModel.label}
             </div>
           </div>
 
@@ -839,28 +881,46 @@ function defaultBridgePrompt(gap: BridgeGap): string {
   ].join(' ');
 }
 
-function seedanceBridgeFramePrompt(prompt: string): string {
-  const rewritten = prompt
-    .trim()
-    .replaceAll(/@video1\b/gi, '@image1')
-    .replaceAll(/@start-frame\b/gi, '@image1')
-    .replaceAll(/@video2\b/gi, '@image2')
-    .replaceAll(/@end-frame\b/gi, '@image2');
-  const withImage1 = rewritten.includes('@image1')
+function bridgeFramePromptForModel(prompt: string, model: VideoModelDefinition): string {
+  const trimmed = prompt.trim();
+  if (isPiApiVeoModel(model)) {
+    const rewritten = trimmed
+      .replaceAll(/@video1\b/gi, 'the provided start frame')
+      .replaceAll(/@start-frame\b/gi, 'the provided start frame')
+      .replaceAll(/@video2\b/gi, 'the provided end frame')
+      .replaceAll(/@end-frame\b/gi, 'the provided end frame');
+    return [
+      'Use the provided start frame as the exact first frame of the generated bridge.',
+      'Use the provided end frame as the exact final frame of the generated bridge.',
+      rewritten,
+    ].join(' ');
+  }
+
+  const seedance = isPiApiSeedanceModel(model);
+  const startToken = seedance ? '@image1' : '@start-frame';
+  const endToken = seedance ? '@image2' : '@end-frame';
+  const rewritten = seedance
+    ? trimmed
+      .replaceAll(/@video1\b/gi, '@image1')
+      .replaceAll(/@start-frame\b/gi, '@image1')
+      .replaceAll(/@video2\b/gi, '@image2')
+      .replaceAll(/@end-frame\b/gi, '@image2')
+    : trimmed
+      .replaceAll(/@video1\b/gi, '@start-frame')
+      .replaceAll(/@video2\b/gi, '@end-frame');
+  const withStart = rewritten.includes(startToken)
     ? rewritten
-    : `Start from @image1. ${rewritten}`;
-  const withImage2 = withImage1.includes('@image2')
-    ? withImage1
-    : `${withImage1} End on @image2.`;
-  return [
-    'Use @image1 as the exact first frame of the generated bridge.',
-    'Use @image2 as the exact final frame of the generated bridge.',
-    withImage2,
-  ].join(' ');
+    : `Start from ${startToken}. ${rewritten}`;
+  const withEnd = withStart.includes(endToken)
+    ? withStart
+    : `${withStart} End on ${endToken}.`;
+  if (!seedance) return withEnd;
+  return ['Use @image1 as the exact first frame of the generated bridge.', 'Use @image2 as the exact final frame of the generated bridge.', withEnd].join(' ');
 }
 
 function bridgeRecipe({
   prompt,
+  modelId,
   aspect,
   resolution,
   durationSec,
@@ -868,6 +928,7 @@ function bridgeRecipe({
   rightAsset,
 }: {
   prompt: string;
+  modelId: string;
   aspect: Aspect;
   resolution: string;
   durationSec: number;
@@ -875,7 +936,7 @@ function bridgeRecipe({
   rightAsset: MediaAsset;
 }): GenerateRecipe {
   return {
-    model: PIAPI_SEEDANCE_2_MODEL_ID,
+    model: modelId,
     prompt,
     promptMode: 'freeform',
     structuredPrompt: {},
@@ -898,9 +959,66 @@ function aspectForProject(project: Project): Aspect {
   return '9:16';
 }
 
-function estimateSeedanceCostUsd(resolution: string, seconds: number): number {
-  const rate = resolution === '1080p' ? 0.5 : resolution === '720p' ? 0.2 : 0.1;
-  return Number((rate * seconds).toFixed(2));
+function aspectForModel(model: VideoModelDefinition, preferred: Aspect): Aspect {
+  return model.capabilities.aspects.includes(preferred) ? preferred : model.capabilities.aspects[0] ?? '16:9';
+}
+
+function durationOptionsForModel(model: VideoModelDefinition): number[] {
+  return model.capabilities.durations
+    .map((duration) => Number(duration.replace(/s$/i, '')))
+    .filter((duration) => Number.isSafeInteger(duration) && duration > 0);
+}
+
+function durationForGap(model: VideoModelDefinition, gapDurationSec: number): number {
+  const durations = durationOptionsForModel(model);
+  if (durations.length === 0) return seedanceDurationForGap(gapDurationSec);
+  let best = durations[0]!;
+  let bestDistance = Math.abs(gapDurationSec - best);
+  for (const duration of durations.slice(1)) {
+    const distance = Math.abs(gapDurationSec - duration);
+    if (distance < bestDistance) {
+      best = duration;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function defaultResolutionForModel(model: VideoModelDefinition): string {
+  return model.capabilities.resolutions.includes('720p')
+    ? '720p'
+    : model.capabilities.resolutions[0] ?? '720p';
+}
+
+function bridgeFrameAsset(id: string, name: string): MediaAsset {
+  return {
+    id,
+    name,
+    kind: 'image',
+    durationSec: 0,
+    mimeType: 'image/jpeg',
+    blobKey: id,
+    createdAt: Date.now(),
+  };
+}
+
+function estimateBridgeCostUsd(model: VideoModelDefinition, resolution: string, seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  let rate = 0;
+  const modelId = model.id.toLowerCase();
+  if (modelId.includes('kling')) {
+    rate = resolution === '1080p' ? 0.15 : 0.1;
+  } else if (modelId.includes('veo')) {
+    const fast = modelId.includes('fast');
+    rate = fast ? 0.06 : 0.12;
+  } else if (modelId.includes('seedance')) {
+    const fast = modelId.includes('fast');
+    if (fast) rate = resolution === '720p' ? 0.16 : 0.08;
+    else if (resolution === '1080p') rate = 0.5;
+    else if (resolution === '720p') rate = 0.2;
+    else rate = 0.1;
+  }
+  return rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
 }
 
 function clamp(value: number, min: number, max: number): number {
