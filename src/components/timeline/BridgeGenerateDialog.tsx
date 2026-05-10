@@ -4,7 +4,7 @@ import type { Clip, GenerateRecipe, MediaAsset, Project } from '@/types';
 import { addClipWithTiming } from '@/lib/timeline/operations';
 import { formatTimecode } from '@/lib/timeline/geometry';
 import {
-  extractBridgeReferenceSegments,
+  extractBridgeEndpointFrames,
   matchBridgeFrames,
   planBridgeReferenceSegments,
   seedanceDurationForGap,
@@ -126,20 +126,21 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
     try {
       updateGenerationProgress(assetId, 2);
-      setStatus('Preparing references...');
-      const [leftReference, rightReference] = await extractBridgeReferenceSegments({
+      setStatus('Preparing start/end frames...');
+      const [startFrameReference, endFrameReference] = await extractBridgeEndpointFrames({
         leftAsset,
         leftClip: gap.leftClip,
         rightAsset,
         rightClip: gap.rightClip,
+        fps: project.fps,
         onStatus: setStatus,
       });
       updateGenerationProgress(assetId, 14);
 
-      setStatus('Uploading references...');
-      const leftUrl = await hostLitterboxFile(leftReference.file);
+      setStatus('Uploading start/end frames...');
+      const startFrameUrl = await hostLitterboxFile(startFrameReference.file);
       updateGenerationProgress(assetId, 22);
-      const rightUrl = await hostLitterboxFile(rightReference.file);
+      const endFrameUrl = await hostLitterboxFile(endFrameReference.file);
       updateGenerationProgress(assetId, 30);
 
       const request = {
@@ -147,12 +148,12 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
           model: 'seedance',
           task_type: 'seedance-2',
           input: {
-            prompt: prompt.trim(),
+            prompt: seedanceBridgeFramePrompt(prompt),
             mode: 'omni_reference',
             duration: durationSec,
             resolution,
             aspect_ratio: aspect,
-            video_urls: [leftUrl, rightUrl],
+            image_urls: [startFrameUrl, endFrameUrl],
           },
           config: {
             service_mode: 'public',
@@ -289,7 +290,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
             <BridgeEndpoint
               asset={leftAsset}
               clip={gap.leftClip}
-              label="Video 1"
+              label="Start frame"
               edge="end"
               fps={project.fps}
               contextStartSec={referencePlan.leftStartSec}
@@ -303,7 +304,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
             <BridgeEndpoint
               asset={rightAsset}
               clip={gap.rightClip}
-              label="Video 2"
+              label="End frame"
               edge="start"
               fps={project.fps}
               contextStartSec={referencePlan.rightStartSec}
@@ -317,7 +318,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               className="min-h-32 w-full resize-y rounded-md bg-transparent px-3 py-3 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600"
-              placeholder="@video1, describe the transition, then connect to @video2."
+              placeholder="@start-frame, describe the transition, then connect to @end-frame."
             />
           </label>
 
@@ -379,7 +380,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
           <div className="flex items-center justify-between gap-3 border-t border-surface-800 pt-3">
             <div className="min-w-0 text-[11px] text-slate-500">
-              {working ? status || 'Working...' : 'Seedance track completion uses trimmed neighboring clip context as video references.'}
+              {working ? status || 'Working...' : 'Seedance bridge generation uses the neighboring edge frames as first/last frame references.'}
             </div>
             <button
               type="button"
@@ -832,9 +833,29 @@ function PillGroup({
 
 function defaultBridgePrompt(gap: BridgeGap): string {
   return [
-    '@video1, continue naturally from the final visible frame with consistent motion, lighting, framing, and subject continuity.',
-    `Bridge the ${gap.durationSec.toFixed(1)} second timeline gap, then connect to @video2.`,
+    '@start-frame, continue naturally from this exact frame with consistent motion, lighting, framing, and subject continuity.',
+    `Bridge the ${gap.durationSec.toFixed(1)} second timeline gap, then connect to @end-frame as the final frame.`,
     'No captions, no text overlays, no hard cut.',
+  ].join(' ');
+}
+
+function seedanceBridgeFramePrompt(prompt: string): string {
+  const rewritten = prompt
+    .trim()
+    .replaceAll(/@video1\b/gi, '@image1')
+    .replaceAll(/@start-frame\b/gi, '@image1')
+    .replaceAll(/@video2\b/gi, '@image2')
+    .replaceAll(/@end-frame\b/gi, '@image2');
+  const withImage1 = rewritten.includes('@image1')
+    ? rewritten
+    : `Start from @image1. ${rewritten}`;
+  const withImage2 = withImage1.includes('@image2')
+    ? withImage1
+    : `${withImage1} End on @image2.`;
+  return [
+    'Use @image1 as the exact first frame of the generated bridge.',
+    'Use @image2 as the exact final frame of the generated bridge.',
+    withImage2,
   ].join(' ');
 }
 
@@ -862,8 +883,8 @@ function bridgeRecipe({
     resolution,
     duration: `${durationSec}s`,
     audioEnabled: true,
-    sourceVideoAssetId: leftAsset.id,
-    referenceAssetIds: [rightAsset.id],
+    sourceVideoAssetId: null,
+    referenceAssetIds: [leftAsset.id, rightAsset.id],
   };
 }
 

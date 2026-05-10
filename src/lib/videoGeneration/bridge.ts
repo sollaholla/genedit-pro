@@ -17,6 +17,11 @@ export type BridgeReferenceSegment = {
   durationSec: number;
 };
 
+export type BridgeFrameReference = {
+  file: File;
+  sourceTimeSec: number;
+};
+
 export type BridgeReferencePlan = {
   leftStartSec: number;
   leftDurationSec: number;
@@ -137,6 +142,38 @@ export async function extractBridgeReferenceSegments({
   return [
     { file: leftFile, sourceStartSec: plan.leftStartSec, durationSec: plan.leftOutputDurationSec },
     { file: rightFile, sourceStartSec: plan.rightStartSec, durationSec: plan.rightOutputDurationSec },
+  ];
+}
+
+export async function extractBridgeEndpointFrames({
+  leftAsset,
+  leftClip,
+  rightAsset,
+  rightClip,
+  fps,
+  onStatus,
+}: {
+  leftAsset: MediaAsset;
+  leftClip: Clip;
+  rightAsset: MediaAsset;
+  rightClip: Clip;
+  fps: number;
+  onStatus?: (message: string) => void;
+}): Promise<[BridgeFrameReference, BridgeFrameReference]> {
+  const leftBlob = await activeBlobForAsset(leftAsset);
+  const rightBlob = await activeBlobForAsset(rightAsset);
+  if (!leftBlob || !rightBlob) throw new Error('Both neighboring video clips must still be available locally.');
+
+  onStatus?.('Preparing start and end frames...');
+  const leftTimeSec = sourceEndFrameTimeSec(leftClip, fps);
+  const rightTimeSec = sourceStartFrameTimeSec(rightClip);
+  const [leftFile, rightFile] = await Promise.all([
+    frameFileFromBlob(leftBlob, leftTimeSec, `bridge_start_frame_${Date.now()}.jpg`),
+    frameFileFromBlob(rightBlob, rightTimeSec, `bridge_end_frame_${Date.now()}.jpg`),
+  ]);
+  return [
+    { file: leftFile, sourceTimeSec: leftTimeSec },
+    { file: rightFile, sourceTimeSec: rightTimeSec },
   ];
 }
 
@@ -301,6 +338,38 @@ async function frameSignatureFromBlob(blob: Blob, timeSec: number): Promise<Uint
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+async function frameFileFromBlob(blob: Blob, timeSec: number, name: string): Promise<File> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const video = await loadVideo(url);
+    await seekVideo(video, timeSec);
+    const maxWidth = 1280;
+    const sourceWidth = video.videoWidth || 1280;
+    const sourceHeight = video.videoHeight || 720;
+    const width = Math.max(1, Math.min(maxWidth, sourceWidth));
+    const height = Math.max(1, Math.round(width * (sourceHeight / Math.max(1, sourceWidth))));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not extract video frame.');
+    context.drawImage(video, 0, 0, width, height);
+    const frameBlob = await canvasToBlob(canvas, 'image/jpeg', 0.92);
+    return new File([frameBlob], name, { type: 'image/jpeg' });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode video frame.'));
+    }, type, quality);
+  });
 }
 
 async function loadVideo(url: string): Promise<HTMLVideoElement> {
