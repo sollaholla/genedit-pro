@@ -44,6 +44,8 @@ type Props = {
 const SVG_WIDTH = 1000;
 const TIMELINE_Y = 42;
 
+type PromptAssistMode = 'refine' | 'generate';
+
 export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGenerate, onAssetCommitted }: Props) {
   const assets = useMediaStore((state) => state.assets);
   const importFiles = useMediaStore((state) => state.importFiles);
@@ -118,6 +120,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const previewImage = previewMarker?.imageAssetId ? imageAssets.find((candidate) => candidate.id === previewMarker.imageAssetId) ?? null : null;
   const composedPrompt = useMemo(() => composeSequencePrompt(sequence, { characterTokensByAssetId }), [characterTokensByAssetId, sequence]);
   const selectedImagePrompt = useMemo(() => (selectedMarker ? buildShotImagePrompt(sequence, selectedMarker, assets) : ''), [assets, selectedMarker, sequence]);
+  const overallPromptAssistMode = useMemo(
+    () => promptAssistMode(sequence.overallPrompt, hasOverallPromptAssistSource(sequence)),
+    [sequence],
+  );
+  const selectedShotPromptAssistMode = useMemo(
+    () => (selectedMarker ? promptAssistMode(selectedMarker.prompt, hasShotPromptAssistSource(sequence, selectedMarker)) : null),
+    [selectedMarker, sequence],
+  );
 
   useEffect(() => {
     if (isDraft) return;
@@ -232,6 +242,19 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         ? { ...marker, ...patch, timeSec: normalizeMarkerTime(patch.timeSec ?? marker.timeSec) }
         : marker)),
     });
+  };
+  const assistOverallPrompt = () => {
+    if (!overallPromptAssistMode) return;
+    const nextPrompt = buildOverallPromptAssistText(sequence, assets, overallPromptAssistMode);
+    if (nextPrompt.trim()) persist({ ...sequence, overallPrompt: nextPrompt });
+  };
+  const assistShotPrompt = (markerId: string) => {
+    const marker = sequence.markers.find((candidate) => candidate.id === markerId);
+    if (!marker) return;
+    const mode = promptAssistMode(marker.prompt, hasShotPromptAssistSource(sequence, marker));
+    if (!mode) return;
+    const nextPrompt = buildShotPromptAssistText(sequence, marker, assets, mode);
+    if (nextPrompt.trim()) updateMarker(markerId, { prompt: nextPrompt });
   };
   const changeImageModel = (modelId: string) => {
     const nextModel = imageModels.find((model) => model.id === modelId) ?? selectedImageModel;
@@ -489,15 +512,25 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(220px,320px)] gap-0 overflow-hidden">
           <main className="flex min-w-0 flex-col overflow-auto p-4">
             <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_190px_120px]">
-              <label className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Overall Prompt
+              <div className="flex min-w-0 flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <div>Overall Prompt</div>
                 <ReferencePromptEditor
                   value={sequence.overallPrompt}
                   onChange={(value) => persist({ ...sequence, overallPrompt: value })}
                   tokenMeta={characterTokenMeta}
+                  ariaLabel="Overall prompt"
                   className="min-h-[88px] w-full rounded-md border border-surface-700 bg-surface-900 px-3 py-2 text-sm font-normal normal-case tracking-normal leading-6 text-slate-100 outline-none focus:border-brand-400"
                 />
-              </label>
+                {overallPromptAssistMode && (
+                  <PromptAssistButton
+                    mode={overallPromptAssistMode}
+                    onClick={assistOverallPrompt}
+                    title={overallPromptAssistMode === 'refine'
+                      ? 'Refine the overall prompt using the current text and shot context'
+                      : 'Generate an overall prompt from the shot context'}
+                  />
+                )}
+              </div>
               <div className="flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Model
                 <ModelSelect
@@ -730,10 +763,14 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
                 imageGenerating={Boolean(selectedMarker && selectedMarker.id === imageGeneratingMarkerId)}
                 imagePrompt={selectedImagePrompt}
                 durationSec={sequence.durationSec}
+                promptAssistMode={selectedShotPromptAssistMode}
                 onUpdate={updateMarker}
                 onDelete={deleteSelectedMarker}
                 onImageModelChange={changeImageModel}
                 onAcceptCharacterMention={addSequenceCharacter}
+                onAssistPrompt={() => {
+                  if (selectedMarker) assistShotPrompt(selectedMarker.id);
+                }}
                 onGenerateImage={() => {
                   if (selectedMarker) void generateShotImage(selectedMarker.id);
                 }}
@@ -1039,10 +1076,12 @@ function MarkerInspector({
   imageGenerating,
   imagePrompt,
   durationSec,
+  promptAssistMode,
   onUpdate,
   onDelete,
   onImageModelChange,
   onAcceptCharacterMention,
+  onAssistPrompt,
   onGenerateImage,
   onChooseImage,
 }: {
@@ -1057,10 +1096,12 @@ function MarkerInspector({
   imageGenerating: boolean;
   imagePrompt: string;
   durationSec: number;
+  promptAssistMode: PromptAssistMode | null;
   onUpdate: (markerId: string, patch: Partial<SequenceMarker>) => void;
   onDelete: () => void;
   onImageModelChange: (modelId: string) => void;
   onAcceptCharacterMention: (asset: MediaAsset) => void;
+  onAssistPrompt: () => void;
   onGenerateImage: () => void;
   onChooseImage: () => void;
 }) {
@@ -1185,9 +1226,40 @@ function MarkerInspector({
             onChange={(value) => onUpdate(marker.id, { prompt: value })}
             onAcceptCharacter={onAcceptCharacterMention}
           />
+          {promptAssistMode && (
+            <PromptAssistButton
+              mode={promptAssistMode}
+              onClick={onAssistPrompt}
+              title={promptAssistMode === 'refine'
+                ? 'Refine this shot prompt using the current text and sequence context'
+                : 'Generate this shot prompt from the sequence context'}
+            />
+          )}
         </div>
       </div>
     </section>
+  );
+}
+
+function PromptAssistButton({
+  mode,
+  onClick,
+  title,
+}: {
+  mode: PromptAssistMode;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="btn-ghost self-start px-2 py-1 text-xs font-medium normal-case tracking-normal"
+      onClick={onClick}
+      title={title}
+    >
+      <Sparkles size={12} />
+      {mode === 'refine' ? 'Refine ✨' : 'Generate ✨'}
+    </button>
   );
 }
 
@@ -1635,6 +1707,164 @@ function createDefaultSequence(model?: VideoModelDefinition): SequenceAssetData 
     characterAssetIds: [],
     markers: [],
   };
+}
+
+function promptAssistMode(value: string, hasGenerateContext: boolean): PromptAssistMode | null {
+  if (value.trim()) return 'refine';
+  return hasGenerateContext ? 'generate' : null;
+}
+
+function hasOverallPromptAssistSource(sequence: SequenceAssetData): boolean {
+  return sequence.markers.some((marker) => Boolean(marker.prompt.trim() || marker.imageAssetId));
+}
+
+function hasShotPromptAssistSource(sequence: SequenceAssetData, targetMarker: SequenceMarker): boolean {
+  return sequence.markers.some((marker) => {
+    if (marker.id === targetMarker.id) return Boolean(marker.imageAssetId);
+    return Boolean(marker.prompt.trim() || marker.imageAssetId);
+  });
+}
+
+function buildOverallPromptAssistText(sequence: SequenceAssetData, assets: MediaAsset[], mode: PromptAssistMode): string {
+  const sortedMarkers = sortedSequenceMarkers(sequence);
+  const markerSummaries = sortedMarkers
+    .map((marker, index) => markerPromptAssistSummary(marker, index, assets))
+    .filter((summary): summary is string => Boolean(summary));
+  const imageTimecodes = sortedMarkers
+    .filter((marker) => marker.imageAssetId)
+    .map((marker) => formatSequenceTimestamp(marker.timeSec));
+  const characterSummary = sequenceCharacterPromptAssistSummary(sequence, assets);
+  const currentPrompt = promptAssistSentence(sequence.overallPrompt);
+  const lines: string[] = [];
+
+  if (currentPrompt) {
+    lines.push(currentPrompt);
+  } else {
+    lines.push(`Create a cohesive ${formatTime(sequence.durationSec)} cinematic video sequence.`);
+  }
+
+  if (characterSummary) lines.push(`Keep the sequence centered on ${characterSummary}.`);
+  if (markerSummaries.length > 0) lines.push(`Follow this shot progression: ${markerSummaries.join('; ')}.`);
+  if (imageTimecodes.length > 0) {
+    lines.push(`Use the supplied shot image references at ${humanList(imageTimecodes)} as continuity anchors for location, wardrobe, lighting, framing, and lens feel.`);
+  }
+  lines.push(mode === 'refine'
+    ? 'Preserve the primary intent while sharpening subject continuity, specific motion, camera language, and consistent visual tone.'
+    : 'Keep subject continuity clear, with specific motion, camera language, and a consistent visual tone.');
+  lines.push('Avoid captions, UI text, timeline graphics, and contradictory story beats.');
+
+  return compactPrompt(lines.join(' '));
+}
+
+function buildShotPromptAssistText(sequence: SequenceAssetData, targetMarker: SequenceMarker, assets: MediaAsset[], mode: PromptAssistMode): string {
+  const sortedMarkers = sortedSequenceMarkers(sequence);
+  const targetIndex = Math.max(0, sortedMarkers.findIndex((marker) => marker.id === targetMarker.id));
+  const previousMarker = previousMarkerWithPrompt(sortedMarkers, targetIndex);
+  const nextMarker = nextMarkerWithPrompt(sortedMarkers, targetIndex);
+  const targetImage = targetMarker.imageAssetId ? assets.find((asset) => asset.id === targetMarker.imageAssetId) ?? null : null;
+  const adjacentReferences = adjacentShotImageReferences(sequence, targetMarker, assets);
+  const frameCharacters = characterReferenceAssetsForTarget(sequence, targetMarker, assets);
+  const currentPrompt = promptAssistSentence(targetMarker.prompt);
+  const lines: string[] = [];
+
+  if (currentPrompt) {
+    lines.push(currentPrompt);
+  } else if (targetImage) {
+    lines.push('Use the attached shot image as the visual anchor for this specific beat.');
+  } else {
+    lines.push('Create one clear cinematic beat for this specific shot.');
+  }
+
+  const characterSummary = characterPromptAssistSummary(frameCharacters);
+  if (characterSummary) lines.push(`Feature ${characterSummary} with consistent identity, wardrobe, and proportions.`);
+
+  const overallPrompt = promptAssistPhrase(sequence.overallPrompt);
+  if (overallPrompt) lines.push(promptAssistContextLine('Carry the sequence brief: ', overallPrompt, 190));
+  if (previousMarker) lines.push(promptAssistContextLine('Continue naturally from the previous beat: ', promptAssistPhrase(previousMarker.prompt), 150));
+  if (nextMarker) lines.push(promptAssistContextLine('Set up the next beat without depicting it early: ', promptAssistPhrase(nextMarker.prompt), 150));
+
+  if (targetImage) {
+    lines.push('Match the selected shot image for composition, setting, lighting, wardrobe, and lens feel.');
+  }
+  if (adjacentReferences.length > 0) {
+    lines.push('Use neighboring shot images only for continuity; do not copy their pose, action, or timing unless the shot prompt calls for it.');
+  }
+
+  lines.push(mode === 'refine'
+    ? 'Preserve the primary intent while focusing the shot on one subject action, camera framing, mood, and motion.'
+    : 'Focus the shot on one subject action, camera framing, mood, and motion.');
+  lines.push('No captions, UI text, montage wording, or extra timeline instructions.');
+
+  return compactPrompt(lines.join(' '));
+}
+
+function markerPromptAssistSummary(marker: SequenceMarker, index: number, assets: MediaAsset[]): string | null {
+  const prompt = promptAssistPhrase(marker.prompt);
+  const hasImage = Boolean(marker.imageAssetId);
+  if (!prompt && !hasImage) return null;
+  const image = marker.imageAssetId ? assets.find((asset) => asset.id === marker.imageAssetId) ?? null : null;
+  const imageNote = image ? 'shot image reference' : hasImage ? 'shot image reference' : '';
+  const shotLabel = `shot ${index + 1} at ${formatSequenceTimestamp(marker.timeSec)}`;
+  if (prompt && imageNote) return `${shotLabel}: ${prompt} (${imageNote})`;
+  if (prompt) return `${shotLabel}: ${prompt}`;
+  return `${shotLabel}: ${imageNote}`;
+}
+
+function sequenceCharacterPromptAssistSummary(sequence: SequenceAssetData, assets: MediaAsset[]): string {
+  const ids = new Set(sequence.characterAssetIds ?? []);
+  return characterPromptAssistSummary(assets.filter((asset) => ids.has(asset.id) && asset.kind === 'character'));
+}
+
+function characterPromptAssistSummary(characters: MediaAsset[]): string {
+  const labels = characters
+    .map((asset) => {
+      const token = bareCharacterToken(asset);
+      const description = asset.character?.description?.trim();
+      const label = token ? `@${token}` : asset.name;
+      return description ? `${label} (${truncatePromptAssist(description, 90)})` : label;
+    })
+    .filter(Boolean);
+  return humanList(labels);
+}
+
+function promptAssistSentence(value: string): string {
+  return ensureSentence(compactPrompt(value));
+}
+
+function promptAssistPhrase(value: string): string {
+  return compactPrompt(value).replace(/[.!?]+$/g, '');
+}
+
+function compactPrompt(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1');
+}
+
+function ensureSentence(value: string): string {
+  if (!value) return '';
+  return /[.!?]$/.test(value) ? value : `${value}.`;
+}
+
+function truncatePromptAssist(value: string, maxLength: number): string {
+  const compact = compactPrompt(value);
+  if (compact.length <= maxLength) return compact;
+  const sliced = compact.slice(0, maxLength).replace(/\s+\S*$/, '').trim();
+  return `${sliced || compact.slice(0, maxLength).trim()}...`;
+}
+
+function promptAssistContextLine(prefix: string, value: string, maxLength: number): string {
+  const truncated = truncatePromptAssist(value, maxLength);
+  const terminal = truncated.endsWith('...') || /[.!?]$/.test(truncated) ? '' : '.';
+  return `${prefix}${truncated}${terminal}`;
+}
+
+function humanList(values: string[]): string {
+  if (values.length === 0) return '';
+  if (values.length === 1) return values[0]!;
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(', ')}, and ${values[values.length - 1]}`;
 }
 
 function normalizeSequence(sequence: SequenceAssetData, assets: MediaAsset[] = []): SequenceAssetData {
