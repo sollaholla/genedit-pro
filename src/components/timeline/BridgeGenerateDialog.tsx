@@ -422,7 +422,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
           <div className="flex items-center justify-between gap-3 border-t border-surface-800 pt-3">
             <div className="min-w-0 text-[11px] text-slate-500">
-              {working ? status || 'Working...' : 'Seedance bridge generation uses the neighboring edge frames as first/last frame references.'}
+              {working ? status || 'Working...' : 'Bridge generation uses the neighboring edge frames as first/last frame references.'}
             </div>
             <button
               type="button"
