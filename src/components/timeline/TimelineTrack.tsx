@@ -3,6 +3,8 @@ import { TRACK_HEIGHT_PX, pxToTime, timeToPx } from '@/lib/timeline/geometry';
 import { TimelineClip, type ClipDragSide } from './TimelineClip';
 import { useMediaStore } from '@/state/mediaStore';
 import { groupTrackDurationSec } from '@/lib/timeline/operations';
+import { Plus, Sparkles } from 'lucide-react';
+import type { BridgeGap } from './BridgeGenerateDialog';
 
 type Props = {
   track: Track;
@@ -18,9 +20,11 @@ type Props = {
   onGroupTrackMouseDown: (trackId: string, e: React.MouseEvent) => void;
   onGroupTrackDoubleClick: (trackId: string) => void;
   onGroupTrackContextMenu: (trackId: string, e: React.MouseEvent) => void;
+  bridgeGap: BridgeGap | null;
+  onBridgeGapClick: (gap: BridgeGap, e: React.MouseEvent) => void;
   /** Fired when the user mousedowns on empty track area (not on a clip).
    *  The Timeline uses this to start a marquee selection. */
-  onEmptyMouseDown: (e: React.MouseEvent) => void;
+  onEmptyMouseDown: (trackId: string, e: React.MouseEvent) => void;
 };
 
 export function TimelineTrack({
@@ -37,6 +41,8 @@ export function TimelineTrack({
   onGroupTrackMouseDown,
   onGroupTrackDoubleClick,
   onGroupTrackContextMenu,
+  bridgeGap,
+  onBridgeGapClick,
   onEmptyMouseDown,
 }: Props) {
   const assets = useMediaStore((s) => s.assets);
@@ -67,9 +73,16 @@ export function TimelineTrack({
         onDropAsset(track.id, assetId, startSec);
       }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onEmptyMouseDown(e);
+        if (e.target === e.currentTarget) onEmptyMouseDown(track.id, e);
       }}
     >
+      {bridgeGap && bridgeGap.trackId === track.id && (
+        <BridgeGapOverlay
+          gap={bridgeGap}
+          pxPerSec={pxPerSec}
+          onClick={onBridgeGapClick}
+        />
+      )}
       {track.group && (
         <GroupTrackBlock
           track={track}
@@ -95,6 +108,42 @@ export function TimelineTrack({
           onContextMenu={onClipContextMenu}
         />
       ))}
+    </div>
+  );
+}
+
+function BridgeGapOverlay({
+  gap,
+  pxPerSec,
+  onClick,
+}: {
+  gap: BridgeGap;
+  pxPerSec: number;
+  onClick: (gap: BridgeGap, e: React.MouseEvent) => void;
+}) {
+  const left = timeToPx(gap.startSec, pxPerSec);
+  const width = Math.max(34, timeToPx(gap.durationSec, pxPerSec));
+
+  return (
+    <div
+      className="absolute top-1 z-10 flex items-center justify-center rounded-sm border border-amber-200/80 bg-amber-400/20 text-amber-50 shadow-[0_0_18px_rgba(251,191,36,0.28)] ring-1 ring-amber-300/40"
+      style={{ left, width, height: TRACK_HEIGHT_PX - 8 }}
+      data-bridge-gap="true"
+      onMouseDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <button
+        type="button"
+        className="relative inline-flex h-8 w-8 items-center justify-center rounded-full border border-amber-100/70 bg-amber-300 text-surface-950 shadow-lg transition hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-100"
+        title="Bridge Generate"
+        aria-label="Bridge Generate"
+        onClick={(event) => onClick(gap, event)}
+      >
+        <Sparkles size={13} className="absolute -translate-x-1.5 -translate-y-1.5" />
+        <Plus size={15} className="translate-x-1 translate-y-1" />
+      </button>
     </div>
   );
 }

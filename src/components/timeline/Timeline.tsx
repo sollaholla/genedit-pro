@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Clip, Project, Track } from '@/types';
+import type { Clip, MediaAsset, Project, Track } from '@/types';
 import { ChevronLeft, FolderInput, Plus, Scissors } from 'lucide-react';
 import {
   RULER_HEIGHT_PX,
@@ -54,6 +54,7 @@ import {
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu';
 import { TrackContextMenu, type TrackMenuAction } from './TrackContextMenu';
 import { ReplaceClipDialog } from './ReplaceClipDialog';
+import { BridgeGenerateDialog, type BridgeGap } from './BridgeGenerateDialog';
 import { KeyframeSidebarLane, KeyframeTrackLane } from './KeyframeTrackLane';
 import { useKeyframeController } from './useKeyframeController';
 import {
@@ -82,7 +83,12 @@ type TimelineKeyframeLane = {
   height: number;
 };
 
-export function Timeline() {
+type TimelineProps = {
+  onOpenSettings?: () => void;
+  onMediaAssetHighlight?: (assetId: string) => void;
+};
+
+export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProps = {}) {
   const rootProject = useProjectStore((s) => s.project);
   const update = useProjectStore((s) => s.update);
   const updateSilent = useProjectStore((s) => s.updateSilent);
@@ -123,6 +129,8 @@ export function Timeline() {
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
   const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; trackId: string } | null>(null);
   const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
+  const [bridgeGap, setBridgeGap] = useState<BridgeGap | null>(null);
+  const [bridgeDialogGap, setBridgeDialogGap] = useState<BridgeGap | null>(null);
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
   const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
@@ -618,7 +626,7 @@ export function Timeline() {
   }, [assetById, updateActive]);
 
   // ---- Marquee selection from empty track area ----
-  const handleEmptyMouseDown = useCallback((e: React.MouseEvent) => {
+  const handleEmptyMouseDown = useCallback((trackId: string | null, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     // Ctrl/Cmd-click on empty area starts an additive marquee; otherwise replaces.
     const additive = e.ctrlKey || e.metaKey;
@@ -627,6 +635,18 @@ export function Timeline() {
     const rect = el.getBoundingClientRect();
     const startX = e.clientX - rect.left + el.scrollLeft;
     const startY = e.clientY - rect.top + el.scrollTop;
+    if (additive && trackId) {
+      const candidateGap = bridgeGapAtTime(project, trackId, startX / pxPerSec, assetById);
+      if (candidateGap) {
+        e.preventDefault();
+        e.stopPropagation();
+        setBridgeGap(candidateGap);
+        setSelectedKeyframe(null);
+        return;
+      }
+    } else {
+      setBridgeGap(null);
+    }
     const marqueeMode = isKeyframeContentY(startY, tracks, keyframeLanesByTrack) ? 'keyframes' : 'clips';
     const clipBaseline = additive ? usePlaybackStore.getState().selectedClipIds : [];
     const keyframeBaseline = additive ? selectedKeyframes : [];
@@ -685,7 +705,7 @@ export function Timeline() {
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [commitClipSelection, keyframeLanesByTrack, project, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, setTrackSelection, trackIndexFromContentY, tracks]);
+  }, [assetById, commitClipSelection, keyframeLanesByTrack, project, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, setTrackSelection, trackIndexFromContentY, tracks]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -978,6 +998,12 @@ export function Timeline() {
                     onGroupTrackMouseDown={handleGroupTrackMouseDown}
                     onGroupTrackDoubleClick={(trackId) => enterGroupTrack(trackId)}
                     onGroupTrackContextMenu={handleGroupTrackContextMenu}
+                    bridgeGap={bridgeGap?.trackId === track.id ? bridgeGap : null}
+                    onBridgeGapClick={(gap, event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setBridgeDialogGap(gap);
+                    }}
                     onEmptyMouseDown={handleEmptyMouseDown}
                   />
                   {(keyframeLanesByTrack.get(track.id) ?? []).map((lane) => (
@@ -1001,7 +1027,7 @@ export function Timeline() {
                         selectClip(lane.clip.id);
                         selectKeyframeGroup(meta);
                       }}
-                      onEmptyMouseDown={handleEmptyMouseDown}
+                      onEmptyMouseDown={(event) => handleEmptyMouseDown(null, event)}
                     />
                   ))}
                 </div>
@@ -1072,6 +1098,14 @@ export function Timeline() {
           onClose={() => setReplaceClipId(null)}
         />
       )}
+      {bridgeDialogGap && (
+        <BridgeGenerateDialog
+          gap={bridgeDialogGap}
+          onClose={() => setBridgeDialogGap(null)}
+          onOpenSettings={() => onOpenSettings?.()}
+          onHighlightMediaAsset={(assetId) => onMediaAssetHighlight?.(assetId)}
+        />
+      )}
     </div>
   );
 }
@@ -1116,6 +1150,42 @@ function buildSnapTargets(
     targets.add(groupTrackEndSec(track));
   }
   return [...targets];
+}
+
+function bridgeGapAtTime(
+  project: Project,
+  trackId: string,
+  timeSec: number,
+  assetById: Map<string, MediaAsset>,
+): BridgeGap | null {
+  const track = project.tracks.find((candidate) => candidate.id === trackId);
+  if (!track || track.kind !== 'video' || track.group) return null;
+  const clips = project.clips
+    .filter((clip) => clip.trackId === trackId)
+    .sort((first, second) => first.startSec - second.startSec);
+  for (let index = 0; index < clips.length - 1; index += 1) {
+    const leftClip = clips[index]!;
+    const rightClip = clips[index + 1]!;
+    const leftEndSec = leftClip.startSec + clipTimelineDurationSec(leftClip);
+    const rightStartSec = rightClip.startSec;
+    const gapDurationSec = rightStartSec - leftEndSec;
+    if (gapDurationSec <= 1) continue;
+    if (timeSec < leftEndSec || timeSec > rightStartSec) continue;
+    const leftAsset = assetById.get(leftClip.assetId);
+    const rightAsset = assetById.get(rightClip.assetId);
+    if (leftAsset?.kind !== 'video' || rightAsset?.kind !== 'video') continue;
+    if (leftAsset.generation?.status === 'generating' || rightAsset.generation?.status === 'generating') continue;
+    if (!leftAsset.blobKey || !rightAsset.blobKey) continue;
+    return {
+      trackId,
+      startSec: leftEndSec,
+      endSec: rightStartSec,
+      durationSec: gapDurationSec,
+      leftClip,
+      rightClip,
+    };
+  }
+  return null;
 }
 
 function trimClipLeftFromBaseline(project: Project, baselineClip: Clip, newStartSec: number): Project {

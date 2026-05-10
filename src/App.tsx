@@ -132,7 +132,12 @@ export default function App() {
         }
         preview={<PreviewPlayer />}
         rightPanel={<MasterBussPanel />}
-        timeline={<Timeline />}
+        timeline={(
+          <Timeline
+            onOpenSettings={() => setSettingsOpen(true)}
+            onMediaAssetHighlight={(assetId) => setHighlightedMediaAssetId(assetId)}
+          />
+        )}
         statusBar={<StatusBar />}
       />
       <MediaImporter ref={importerRef} />

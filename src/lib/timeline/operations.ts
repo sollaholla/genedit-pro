@@ -241,6 +241,43 @@ export function addClip(
   return { ...project, clips: [...project.clips, clip] };
 }
 
+export function addClipWithTiming(
+  project: Project,
+  asset: MediaAsset,
+  trackId: string,
+  timing: {
+    startSec: number;
+    inSec: number;
+    outSec: number;
+    timelineDurationSec?: number;
+  },
+): Project {
+  const track = project.tracks.find((t) => t.id === trackId);
+  if (!track) return project;
+  if (!isAssetCompatibleWithTrack(asset, track)) return project;
+
+  const inSec = Math.max(0, Math.min(timing.inSec, Math.max(0, asset.durationSec - MIN_CLIP_DURATION)));
+  const outSec = Math.max(inSec + MIN_CLIP_DURATION, Math.min(timing.outSec, Math.max(inSec + MIN_CLIP_DURATION, asset.durationSec || timing.outSec)));
+  const sourceDurationSec = Math.max(MIN_CLIP_DURATION, outSec - inSec);
+  const requestedTimelineDurationSec = Math.max(MIN_CLIP_DURATION, timing.timelineDurationSec ?? sourceDurationSec);
+  const speed = Math.max(MIN_CLIP_SPEED, Math.min(MAX_CLIP_SPEED, sourceDurationSec / requestedTimelineDurationSec));
+  const clip: Clip = {
+    id: nanoid(8),
+    assetId: asset.id,
+    trackId,
+    startSec: Math.max(0, timing.startSec),
+    inSec,
+    outSec,
+    speed,
+    scale: 1,
+    components: [],
+    volume: 1,
+    fadeInSec: 0,
+    fadeOutSec: 0,
+  };
+  return { ...project, clips: [...project.clips, clip] };
+}
+
 export function removeClip(project: Project, clipId: string): Project {
   return { ...project, clips: project.clips.filter((c) => c.id !== clipId) };
 }
