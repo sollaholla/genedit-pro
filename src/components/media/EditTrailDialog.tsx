@@ -1,13 +1,13 @@
-import { Film, Image as ImageIcon, Paintbrush, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, Undo2, X } from 'lucide-react';
+import { Film, Image as ImageIcon, Minus, Paintbrush, Pause, Play, Plus, RotateCcw, Save, Search, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
-  CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
   DEFAULT_IMAGE_MODELS,
   defaultImageModel,
   estimateImageCostUsd,
   imageModelById,
   sortImageModelsByPriority,
+  type ImageAspect,
   type ImageModelDefinition,
 } from '@/lib/imageModels/capabilities';
 import { downloadGeneratedImageFile } from '@/lib/imageGeneration/download';
@@ -33,8 +33,20 @@ type Props = {
 };
 
 const IMAGE_MODELS = sortImageModelsByPriority(DEFAULT_IMAGE_MODELS);
+const ASPECT_OPTIONS: ImageAspect[] = ['21:9', '16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16'];
 const PAINT_COLORS = ['#ff3b30', '#ffcc00', '#00d084', '#20a7f3', '#ffffff'];
 const PAINT_BRUSH_SIZE = 10;
+const DEFAULT_IMAGE_EDIT_ASPECT: ImageAspect = '16:9';
+const MIN_PREVIEW_ZOOM = 100;
+const MAX_PREVIEW_ZOOM = 400;
+const PREVIEW_ZOOM_STEP = 25;
+
+type AspectFrame = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 
 type SavedPaintOverlay = {
   blobKey: string;
@@ -63,6 +75,13 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const paintingRef = useRef(false);
   const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
+  const aspectFrameDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startFrame: AspectFrame;
+    imageRect: DOMRect;
+  } | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditTrailTransform>(DEFAULT_EDIT_TRAIL_TRANSFORM);
   const [saving, setSaving] = useState(false);
@@ -78,6 +97,9 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const [paintColor, setPaintColor] = useState(PAINT_COLORS[0]!);
   const [paintHasInk, setPaintHasInk] = useState(false);
   const [paintOverlayUrl, setPaintOverlayUrl] = useState<string | null>(null);
+  const [previewZoom, setPreviewZoom] = useState(MIN_PREVIEW_ZOOM);
+  const [aspectRatio, setAspectRatio] = useState<ImageAspect>(DEFAULT_IMAGE_EDIT_ASPECT);
+  const [aspectFrame, setAspectFrame] = useState<AspectFrame>(() => fitAspectFrame(DEFAULT_IMAGE_EDIT_ASPECT, null));
 
   const iterations = useMemo(() => {
     return [...(asset?.editTrail?.iterations ?? [])].sort((a, b) => b.createdAt - a.createdAt);
@@ -95,6 +117,8 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   const activeIterationEditPrompt = activeIteration?.generation?.editPrompt;
   const activeIterationModel = activeIteration?.generation?.model;
   const activeIterationPaintOverlayBlobKey = activeIteration?.generation?.paintOverlayBlobKey;
+  const activeIterationAspectRatio = activeIteration?.generation?.aspectRatio;
+  const activeIterationSourceFrame = activeIteration?.generation?.sourceFrame;
   const selectedImageModel = imageModelById(imageModelId) ?? defaultImageModel();
   const estimatedImageCostUsd = estimateImageCostUsd(selectedImageModel);
   const pendingEditTrailGeneration = asset?.editTrailGeneration ?? null;
@@ -139,17 +163,33 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
 
   useEffect(() => {
     applyPreviewTransform(videoRef.current, draft);
-    applyPreviewTransform(imageLayerRef.current, draft);
-  }, [draft, sourceUrl]);
+    applyImagePreviewTransform(imageLayerRef.current, draft, previewZoom);
+  }, [draft, previewZoom, sourceUrl]);
 
   useEffect(() => {
     if (assetKind !== 'image') return;
     const modelFromIteration = imageModelById(activeIterationModel ?? '');
+    const nextAspectRatio = isImageAspect(activeIterationAspectRatio)
+      ? activeIterationAspectRatio
+      : DEFAULT_IMAGE_EDIT_ASPECT;
+    const imageSize = imageSizeForAsset(asset);
     setImageModelId(modelFromIteration?.id ?? defaultImageModel().id);
     setEditPrompt(activeIterationEditPrompt ?? '');
+    setAspectRatio(nextAspectRatio);
+    setAspectFrame(normalizeAspectFrame(activeIterationSourceFrame, nextAspectRatio, imageSize));
+    setPreviewZoom(MIN_PREVIEW_ZOOM);
     setPaintMode(false);
     setGenerationProgress(0);
-  }, [activeAssetId, assetKind, activeIteration?.id, activeIterationEditPrompt, activeIterationModel]);
+  }, [
+    activeAssetId,
+    asset,
+    assetKind,
+    activeIteration?.id,
+    activeIterationAspectRatio,
+    activeIterationEditPrompt,
+    activeIterationModel,
+    activeIterationSourceFrame,
+  ]);
 
   useEffect(() => {
     if (assetKind !== 'image') {
@@ -187,7 +227,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
   }, [assetKind, activeIteration?.id, activeIterationPaintOverlayBlobKey]);
 
   useEffect(() => {
-    if (assetKind !== 'image' || !paintMode || !sourceUrl) return undefined;
+    if (assetKind !== 'image' || (!paintMode && !paintHasInk) || !sourceUrl) return undefined;
     const canvas = paintCanvasRef.current;
     const image = imageRef.current;
     if (!canvas || !image) return undefined;
@@ -216,7 +256,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
       observer.disconnect();
       window.cancelAnimationFrame(frameId);
     };
-  }, [assetKind, paintMode, paintOverlayUrl, sourceUrl]);
+  }, [assetKind, draft, paintHasInk, paintMode, paintOverlayUrl, previewZoom, sourceUrl]);
 
   useEffect(() => {
     const onConnectionsChanged = () => setError(null);
@@ -277,6 +317,61 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     if (!video || !Number.isFinite(value)) return;
     video.currentTime = value;
     setVideoCurrentTime(value);
+  };
+
+  const updatePreviewZoom = (delta: number) => {
+    setPreviewZoom((current) => clamp(current + delta, MIN_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM));
+  };
+
+  const changeAspectRatio = (value: string) => {
+    if (!isImageAspect(value)) return;
+    setAspectRatio(value);
+    setAspectFrame((current) => normalizeAspectFrame(current, value, imageSizeForAsset(asset)));
+  };
+
+  const beginAspectFrameDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (paintMode || working || event.button !== 0) return;
+    const image = imageRef.current;
+    if (!image) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    aspectFrameDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startFrame: aspectFrame,
+      imageRect: image.getBoundingClientRect(),
+    };
+  };
+
+  const continueAspectFrameDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = aspectFrameDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaX = drag.imageRect.width > 0 ? (event.clientX - drag.startX) / drag.imageRect.width : 0;
+    const deltaY = drag.imageRect.height > 0 ? (event.clientY - drag.startY) / drag.imageRect.height : 0;
+    setAspectFrame(clampAspectFramePosition({
+      ...drag.startFrame,
+      x: drag.startFrame.x + deltaX,
+      y: drag.startFrame.y + deltaY,
+    }));
+  };
+
+  const endAspectFrameDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    aspectFrameDragRef.current = null;
+  };
+
+  const nudgeAspectFrame = (deltaX: number, deltaY: number) => {
+    setAspectFrame((current) => clampAspectFramePosition({
+      ...current,
+      x: current.x + deltaX,
+      y: current.y + deltaY,
+    }));
   };
 
   function clearPaintCanvas() {
@@ -371,7 +466,7 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     }
 
     const editPromptText = editPrompt.trim();
-    const providerPrompt = buildImagePaintEditPrompt(editPromptText, paintHasInk);
+    const providerPrompt = buildImagePaintEditPrompt(editPromptText, paintHasInk, aspectRatio);
     let savedOverlay: SavedPaintOverlay | null = null;
     setGenerating(true);
     setGenerationProgress(2);
@@ -381,6 +476,8 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
       editPrompt: editPromptText,
       model: selectedImageModel.id,
       estimatedCostUsd: estimatedImageCostUsd,
+      aspectRatio,
+      sourceFrame: aspectFrame,
     });
 
     const updateProgress = (value: number) => {
@@ -389,16 +486,16 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
     };
 
     try {
-      const sourceFile = await renderEditedImageFile(asset, sourceUrl, draft);
+      const sourceFile = await renderEditedImageFile(asset, sourceUrl, draft, aspectFrame);
       savedOverlay = await saveCurrentPaintOverlay(activeIteration, imageRef.current, paintCanvasRef.current, paintHasInk);
       const guideFile = savedOverlay
-        ? await paintGuideFileFromOverlay(sourceFile, savedOverlay.file)
+        ? await paintGuideFileFromOverlay(sourceFile, savedOverlay.file, aspectFrame)
         : null;
       const editInput = await buildImageEditInput(sourceFile, guideFile, selectedImageModel);
       const generated = await generatePiApiImage({
         model: selectedImageModel,
         prompt: providerPrompt,
-        aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+        aspectRatio,
         resolution: CHARACTER_IMAGE_RESOLUTION,
         outputFormat: selectedImageModel.capabilities.defaultOutputFormat,
         ...editInput,
@@ -427,6 +524,8 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
         paintOverlayBlobKey: savedOverlay?.blobKey,
         paintOverlayWidth: savedOverlay?.width,
         paintOverlayHeight: savedOverlay?.height,
+        aspectRatio,
+        sourceFrame: aspectFrame,
       });
       savedOverlay = null;
       setGenerationProgress(100);
@@ -561,6 +660,40 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                     )}
                   </div>
                 )}
+                {asset.kind === 'image' && sourceUrl && (
+                  <div className="absolute right-3 top-3 z-30 flex h-9 items-center gap-1 rounded-md border border-white/10 bg-black/75 px-1.5 text-slate-200 shadow-xl backdrop-blur">
+                    <Search size={14} className="mx-1 text-slate-400" />
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 items-center justify-center rounded text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => updatePreviewZoom(PREVIEW_ZOOM_STEP)}
+                      disabled={previewZoom >= MAX_PREVIEW_ZOOM}
+                      title="Zoom in"
+                      aria-label="Zoom in"
+                    >
+                      <Plus size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="h-7 min-w-12 rounded px-2 text-center text-xs font-semibold tabular-nums text-slate-100 hover:bg-white/10"
+                      onClick={() => setPreviewZoom(MIN_PREVIEW_ZOOM)}
+                      title="Reset zoom"
+                      aria-label="Reset zoom"
+                    >
+                      {previewZoom}%
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 items-center justify-center rounded text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => updatePreviewZoom(-PREVIEW_ZOOM_STEP)}
+                      disabled={previewZoom <= MIN_PREVIEW_ZOOM}
+                      title="Zoom out"
+                      aria-label="Zoom out"
+                    >
+                      <Minus size={14} />
+                    </button>
+                  </div>
+                )}
                 {sourceUrl ? (
                   asset.kind === 'video' ? (
                     <div className="relative flex h-full w-full items-center justify-center">
@@ -618,6 +751,44 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                         draggable={false}
                         className="block max-h-full max-w-full select-none object-contain"
                       />
+                      <div
+                        className={`absolute z-20 border-2 border-dotted border-yellow-300 bg-yellow-300/5 shadow-[0_0_0_1px_rgba(0,0,0,0.65),0_0_20px_rgba(250,204,21,0.18)] ${paintMode || working ? 'pointer-events-none' : 'cursor-move'}`}
+                        style={{
+                          left: `${aspectFrame.x * 100}%`,
+                          top: `${aspectFrame.y * 100}%`,
+                          width: `${aspectFrame.width * 100}%`,
+                          height: `${aspectFrame.height * 100}%`,
+                        }}
+                        role="button"
+                        tabIndex={paintMode || working ? -1 : 0}
+                        aria-label="Aspect frame"
+                        title="Drag aspect frame"
+                        onPointerDown={beginAspectFrameDrag}
+                        onPointerMove={continueAspectFrameDrag}
+                        onPointerUp={endAspectFrameDrag}
+                        onPointerCancel={endAspectFrameDrag}
+                        onKeyDown={(event) => {
+                          if (paintMode || working) return;
+                          const step = event.shiftKey ? 0.05 : 0.01;
+                          if (event.key === 'ArrowLeft') {
+                            event.preventDefault();
+                            nudgeAspectFrame(-step, 0);
+                          } else if (event.key === 'ArrowRight') {
+                            event.preventDefault();
+                            nudgeAspectFrame(step, 0);
+                          } else if (event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            nudgeAspectFrame(0, -step);
+                          } else if (event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            nudgeAspectFrame(0, step);
+                          }
+                        }}
+                      >
+                        <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-100 shadow">
+                          {aspectRatio}
+                        </span>
+                      </div>
                       {(paintMode || paintHasInk) && (
                         <canvas
                           ref={paintCanvasRef}
@@ -678,6 +849,19 @@ export function EditTrailDialog({ assetId, onClose }: Props) {
                       onChange={setImageModelId}
                       label="Model"
                     />
+                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Aspect Ratio
+                      <select
+                        value={aspectRatio}
+                        onChange={(event) => changeAspectRatio(event.target.value)}
+                        className="mt-1 h-9 w-full rounded-md border border-surface-700 bg-surface-950 px-2 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-brand-400"
+                        disabled={working}
+                      >
+                        {ASPECT_OPTIONS.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </label>
                     <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                       Prompt
                       <textarea
@@ -804,7 +988,12 @@ function formatPlaybackTime(seconds: number): string {
   return `${minutes}:${remaining.toString().padStart(2, '0')}`;
 }
 
-async function renderEditedImageFile(asset: MediaAsset, sourceUrl: string, transform: EditTrailTransform): Promise<File> {
+async function renderEditedImageFile(
+  asset: MediaAsset,
+  sourceUrl: string,
+  transform: EditTrailTransform,
+  sourceFrame?: AspectFrame,
+): Promise<File> {
   const img = await loadImage(sourceUrl);
   const width = img.naturalWidth || asset.width || 1920;
   const height = img.naturalHeight || asset.height || 1080;
@@ -815,7 +1004,8 @@ async function renderEditedImageFile(asset: MediaAsset, sourceUrl: string, trans
   if (!ctx) throw new Error('Canvas rendering is unavailable.');
   ctx.clearRect(0, 0, width, height);
   drawTransformed(ctx, img, width, height, transform);
-  const blob = await canvasToBlob(canvas, 'image/png');
+  const outputCanvas = sourceFrame ? cropCanvasToFrame(canvas, sourceFrame) : canvas;
+  const blob = await canvasToBlob(outputCanvas, 'image/png');
   const baseName = asset.name.replace(/\.[^.]+$/, '') || 'edited-image';
   return new File([blob], `${baseName}-edit.png`, { type: 'image/png' });
 }
@@ -885,7 +1075,11 @@ async function saveCurrentPaintOverlay(
   };
 }
 
-async function paintGuideFileFromOverlay(sourceFile: File, overlayFile: File): Promise<File> {
+async function paintGuideFileFromOverlay(
+  sourceFile: File,
+  overlayFile: File,
+  sourceFrame?: AspectFrame,
+): Promise<File> {
   const sourceUrl = URL.createObjectURL(sourceFile);
   const overlayUrl = URL.createObjectURL(overlayFile);
   try {
@@ -898,7 +1092,7 @@ async function paintGuideFileFromOverlay(sourceFile: File, overlayFile: File): P
     const context = canvas.getContext('2d');
     if (!context) throw new Error('Canvas rendering is unavailable.');
     context.drawImage(source, 0, 0, width, height);
-    context.drawImage(overlay, 0, 0, width, height);
+    drawOverlayForFrame(context, overlay, width, height, sourceFrame);
     const blob = await canvasToBlob(canvas, 'image/png');
     return new File([blob], 'painted-edit-guide.png', { type: 'image/png' });
   } finally {
@@ -919,14 +1113,47 @@ async function buildImageEditInput(
   return { referenceUrls: urls };
 }
 
-function buildImagePaintEditPrompt(editPrompt: string, hasPaintGuide: boolean): string {
+function buildImagePaintEditPrompt(editPrompt: string, hasPaintGuide: boolean, aspectRatio: ImageAspect): string {
   return [
     `Edit the provided image according to this prompt: ${editPrompt.trim()}`,
+    `Use a ${aspectRatio} output composition based on the yellow aspect frame selection.`,
     hasPaintGuide
       ? 'Use the painted guide image as spatial direction only. Colored brush marks identify the area to change and must not appear in the final image.'
       : null,
     'Keep the existing composition, perspective, lighting, and unmentioned details unchanged. Return only the edited image.',
   ].filter(Boolean).join('\n\n');
+}
+
+function cropCanvasToFrame(canvas: HTMLCanvasElement, frame: AspectFrame): HTMLCanvasElement {
+  const cropX = Math.round(frame.x * canvas.width);
+  const cropY = Math.round(frame.y * canvas.height);
+  const cropWidth = Math.max(1, Math.round(frame.width * canvas.width));
+  const cropHeight = Math.max(1, Math.round(frame.height * canvas.height));
+  const output = document.createElement('canvas');
+  output.width = cropWidth;
+  output.height = cropHeight;
+  const context = output.getContext('2d');
+  if (!context) return canvas;
+  context.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+  return output;
+}
+
+function drawOverlayForFrame(
+  context: CanvasRenderingContext2D,
+  overlay: HTMLImageElement,
+  width: number,
+  height: number,
+  sourceFrame?: AspectFrame,
+) {
+  if (!sourceFrame) {
+    context.drawImage(overlay, 0, 0, width, height);
+    return;
+  }
+  const cropX = Math.round(sourceFrame.x * overlay.naturalWidth);
+  const cropY = Math.round(sourceFrame.y * overlay.naturalHeight);
+  const cropWidth = Math.max(1, Math.round(sourceFrame.width * overlay.naturalWidth));
+  const cropHeight = Math.max(1, Math.round(sourceFrame.height * overlay.naturalHeight));
+  context.drawImage(overlay, cropX, cropY, cropWidth, cropHeight, 0, 0, width, height);
 }
 
 function drawTransformed(
@@ -955,6 +1182,70 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 function applyPreviewTransform(element: HTMLElement | null, transform: EditTrailTransform) {
   if (!element) return;
   element.style.transform = `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale})`;
+}
+
+function applyImagePreviewTransform(element: HTMLElement | null, transform: EditTrailTransform, previewZoom: number) {
+  if (!element) return;
+  const previewScale = previewZoom / 100;
+  element.style.transform = `translate(${transform.offsetX}px, ${transform.offsetY}px) scale(${transform.scale * previewScale})`;
+}
+
+function imageSizeForAsset(asset: MediaAsset | null): { width: number; height: number } | null {
+  if (!asset?.width || !asset.height || asset.width <= 0 || asset.height <= 0) return null;
+  return { width: asset.width, height: asset.height };
+}
+
+function fitAspectFrame(aspectRatio: ImageAspect, imageSize: { width: number; height: number } | null): AspectFrame {
+  const imageRatio = imageSize ? imageSize.width / imageSize.height : 16 / 9;
+  const targetRatio = aspectRatioValue(aspectRatio);
+  let width = 1;
+  let height = 1;
+  if (targetRatio >= imageRatio) height = imageRatio / targetRatio;
+  else width = targetRatio / imageRatio;
+  return {
+    x: (1 - width) / 2,
+    y: (1 - height) / 2,
+    width,
+    height,
+  };
+}
+
+function normalizeAspectFrame(
+  frame: AspectFrame | undefined,
+  aspectRatio: ImageAspect,
+  imageSize: { width: number; height: number } | null,
+): AspectFrame {
+  const fit = fitAspectFrame(aspectRatio, imageSize);
+  if (!frame) return fit;
+  const centerX = (Number.isFinite(frame.x) ? frame.x : fit.x) + (Number.isFinite(frame.width) ? frame.width : fit.width) / 2;
+  const centerY = (Number.isFinite(frame.y) ? frame.y : fit.y) + (Number.isFinite(frame.height) ? frame.height : fit.height) / 2;
+  return clampAspectFramePosition({
+    x: centerX - fit.width / 2,
+    y: centerY - fit.height / 2,
+    width: fit.width,
+    height: fit.height,
+  });
+}
+
+function clampAspectFramePosition(frame: AspectFrame): AspectFrame {
+  return {
+    ...frame,
+    x: clamp(frame.x, 0, Math.max(0, 1 - frame.width)),
+    y: clamp(frame.y, 0, Math.max(0, 1 - frame.height)),
+  };
+}
+
+function aspectRatioValue(aspectRatio: ImageAspect): number {
+  const [width, height] = aspectRatio.split(':').map(Number);
+  return width > 0 && height > 0 ? width / height : 16 / 9;
+}
+
+function isImageAspect(value: string | undefined): value is ImageAspect {
+  return Boolean(value && ASPECT_OPTIONS.includes(value as ImageAspect));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function formatGenerationError(err: unknown): string {

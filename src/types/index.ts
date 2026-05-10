@@ -72,6 +72,13 @@ export type EditTrailIteration = {
     paintOverlayBlobKey?: string | null;
     paintOverlayWidth?: number;
     paintOverlayHeight?: number;
+    aspectRatio?: string;
+    sourceFrame?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
     costAccountedUsd?: number;
     costAccountedAt?: number;
   };
@@ -96,6 +103,13 @@ export type EditTrailGeneration = {
   providerTaskEndpoint?: string;
   providerTaskStatus?: string;
   providerTaskCreatedAt?: number;
+  aspectRatio?: string;
+  sourceFrame?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   errorType?: GenerationErrorType;
   errorMessage?: string;
   startedAt?: number;

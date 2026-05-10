@@ -40,13 +40,20 @@ type GeneratedEditTrailMetadata = {
   paintOverlayBlobKey?: string | null;
   paintOverlayWidth?: number;
   paintOverlayHeight?: number;
+  aspectRatio?: string;
+  sourceFrame?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   character?: Partial<CharacterAssetData>;
   reference?: Partial<ReferenceAssetData>;
 };
 
 type EditTrailGenerationMetadata = Pick<
   EditTrailGeneration,
-  'prompt' | 'editPrompt' | 'model' | 'estimatedCostUsd' | 'actualCostUsd' | 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt'
+  'prompt' | 'editPrompt' | 'model' | 'estimatedCostUsd' | 'actualCostUsd' | 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt' | 'aspectRatio' | 'sourceFrame'
 >;
 
 function projectAssetsKey(projectId: string): string {
@@ -870,6 +877,8 @@ export const useMediaStore = create<MediaState>((set, get) => ({
         paintOverlayBlobKey: metadata.paintOverlayBlobKey,
         paintOverlayWidth: metadata.paintOverlayWidth,
         paintOverlayHeight: metadata.paintOverlayHeight,
+        aspectRatio: metadata.aspectRatio,
+        sourceFrame: metadata.sourceFrame,
         costAccountedUsd: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? actualCostUsd : undefined,
         costAccountedAt: Number.isFinite(actualCostUsd) && (actualCostUsd ?? 0) > 0 ? now : undefined,
       },
