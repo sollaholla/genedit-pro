@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { nanoid } from 'nanoid';
-import type { CharacterAssetData, EditTrail, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, MediaKind, ReferenceAssetData, SequenceAssetData } from '@/types';
+import type { CharacterAssetData, EditTrail, EditTrailGeneration, EditTrailIteration, EditTrailTransform, GenerateRecipe, MediaAsset, MediaKind, ReferenceAssetData, SequenceAssetData } from '@/types';
 import type { GenerationErrorType } from '@/lib/videoGeneration/errors';
 import { activeEditIteration, DEFAULT_EDIT_TRAIL_TRANSFORM } from '@/lib/media/editTrail';
 import { isImageLikeAsset, isReferenceAssetKind, referenceDataForAsset } from '@/lib/media/characterReferences';
@@ -39,6 +39,11 @@ type GeneratedEditTrailMetadata = {
   character?: Partial<CharacterAssetData>;
   reference?: Partial<ReferenceAssetData>;
 };
+
+type EditTrailGenerationMetadata = Pick<
+  EditTrailGeneration,
+  'prompt' | 'model' | 'estimatedCostUsd' | 'actualCostUsd' | 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt'
+>;
 
 function projectAssetsKey(projectId: string): string {
   return `${PROJECT_MEDIA_PREFIX}${projectId}:assets`;
@@ -159,6 +164,21 @@ type MediaState = {
       providerArtifactExpiresAt?: number;
     },
   ) => Promise<void>;
+  startEditTrailGeneration: (assetId: string, metadata: EditTrailGenerationMetadata) => void;
+  updateEditTrailGenerationProgress: (assetId: string, progress: number) => void;
+  updateEditTrailGenerationTask: (
+    assetId: string,
+    metadata: Pick<EditTrailGeneration, 'provider' | 'providerTaskId' | 'providerTaskEndpoint' | 'providerTaskStatus' | 'providerTaskCreatedAt'>,
+  ) => void;
+  failEditTrailGeneration: (
+    assetId: string,
+    failure?: {
+      actualCostUsd?: number;
+      errorMessage?: string;
+      errorType?: GenerationErrorType;
+    },
+  ) => void;
+  clearEditTrailGeneration: (assetId: string) => void;
   addGeneratedEditTrailIteration: (assetId: string, file: File, metadata: GeneratedEditTrailMetadata) => Promise<void>;
   failGeneratedAsset: (
     id: string,
@@ -700,6 +720,74 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     }
   },
 
+  startEditTrailGeneration: (assetId, metadata) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((asset) => (asset.id === assetId
+      ? {
+          ...asset,
+          editTrailGeneration: {
+            status: 'generating' as const,
+            progress: 0,
+            ...metadata,
+            startedAt: Date.now(),
+          },
+        }
+      : asset)));
+  },
+
+  updateEditTrailGenerationProgress: (assetId, progress) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((asset) => (asset.id === assetId
+      ? {
+          ...asset,
+          editTrailGeneration: {
+            ...(asset.editTrailGeneration ?? { status: 'generating' as const }),
+            status: 'generating' as const,
+            progress: Math.max(0, Math.min(100, progress)),
+          },
+        }
+      : asset)));
+  },
+
+  updateEditTrailGenerationTask: (assetId, metadata) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((asset) => (asset.id === assetId
+      ? {
+          ...asset,
+          editTrailGeneration: {
+            ...(asset.editTrailGeneration ?? { status: 'generating' as const }),
+            status: 'generating' as const,
+            ...metadata,
+          },
+        }
+      : asset)));
+  },
+
+  failEditTrailGeneration: (assetId, failure = {}) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((asset) => (asset.id === assetId
+      ? {
+          ...asset,
+          editTrailGeneration: {
+            ...(asset.editTrailGeneration ?? { status: 'error' as const }),
+            status: 'error' as const,
+            progress: 0,
+            actualCostUsd: failure.actualCostUsd ?? asset.editTrailGeneration?.estimatedCostUsd,
+            errorType: failure.errorType ?? asset.editTrailGeneration?.errorType ?? 'InternalError',
+            errorMessage: failure.errorMessage ?? asset.editTrailGeneration?.errorMessage ?? 'Generation failed.',
+            failedAt: Date.now(),
+          },
+        }
+      : asset)));
+  },
+
+  clearEditTrailGeneration: (assetId) => {
+    const projectId = projectIdForAssetMutation(get(), assetId);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((asset) => (asset.id === assetId
+      ? { ...asset, editTrailGeneration: undefined }
+      : asset)));
+  },
+
   addGeneratedEditTrailIteration: async (assetId, file, metadata) => {
     const projectId = projectIdForAssetMutation(get(), assetId);
     const sourceAssets = get().activeProjectId === projectId ? get().assets : loadAssets(projectId);
@@ -769,7 +857,13 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             updatedAt: now,
           }
         : undefined;
-      return applyIterationToAsset({ ...trailed, editTrail, character: nextCharacter, reference: nextReference }, iteration);
+      return applyIterationToAsset({
+        ...trailed,
+        editTrail,
+        editTrailGeneration: undefined,
+        character: nextCharacter,
+        reference: nextReference,
+      }, iteration);
     }));
     accountGenerationCost(projectId, actualCostUsd);
   },

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Check, Copy, Image as ImageIcon, Mountain, Save, Sparkles, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Box, Check, Copy, Image as ImageIcon, Mountain, Paintbrush, Save, Sparkles, Trash2, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -20,7 +20,7 @@ import {
   slugifyReferenceId,
   uniqueReferenceId,
 } from '@/lib/media/characterReferences';
-import { hostLitterboxReferences } from '@/lib/videoGeneration/litterbox';
+import { hostLitterboxFile, hostLitterboxReferences } from '@/lib/videoGeneration/litterbox';
 import { VideoGenerationProviderError } from '@/lib/videoGeneration/errors';
 import {
   CONNECTION_SETTINGS_CHANGED_EVENT,
@@ -97,6 +97,8 @@ const CHARACTER_STYLE_OPTIONS: Array<{ value: CharacterVisualStyle; label: strin
   { value: '3d', label: '3D', prompt: 'Use a high-quality stylized 3D design style with smooth modeled forms and studio-rendered materials.' },
   { value: 'lego', label: 'Lego', prompt: 'Use a Lego-inspired toy design style with plastic materials, simplified block construction, and readable shapes.' },
 ];
+const PAINT_COLORS = ['#ff3b30', '#ffcc00', '#00d084', '#20a7f3', '#ffffff'];
+const PAINT_BRUSH_SIZE = 10;
 
 export function CharacterEditor({ assetId, referenceKind = 'character', folderId = null, onClose, onOpenSettings, onGenerationQueued }: Props) {
   const assets = useMediaStore((state) => state.assets);
@@ -112,6 +114,10 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
   const failGeneratedAsset = useMediaStore((state) => state.failGeneratedAsset);
+  const startEditTrailGeneration = useMediaStore((state) => state.startEditTrailGeneration);
+  const updateEditTrailGenerationProgress = useMediaStore((state) => state.updateEditTrailGenerationProgress);
+  const updateEditTrailGenerationTask = useMediaStore((state) => state.updateEditTrailGenerationTask);
+  const failEditTrailGeneration = useMediaStore((state) => state.failEditTrailGeneration);
   const addGeneratedEditTrailIteration = useMediaStore((state) => state.addGeneratedEditTrailIteration);
   const ensureEditTrail = useMediaStore((state) => state.ensureEditTrail);
   const setActiveEditTrailIteration = useMediaStore((state) => state.setActiveEditTrailIteration);
@@ -125,18 +131,35 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [slugTouched, setSlugTouched] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
-  const [working, setWorking] = useState(false);
+  const [localWorking, setLocalWorking] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [paintMode, setPaintMode] = useState(false);
+  const [paintColor, setPaintColor] = useState(PAINT_COLORS[0]!);
+  const [paintHasInk, setPaintHasInk] = useState(false);
+  const [editPrompt, setEditPrompt] = useState('');
   const loadedAssetIdRef = useRef<string | null>(null);
+  const previewImageRef = useRef<HTMLImageElement | null>(null);
+  const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const paintingRef = useRef(false);
+  const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
 
   const selectedModel = imageModelById(form.model) ?? defaultImageModel();
   const estimatedCostUsd = estimateImageCostUsd(selectedModel);
   const isCreate = !assetId;
   const promptForGeneration = form.description.trim();
   const providerPrompt = buildReferenceImagePrompt(promptForGeneration, form.style, effectiveKind);
+  const pendingEditTrailGeneration = asset?.editTrailGeneration ?? null;
+  const editTrailGenerating = pendingEditTrailGeneration?.status === 'generating';
+  const working = localWorking || editTrailGenerating;
+  const displayedProgress = editTrailGenerating ? pendingEditTrailGeneration.progress ?? progress : progress;
+  const persistedError = pendingEditTrailGeneration?.status === 'error'
+    ? pendingEditTrailGeneration.errorMessage ?? 'Generation failed.'
+    : null;
+  const visibleError = error ?? persistedError;
   const canGenerate = Boolean(promptForGeneration) && !working;
+  const canEdit = Boolean(asset && sourceUrl && editPrompt.trim()) && !working;
   const referenceAssets = useMemo(() => referenceAssetIds
     .map((id) => assets.find((candidate) => candidate.id === id))
     .filter((candidate): candidate is MediaAsset => Boolean(candidate && candidate.kind === 'image' && isReferenceImageAsset(candidate))), [assets, referenceAssetIds]);
@@ -186,6 +209,38 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       mounted = false;
     };
   }, [asset?.blobKey, asset?.editTrail?.activeIterationId, asset?.id, objectUrlFor]);
+
+  useEffect(() => {
+    setPaintMode(false);
+    setEditPrompt('');
+    clearPaintCanvas();
+  }, [asset?.editTrail?.activeIterationId, asset?.id]);
+
+  useEffect(() => {
+    if (!paintMode || !sourceUrl) {
+      clearPaintCanvas();
+      return undefined;
+    }
+    const canvas = paintCanvasRef.current;
+    if (!canvas) return undefined;
+    const resizeCanvas = () => {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(rect.width * dpr));
+      const height = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
+      setPaintHasInk(false);
+    };
+    const observer = new ResizeObserver(resizeCanvas);
+    observer.observe(canvas);
+    const frameId = window.requestAnimationFrame(resizeCanvas);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [paintMode, sourceUrl]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -283,6 +338,102 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     window.setTimeout(() => setCopied(false), 1200);
   };
 
+  function clearPaintCanvas() {
+    const canvas = paintCanvasRef.current;
+    if (canvas) {
+      const context = canvas.getContext('2d');
+      context?.save();
+      context?.setTransform(1, 0, 0, 1, 0, 0);
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+      context?.restore();
+    }
+    paintingRef.current = false;
+    lastPaintPointRef.current = null;
+    setPaintHasInk(false);
+  }
+
+  const togglePaintMode = () => {
+    if (paintMode) {
+      clearPaintCanvas();
+      setPaintMode(false);
+      return;
+    }
+    setPaintMode(true);
+  };
+
+  const beginPaintStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!paintMode || working) return;
+    const canvas = paintCanvasRef.current;
+    if (!canvas) return;
+    event.preventDefault();
+    canvas.setPointerCapture(event.pointerId);
+    paintingRef.current = true;
+    const point = paintPoint(event, canvas);
+    lastPaintPointRef.current = point;
+    drawPaintStroke(point, point);
+  };
+
+  const continuePaintStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!paintingRef.current || !paintMode || working) return;
+    const canvas = paintCanvasRef.current;
+    const lastPoint = lastPaintPointRef.current;
+    if (!canvas || !lastPoint) return;
+    event.preventDefault();
+    const point = paintPoint(event, canvas);
+    drawPaintStroke(lastPoint, point);
+    lastPaintPointRef.current = point;
+  };
+
+  const endPaintStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (paintCanvasRef.current?.hasPointerCapture(event.pointerId)) {
+      paintCanvasRef.current.releasePointerCapture(event.pointerId);
+    }
+    paintingRef.current = false;
+    lastPaintPointRef.current = null;
+  };
+
+  function paintPoint(event: ReactPointerEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  }
+
+  function drawPaintStroke(from: { x: number; y: number }, to: { x: number; y: number }) {
+    const canvas = paintCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = rect.width > 0 ? canvas.width / rect.width : window.devicePixelRatio || 1;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.save();
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.lineWidth = PAINT_BRUSH_SIZE;
+    context.strokeStyle = paintColor;
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.stroke();
+    context.restore();
+    setPaintHasInk(true);
+  }
+
+  const submitPaintEdit = async () => {
+    if (!asset || !canEdit) return;
+    const apiKey = await readPiApiKey();
+    if (!apiKey) {
+      setError('Connect PiAPI in Settings before editing images.');
+      return;
+    }
+    setLocalWorking(true);
+    setProgress(2);
+    setError(null);
+    await editCharacter(asset, apiKey);
+  };
+
   const generate = async () => {
     if (!canGenerate) return;
     const apiKey = await readPiApiKey();
@@ -290,7 +441,7 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       setError(`Connect PiAPI in Settings before generating ${config.labelPlural}.`);
       return;
     }
-    setWorking(true);
+    setLocalWorking(true);
     setProgress(2);
     setError(null);
     if (isCreate) {
@@ -350,9 +501,89 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     }
   };
 
-  const regenerateCharacter = async (characterAsset: MediaAsset, apiKey: string) => {
+  const editCharacter = async (characterAsset: MediaAsset, apiKey: string) => {
+    const editPromptText = editPrompt.trim();
+    if (!editPromptText) {
+      setLocalWorking(false);
+      return;
+    }
+    const editProviderPrompt = buildPaintEditPrompt(editPromptText, effectiveKind, paintHasInk);
+    startEditTrailGeneration(characterAsset.id, {
+      prompt: editProviderPrompt,
+      model: selectedModel.id,
+      estimatedCostUsd,
+    });
+    const updateProgress = (value: number) => {
+      setProgress(value);
+      updateEditTrailGenerationProgress(characterAsset.id, value);
+    };
     try {
-      const referenceInput = await buildReferenceInput(uniqueAssetReferences([characterAsset, ...referenceAssets]), selectedModel, objectUrlFor);
+      const paintGuideFile = paintHasInk
+        ? await paintGuideFileFromCanvas(previewImageRef.current, paintCanvasRef.current)
+        : null;
+      const referenceInput = await buildPaintEditInput(characterAsset, paintGuideFile, referenceAssets, selectedModel, objectUrlFor);
+      if (!referenceInput.referenceFiles?.length && !referenceInput.referenceUrls?.length) {
+        throw new Error(`${config.label} image is not available for editing.`);
+      }
+      const generated = await generatePiApiImage({
+        model: selectedModel,
+        prompt: editProviderPrompt,
+        aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
+        resolution: CHARACTER_IMAGE_RESOLUTION,
+        outputFormat: selectedModel.capabilities.defaultOutputFormat,
+        referenceUrls: referenceInput.referenceUrls,
+        referenceFiles: referenceInput.referenceFiles,
+        onProgress: updateProgress,
+        onTaskAccepted: (task) => updateEditTrailGenerationTask(characterAsset.id, {
+          provider: 'piapi-gemini',
+          providerTaskId: task.task_id,
+          providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : '/api/v1/task',
+          providerTaskStatus: task.status,
+          providerTaskCreatedAt: Date.now(),
+        }),
+      }, { apiKey });
+      const file = await downloadGeneratedImageFile(generated.url, updateProgress);
+      await addGeneratedEditTrailIteration(characterAsset.id, file, {
+        prompt: editProviderPrompt,
+        model: selectedModel.id,
+        estimatedCostUsd,
+        actualCostUsd: generated.actualCostUsd ?? estimatedCostUsd,
+        provider: generated.provider,
+        providerTaskId: generated.providerTaskId,
+        providerTaskEndpoint: generated.providerTaskEndpoint,
+        providerTaskStatus: generated.providerTaskStatus,
+        providerArtifactUri: generated.url,
+        providerArtifactExpiresAt: generated.providerArtifactExpiresAt,
+      });
+      setProgress(100);
+      setEditPrompt('');
+      setPaintMode(false);
+      clearPaintCanvas();
+    } catch (err) {
+      const message = formatGenerationError(err);
+      setError(message);
+      failEditTrailGeneration(characterAsset.id, {
+        actualCostUsd: estimatedCostUsd,
+        errorMessage: message,
+        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+      });
+    } finally {
+      setLocalWorking(false);
+    }
+  };
+
+  const regenerateCharacter = async (characterAsset: MediaAsset, apiKey: string) => {
+    startEditTrailGeneration(characterAsset.id, {
+      prompt: providerPrompt,
+      model: selectedModel.id,
+      estimatedCostUsd,
+    });
+    const updateProgress = (value: number) => {
+      setProgress(value);
+      updateEditTrailGenerationProgress(characterAsset.id, value);
+    };
+    try {
+      const referenceInput = await buildReferenceInput(referenceAssets, selectedModel, objectUrlFor);
       const generated = await generatePiApiImage({
         model: selectedModel,
         prompt: providerPrompt,
@@ -361,9 +592,16 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
         outputFormat: selectedModel.capabilities.defaultOutputFormat,
         referenceUrls: referenceInput.referenceUrls,
         referenceFiles: referenceInput.referenceFiles,
-        onProgress: setProgress,
+        onProgress: updateProgress,
+        onTaskAccepted: (task) => updateEditTrailGenerationTask(characterAsset.id, {
+          provider: 'piapi-gemini',
+          providerTaskId: task.task_id,
+          providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : '/api/v1/task',
+          providerTaskStatus: task.status,
+          providerTaskCreatedAt: Date.now(),
+        }),
       }, { apiKey });
-      const file = await downloadGeneratedImageFile(generated.url, setProgress);
+      const file = await downloadGeneratedImageFile(generated.url, updateProgress);
       await addGeneratedEditTrailIteration(characterAsset.id, file, {
         prompt: providerPrompt,
         model: selectedModel.id,
@@ -383,9 +621,15 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       if (form.name.trim() && form.name.trim() !== characterAsset.name) renameAsset(characterAsset.id, form.name.trim());
       setProgress(100);
     } catch (err) {
-      setError(formatGenerationError(err));
+      const message = formatGenerationError(err);
+      setError(message);
+      failEditTrailGeneration(characterAsset.id, {
+        actualCostUsd: estimatedCostUsd,
+        errorMessage: message,
+        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+      });
     } finally {
-      setWorking(false);
+      setLocalWorking(false);
     }
   };
 
@@ -431,13 +675,87 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
 
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_340px]">
             <div className="min-h-0 bg-black p-4">
-              <div className="flex h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:18px_18px]">
+              <div className="relative flex h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:18px_18px]">
+                {!isCreate && sourceUrl && (
+                  <div className="absolute left-3 top-3 z-30 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${paintMode ? 'border-brand-300 bg-brand-500 text-white shadow-lg shadow-brand-900/30' : 'border-white/10 bg-black/70 text-slate-200 hover:border-white/20 hover:bg-surface-900'}`}
+                      onClick={togglePaintMode}
+                      disabled={working}
+                      title={paintMode ? 'Disable brush' : 'Paint edit guide'}
+                      aria-label={paintMode ? 'Disable brush' : 'Paint edit guide'}
+                    >
+                      <Paintbrush size={16} />
+                    </button>
+                    {paintMode && (
+                      <div className="flex items-center gap-1 rounded-full border border-white/10 bg-black/80 p-1.5 shadow-xl">
+                        {PAINT_COLORS.map((color) => (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`h-6 w-6 rounded-full border transition ${paintColor === color ? 'border-white ring-2 ring-brand-300/70' : 'border-white/25 hover:border-white/70'}`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setPaintColor(color)}
+                            aria-label={`Use ${color} brush`}
+                            title={`Use ${color} brush`}
+                          />
+                        ))}
+                        <button
+                          type="button"
+                          className="ml-1 flex h-7 w-7 items-center justify-center rounded-full text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40"
+                          onClick={clearPaintCanvas}
+                          disabled={!paintHasInk}
+                          aria-label="Clear paint"
+                          title="Clear paint"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {sourceUrl ? (
-                  <img src={sourceUrl} alt={form.name} draggable={false} className="max-h-full max-w-full select-none object-contain" />
+                  <div className="relative inline-flex max-h-full max-w-full">
+                    <img ref={previewImageRef} src={sourceUrl} alt={form.name} draggable={false} className="block max-h-full max-w-full select-none object-contain" />
+                    {paintMode && !isCreate && (
+                      <canvas
+                        ref={paintCanvasRef}
+                        className="absolute inset-0 z-10 h-full w-full cursor-crosshair touch-none"
+                        onPointerDown={beginPaintStroke}
+                        onPointerMove={continuePaintStroke}
+                        onPointerUp={endPaintStroke}
+                        onPointerCancel={endPaintStroke}
+                        onPointerLeave={endPaintStroke}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center gap-3 text-slate-500">
                     <Icon size={44} />
                     <div className="text-sm">{isCreate ? config.emptyPreviewText : `${config.label} image loading…`}</div>
+                  </div>
+                )}
+                {paintMode && !isCreate && sourceUrl && (
+                  <div className="pointer-events-none absolute inset-x-4 bottom-4 z-30 flex justify-center">
+                    <div className="pointer-events-auto flex w-[min(560px,100%)] items-center gap-2 rounded-lg border border-white/10 bg-black/80 p-2 shadow-2xl backdrop-blur">
+                      <input
+                        value={editPrompt}
+                        onChange={(event) => setEditPrompt(event.target.value)}
+                        className="h-9 min-w-0 flex-1 rounded-md border border-white/10 bg-surface-950 px-3 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-brand-400"
+                        placeholder="Edit Prompt"
+                        disabled={working}
+                      />
+                      <button
+                        type="button"
+                        className="btn-primary h-9 shrink-0 px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => void submitPaintEdit()}
+                        disabled={!canEdit}
+                      >
+                        <Sparkles size={14} />
+                        Edit
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -541,16 +859,16 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
                     Active image cost ${activeIteration.generation.actualCostUsd.toFixed(3)}
                   </div>
                 )}
-                {error && (
+                {visibleError && (
                   <div className="rounded-md border border-rose-300/30 bg-rose-500/10 px-2.5 py-2 text-xs text-rose-200">
-                    {error}
-                    {error.includes('PiAPI') && (
+                    {visibleError}
+                    {visibleError.includes('PiAPI') && (
                       <button type="button" className="ml-2 underline" onClick={onOpenSettings}>Settings</button>
                     )}
                   </div>
                 )}
                 {working && (
-                  <progress className="export-progress" value={Math.max(4, Math.min(100, progress))} max={100} aria-label={`${config.label} generation progress`} />
+                  <progress className="export-progress" value={Math.max(4, Math.min(100, displayedProgress))} max={100} aria-label={`${config.label} generation progress`} />
                 )}
               </div>
             </div>
@@ -621,6 +939,40 @@ function buildReferenceImagePrompt(basePrompt: string, style: CharacterVisualSty
   return [basePrompt.trim(), stylePrompt, REFERENCE_CONFIG[referenceKind].sheetTemplate].filter(Boolean).join('\n\n');
 }
 
+function buildPaintEditPrompt(editPrompt: string, referenceKind: ReferenceAssetKind, hasPaintGuide: boolean): string {
+  const label = REFERENCE_CONFIG[referenceKind].label.toLowerCase();
+  return [
+    `Edit the provided ${label} image according to this prompt: ${editPrompt.trim()}`,
+    hasPaintGuide
+      ? 'Use the painted guide image as spatial direction only. Colored brush marks identify the area to change and must not appear in the final image.'
+      : null,
+    'Keep the existing identity, layout, camera angle, and unmentioned details unchanged. Return only the edited image.',
+  ].filter(Boolean).join('\n\n');
+}
+
+async function paintGuideFileFromCanvas(image: HTMLImageElement | null, paintCanvas: HTMLCanvasElement | null): Promise<File | null> {
+  if (!image || !paintCanvas) return null;
+  const width = image.naturalWidth || Math.round(paintCanvas.getBoundingClientRect().width);
+  const height = image.naturalHeight || Math.round(paintCanvas.getBoundingClientRect().height);
+  if (width <= 0 || height <= 0) return null;
+
+  const guideCanvas = document.createElement('canvas');
+  guideCanvas.width = width;
+  guideCanvas.height = height;
+  const context = guideCanvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(image, 0, 0, width, height);
+  context.drawImage(paintCanvas, 0, 0, width, height);
+
+  const blob = await canvasToBlob(guideCanvas);
+  if (!blob) return null;
+  return new File([blob], 'painted-edit-guide.png', { type: 'image/png' });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
 function IterationButton({ iteration, active, onClick }: { iteration: EditTrailIteration; active: boolean; onClick: () => void }) {
   const cost = iteration.generation?.actualCostUsd ?? iteration.generation?.estimatedCostUsd;
   return (
@@ -680,6 +1032,30 @@ async function buildReferenceInput(
   return { referenceUrls: await hostLitterboxReferences(assets, 'Reference image') };
 }
 
+async function buildPaintEditInput(
+  sourceAsset: MediaAsset,
+  paintGuideFile: File | null,
+  referenceAssets: MediaAsset[],
+  model: ImageModelDefinition,
+  objectUrlFor: (assetId: string) => Promise<string | null>,
+): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
+  if (isGptImageModel(model)) {
+    const sourceFile = await referenceFileForAsset(sourceAsset, objectUrlFor);
+    const referenceFiles = await Promise.all(referenceAssets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
+    return {
+      referenceFiles: [sourceFile, paintGuideFile, ...referenceFiles].filter((file): file is File => Boolean(file)),
+    };
+  }
+
+  const sourceAndReferenceUrls = await hostLitterboxReferences([sourceAsset, ...referenceAssets], 'Edit reference image');
+  if (!paintGuideFile) return { referenceUrls: sourceAndReferenceUrls };
+  const guideUrl = await hostLitterboxFile(paintGuideFile);
+  const [sourceUrl, ...referenceUrls] = sourceAndReferenceUrls;
+  return {
+    referenceUrls: [sourceUrl, guideUrl, ...referenceUrls].filter((url): url is string => Boolean(url)),
+  };
+}
+
 async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {
   const url = await objectUrlFor(asset.id);
   if (!url) return null;
@@ -702,17 +1078,6 @@ function extensionForMime(mimeType: string): string {
   if (/jpe?g/i.test(mimeType)) return 'jpg';
   if (/webp/i.test(mimeType)) return 'webp';
   return 'png';
-}
-
-function uniqueAssetReferences(assets: MediaAsset[]): MediaAsset[] {
-  const seen = new Set<string>();
-  const unique: MediaAsset[] = [];
-  for (const asset of assets) {
-    if (seen.has(asset.id)) continue;
-    seen.add(asset.id);
-    unique.push(asset);
-  }
-  return unique;
 }
 
 function uniqueIds(ids: string[]): string[] {

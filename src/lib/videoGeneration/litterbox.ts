@@ -58,6 +58,10 @@ export async function hostLitterboxReferences(assets: MediaAsset[], label: strin
   return urls;
 }
 
+export async function hostLitterboxFile(file: File): Promise<string> {
+  return enqueueLitterboxUpload(file);
+}
+
 function enqueueLitterboxUpload(file: File): Promise<string> {
   const upload = uploadQueue.then(() => uploadLitterboxFile(file));
   uploadQueue = upload

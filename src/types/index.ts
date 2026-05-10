@@ -79,6 +79,24 @@ export type EditTrail = {
   iterations: EditTrailIteration[];
 };
 
+export type EditTrailGeneration = {
+  status: 'generating' | 'error';
+  progress?: number;
+  prompt?: string;
+  model?: string;
+  estimatedCostUsd?: number;
+  actualCostUsd?: number;
+  provider?: string;
+  providerTaskId?: string;
+  providerTaskEndpoint?: string;
+  providerTaskStatus?: string;
+  providerTaskCreatedAt?: number;
+  errorType?: GenerationErrorType;
+  errorMessage?: string;
+  startedAt?: number;
+  failedAt?: number;
+};
+
 export type GenerateRecipe = {
   model: string;
   prompt: string;
@@ -106,6 +124,7 @@ export type MediaAsset = {
   thumbnailDataUrl?: string;
   folderId?: string | null;
   editTrail?: EditTrail;
+  editTrailGeneration?: EditTrailGeneration;
   generation?: {
     status: 'generating' | 'done' | 'error';
     progress?: number;
