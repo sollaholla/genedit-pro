@@ -87,6 +87,28 @@ export function readProjectMediaAssets(projectId: string): MediaAsset[] {
   return loadAssets(projectId);
 }
 
+export async function deleteProjectMedia(projectId: string): Promise<void> {
+  const assets = loadAssets(projectId);
+  const blobKeys = new Set<string>();
+  for (const asset of assets) {
+    if (asset.blobKey) blobKeys.add(asset.blobKey);
+    for (const iteration of asset.editTrail?.iterations ?? []) {
+      if (iteration.blobKey) blobKeys.add(iteration.blobKey);
+    }
+  }
+  await Promise.all([...blobKeys].map((blobKey) => deleteBlob(blobKey).catch(() => undefined)));
+  for (const asset of assets) revokeCachedUrl(asset.id);
+  try {
+    localStorage.removeItem(projectAssetsKey(projectId));
+    localStorage.removeItem(projectFoldersKey(projectId));
+  } catch {
+    // ignore storage failures
+  }
+  if (useMediaStore.getState().activeProjectId === projectId) {
+    useMediaStore.setState({ assets: [], folders: [] });
+  }
+}
+
 function loadFolders(projectId: string): MediaFolder[] {
   ensureLegacyMediaMigrated(projectId);
   try {

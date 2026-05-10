@@ -26,6 +26,7 @@ export type ProjectSummary = {
   fps: number;
   aiGenerationSpendUsd: number;
   posterAssetId?: string | null;
+  timelineAssetIds?: string[];
 };
 
 function projectStorageKey(projectId: string): string {
@@ -53,6 +54,9 @@ function readProjectSummaries(): ProjectSummary[] {
         fps: Number.isFinite(summary.fps) ? summary.fps : 30,
         aiGenerationSpendUsd: Number.isFinite(summary.aiGenerationSpendUsd) ? summary.aiGenerationSpendUsd : 0,
         posterAssetId: typeof summary.posterAssetId === 'string' ? summary.posterAssetId : null,
+        timelineAssetIds: Array.isArray(summary.timelineAssetIds)
+          ? summary.timelineAssetIds.filter((assetId): assetId is string => typeof assetId === 'string' && assetId.length > 0)
+          : [],
       }));
   } catch {
     return [];
@@ -69,6 +73,7 @@ function writeProjectSummaries(projects: ProjectSummary[]) {
 
 function summaryForProject(project: Project, existing?: ProjectSummary): ProjectSummary {
   const now = Date.now();
+  const projectTimelineAssetIds = timelineAssetIds(project);
   return {
     id: project.id,
     name: project.name.trim() || 'Untitled Project',
@@ -81,13 +86,37 @@ function summaryForProject(project: Project, existing?: ProjectSummary): Project
     height: project.height,
     fps: project.fps,
     aiGenerationSpendUsd: project.metadata?.aiGenerationSpendUsd ?? 0,
-    posterAssetId: firstTimelineAssetId(project),
+    posterAssetId: randomTimelineAssetId(project, projectTimelineAssetIds),
+    timelineAssetIds: projectTimelineAssetIds,
   };
 }
 
-function firstTimelineAssetId(project: Project): string | null {
-  const firstClip = [...project.clips].sort((first, second) => first.startSec - second.startSec)[0];
-  return firstClip?.assetId ?? null;
+function timelineAssetIds(project: Project): string[] {
+  const flattened = ops.flattenTimeline(project);
+  const visualTrackIds = new Set(flattened.tracks
+    .filter((track) => track.kind === 'video' && !track.hidden)
+    .map((track) => track.id));
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const clip of flattened.clips.sort((first, second) => first.startSec - second.startSec)) {
+    if (!visualTrackIds.has(clip.trackId) || seen.has(clip.assetId)) continue;
+    seen.add(clip.assetId);
+    ids.push(clip.assetId);
+  }
+  return ids;
+}
+
+function randomTimelineAssetId(project: Project, ids: string[]): string | null {
+  if (ids.length === 0) return null;
+  return ids[hashString(`${project.id}:${project.name}:${ids.join('|')}`) % ids.length] ?? null;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
 }
 
 function upsertProjectSummary(projects: ProjectSummary[], project: Project): ProjectSummary[] {
@@ -321,6 +350,7 @@ type ProjectState = {
   rename: (name: string) => void;
   createProject: (name?: string) => string;
   switchProject: (id: string) => void;
+  removeProject: (id: string) => void;
   reset: () => void;
   recordGenerationCost: (amountUsd: number) => void;
   recordGenerationCostForProject: (projectId: string, amountUsd: number) => void;
@@ -465,6 +495,56 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     persistProjectState(project, projects);
     const nextProject = loadProjectById(id, projects);
     const nextProjects = upsertProjectSummary(projects, nextProject);
+    persistProjectState(nextProject, nextProjects);
+    set({
+      project: nextProject,
+      projects: nextProjects,
+      activeProjectId: nextProject.id,
+      _past: [],
+      _pastSeq: [],
+      _future: [],
+      _futureSeq: [],
+    });
+    notifyHistoryMutation('project');
+  },
+
+  removeProject: (id) => {
+    const { activeProjectId, projects } = get();
+    const target = projects.find((summary) => summary.id === id);
+    if (!target) return;
+    const remaining = projects.filter((summary) => summary.id !== id);
+    try {
+      localStorage.removeItem(projectStorageKey(id));
+    } catch {
+      // ignore storage failures
+    }
+
+    if (remaining.length === 0) {
+      const fresh = createInitialProject();
+      const nextProjects = upsertProjectSummary([], fresh);
+      persistProjectState(fresh, nextProjects);
+      set({
+        project: fresh,
+        projects: nextProjects,
+        activeProjectId: fresh.id,
+        _past: [],
+        _pastSeq: [],
+        _future: [],
+        _futureSeq: [],
+      });
+      notifyHistoryMutation('project');
+      return;
+    }
+
+    if (id !== activeProjectId) {
+      writeProjectSummaries(remaining);
+      set({ projects: remaining });
+      return;
+    }
+
+    const nextActiveId = remaining[0]!.id;
+    const nextProject = loadProjectById(nextActiveId, remaining);
+    const nextProjects = upsertProjectSummary(remaining, nextProject);
     persistProjectState(nextProject, nextProjects);
     set({
       project: nextProject,

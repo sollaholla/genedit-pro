@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, Clapperboard, Clock3, Cog, DollarSign, Download, FilePlus2, Film, Layers3, Loader2, Upload } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, Clapperboard, Clock3, Cog, DollarSign, Download, FilePlus2, Film, Layers3, Loader2, Trash2, Upload, X } from 'lucide-react';
 import { useProjectStore, type ProjectSummary } from '@/state/projectStore';
 import { useExportStore } from '@/state/exportStore';
-import { readProjectMediaAssets, useMediaStore } from '@/state/mediaStore';
+import { deleteProjectMedia, readProjectMediaAssets, useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset } from '@/types';
 
 type Props = {
@@ -22,6 +22,7 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
   const projects = useProjectStore((s) => s.projects);
   const rename = useProjectStore((s) => s.rename);
   const switchProject = useProjectStore((s) => s.switchProject);
+  const removeProject = useProjectStore((s) => s.removeProject);
   const activeAssets = useMediaStore((s) => s.assets);
   const exportStatus = useExportStore((s) => s.status);
   const exportProgress = useExportStore((s) => s.progress);
@@ -92,6 +93,10 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
           activeProject={activeCard}
           onSelect={switchProject}
           onNewProject={onNewProject}
+          onRemoveProject={async (projectId) => {
+            await deleteProjectMedia(projectId);
+            removeProject(projectId);
+          }}
         />
         <input
           type="text"
@@ -126,14 +131,17 @@ function ProjectSelector({
   activeProject,
   onSelect,
   onNewProject,
+  onRemoveProject,
 }: {
   activeProjectId: string;
   projects: ProjectCard[];
   activeProject: ProjectCard | null;
   onSelect: (id: string) => void;
   onNewProject: () => void;
+  onRemoveProject: (id: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [projectToRemove, setProjectToRemove] = useState<ProjectCard | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -194,42 +202,157 @@ function ProjectSelector({
             {projects.map((candidate) => {
               const active = candidate.id === activeProjectId;
               return (
-                <button
+                <div
                   key={candidate.id}
-                  type="button"
                   className={`group mb-1 flex w-full items-stretch gap-3 rounded-md border p-2 text-left transition-colors last:mb-0 ${
                     active
                       ? 'border-brand-400 bg-brand-500/10'
                       : 'border-transparent bg-surface-900/50 hover:border-surface-600 hover:bg-surface-800/80'
                   }`}
-                  onClick={() => {
-                    setOpen(false);
-                    onSelect(candidate.id);
-                  }}
                 >
-                  <ProjectThumbnail project={candidate} />
-                  <div className="min-w-0 flex-1 py-0.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <div className="truncate text-sm font-semibold text-slate-100">{candidate.name}</div>
-                      {active && <CheckCircle2 size={14} className="shrink-0 text-brand-400" />}
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-stretch gap-3 text-left"
+                    onClick={() => {
+                      setOpen(false);
+                      onSelect(candidate.id);
+                    }}
+                  >
+                    <ProjectThumbnail project={candidate} />
+                    <div className="min-w-0 flex-1 py-0.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className="truncate text-sm font-semibold text-slate-100">{candidate.name}</div>
+                        {active && <CheckCircle2 size={14} className="shrink-0 text-brand-400" />}
+                      </div>
+                      <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                        <ProjectMetric icon={<Clock3 size={12} />} label={formatDuration(candidate.durationSec)} />
+                        <ProjectMetric icon={<Film size={12} />} label={`${candidate.width}x${candidate.height} · ${formatFps(candidate.fps)}`} />
+                        <ProjectMetric icon={<Layers3 size={12} />} label={`${candidate.clipCount} clips · ${candidate.trackCount} tracks`} />
+                        <ProjectMetric icon={<DollarSign size={12} />} label={formatCurrency(candidate.aiGenerationSpendUsd)} />
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-500">
+                        <span>{candidate.mediaCount} media assets</span>
+                        <span>Updated {formatRelativeTime(candidate.updatedAt)}</span>
+                      </div>
                     </div>
-                    <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
-                      <ProjectMetric icon={<Clock3 size={12} />} label={formatDuration(candidate.durationSec)} />
-                      <ProjectMetric icon={<Film size={12} />} label={`${candidate.width}x${candidate.height} · ${formatFps(candidate.fps)}`} />
-                      <ProjectMetric icon={<Layers3 size={12} />} label={`${candidate.clipCount} clips · ${candidate.trackCount} tracks`} />
-                      <ProjectMetric icon={<DollarSign size={12} />} label={formatCurrency(candidate.aiGenerationSpendUsd)} />
-                    </div>
-                    <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-500">
-                      <span>{candidate.mediaCount} media assets</span>
-                      <span>Updated {formatRelativeTime(candidate.updatedAt)}</span>
-                    </div>
-                  </div>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center self-center rounded text-slate-500 opacity-0 transition hover:bg-rose-500/10 hover:text-rose-300 group-hover:opacity-100 focus:opacity-100"
+                    onClick={() => {
+                      setOpen(false);
+                      setProjectToRemove(candidate);
+                    }}
+                    title={`Remove ${candidate.name}`}
+                    aria-label={`Remove ${candidate.name}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               );
             })}
           </div>
         </div>
       )}
+      {projectToRemove && (
+        <ConfirmProjectDeleteDialog
+          project={projectToRemove}
+          onCancel={() => setProjectToRemove(null)}
+          onConfirm={async () => {
+            const projectId = projectToRemove.id;
+            setProjectToRemove(null);
+            await onRemoveProject(projectId);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConfirmProjectDeleteDialog({
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  project: ProjectCard;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [confirmation, setConfirmation] = useState('');
+  const [removing, setRemoving] = useState(false);
+  const confirmed = confirmation === project.name;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !removing) onCancel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onCancel, removing]);
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-[min(430px,94vw)] overflow-hidden rounded-lg border border-rose-300/25 bg-surface-950 text-slate-100 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-surface-700 px-4 py-3">
+          <div className="flex min-w-0 gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-rose-300">
+              <AlertTriangle size={17} />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Remove Project</div>
+              <div className="mt-1 text-xs leading-5 text-slate-400">
+                This deletes the project and its local media from this browser.
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+            onClick={onCancel}
+            disabled={removing}
+            title="Cancel"
+            aria-label="Cancel"
+          >
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-4 py-4">
+          <div className="rounded-md border border-surface-700 bg-surface-900/70 px-3 py-2">
+            <div className="truncate text-sm font-medium text-slate-100">{project.name}</div>
+            <div className="mt-0.5 text-[11px] text-slate-500">{project.clipCount} clips · {project.mediaCount} media assets</div>
+          </div>
+          <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Type '{project.name}' to confirm
+            <input
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              className="mt-1 h-9 w-full rounded-md border border-surface-700 bg-surface-950 px-3 text-sm font-normal normal-case tracking-normal text-slate-100 outline-none focus:border-rose-300"
+              autoFocus
+              disabled={removing}
+              spellCheck={false}
+            />
+          </label>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-surface-700 px-4 py-3">
+          <button type="button" className="btn-ghost h-9 px-3 text-xs" onClick={onCancel} disabled={removing}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-rose-500 px-3 text-xs font-semibold text-white hover:bg-rose-400 disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={!confirmed || removing}
+            onClick={() => {
+              setRemoving(true);
+              void onConfirm();
+            }}
+          >
+            <Trash2 size={13} />
+            {removing ? 'Removing...' : 'Remove Project'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -265,10 +388,20 @@ function ProjectMetric({ icon, label }: { icon: React.ReactNode; label: string }
 
 function projectThumbnail(summary: ProjectSummary, assets: MediaAsset[]): string | undefined {
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+  const timelineCandidates = (summary.timelineAssetIds ?? [])
+    .map((assetId) => assetById.get(assetId))
+    .filter((asset): asset is MediaAsset => Boolean(asset?.thumbnailDataUrl && isVisualTimelineAsset(asset)));
+  if (timelineCandidates.length > 0) {
+    const index = hashString(`${summary.id}:${summary.updatedAt}:${summary.timelineAssetIds?.join('|') ?? ''}`) % timelineCandidates.length;
+    return timelineCandidates[index]?.thumbnailDataUrl;
+  }
   const timelinePoster = summary.posterAssetId ? assetById.get(summary.posterAssetId) : undefined;
-  if (timelinePoster?.thumbnailDataUrl) return timelinePoster.thumbnailDataUrl;
-  return assets.find((asset) => asset.kind === 'video' && asset.thumbnailDataUrl)?.thumbnailDataUrl ??
-    assets.find((asset) => asset.thumbnailDataUrl)?.thumbnailDataUrl;
+  if (timelinePoster?.thumbnailDataUrl && isVisualTimelineAsset(timelinePoster)) return timelinePoster.thumbnailDataUrl;
+  return undefined;
+}
+
+function isVisualTimelineAsset(asset: MediaAsset): boolean {
+  return asset.kind === 'video' || asset.kind === 'image' || asset.kind === 'character' || asset.kind === 'object' || asset.kind === 'environment';
 }
 
 function compactProjectMeta(project: ProjectCard): string {
@@ -278,6 +411,14 @@ function compactProjectMeta(project: ProjectCard): string {
 function totalProjectCost(projects: ProjectCard[]): string {
   const total = projects.reduce((sum, project) => sum + project.aiGenerationSpendUsd, 0);
   return `${formatCurrency(total)} total`;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
 }
 
 function formatDuration(seconds: number): string {

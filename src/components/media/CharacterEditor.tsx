@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Box, Check, Copy, Image as ImageIcon, Mountain, Paintbrush, Save, Sparkles, Trash2, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
+import { Box, Check, Copy, Image as ImageIcon, Minus, Mountain, Paintbrush, Plus, Save, Search, Sparkles, Trash2, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -99,6 +99,9 @@ const CHARACTER_STYLE_OPTIONS: Array<{ value: CharacterVisualStyle; label: strin
 ];
 const PAINT_COLORS = ['#ff3b30', '#ffcc00', '#00d084', '#20a7f3', '#ffffff'];
 const PAINT_BRUSH_SIZE = 10;
+const MIN_PREVIEW_ZOOM = 100;
+const MAX_PREVIEW_ZOOM = 400;
+const PREVIEW_ZOOM_STEP = 25;
 
 export function CharacterEditor({ assetId, referenceKind = 'character', folderId = null, onClose, onOpenSettings, onGenerationQueued }: Props) {
   const assets = useMediaStore((state) => state.assets);
@@ -139,11 +142,21 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const [paintColor, setPaintColor] = useState(PAINT_COLORS[0]!);
   const [paintHasInk, setPaintHasInk] = useState(false);
   const [editPrompt, setEditPrompt] = useState('');
+  const [previewZoom, setPreviewZoom] = useState(MIN_PREVIEW_ZOOM);
+  const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
+  const [previewPanning, setPreviewPanning] = useState(false);
   const loadedAssetIdRef = useRef<string | null>(null);
+  const previewViewportRef = useRef<HTMLDivElement | null>(null);
   const previewImageRef = useRef<HTMLImageElement | null>(null);
   const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const paintingRef = useRef(false);
   const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
+  const previewPanDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startPan: { x: number; y: number };
+  } | null>(null);
 
   const selectedModel = imageModelById(form.model) ?? defaultImageModel();
   const estimatedCostUsd = estimateImageCostUsd(selectedModel);
@@ -160,6 +173,8 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const visibleError = error ?? persistedError;
   const canGenerate = Boolean(promptForGeneration) && !working;
   const canEdit = Boolean(asset && sourceUrl && editPrompt.trim()) && !working;
+  const previewScale = previewZoom / 100;
+  const previewCanPan = previewZoom > MIN_PREVIEW_ZOOM && !paintMode;
   const referenceAssets = useMemo(() => referenceAssetIds
     .map((id) => assets.find((candidate) => candidate.id === id))
     .filter((candidate): candidate is MediaAsset => Boolean(candidate && candidate.kind === 'image' && isReferenceImageAsset(candidate))), [assets, referenceAssetIds]);
@@ -213,6 +228,10 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   useEffect(() => {
     setPaintMode(false);
     setEditPrompt('');
+    setPreviewZoom(MIN_PREVIEW_ZOOM);
+    setPreviewPan({ x: 0, y: 0 });
+    setPreviewPanning(false);
+    previewPanDragRef.current = null;
     clearPaintCanvas();
   }, [asset?.editTrail?.activeIterationId, asset?.id]);
 
@@ -360,6 +379,67 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     }
     setPaintMode(true);
   };
+
+  const updatePreviewZoom = (delta: number) => {
+    const nextZoom = clamp(previewZoom + delta, MIN_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM);
+    setPreviewZoom(nextZoom);
+    setPreviewPan((currentPan) => (nextZoom <= MIN_PREVIEW_ZOOM ? { x: 0, y: 0 } : clampPreviewPan(currentPan, nextZoom)));
+  };
+
+  const resetPreviewZoom = () => {
+    setPreviewZoom(MIN_PREVIEW_ZOOM);
+    setPreviewPan({ x: 0, y: 0 });
+    setPreviewPanning(false);
+    previewPanDragRef.current = null;
+  };
+
+  const beginPreviewPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!previewCanPan || working || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    previewPanDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPan: previewPan,
+    };
+    setPreviewPanning(true);
+  };
+
+  const continuePreviewPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = previewPanDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setPreviewPan(clampPreviewPan({
+      x: drag.startPan.x + event.clientX - drag.startX,
+      y: drag.startPan.y + event.clientY - drag.startY,
+    }, previewZoom));
+  };
+
+  const endPreviewPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    previewPanDragRef.current = null;
+    setPreviewPanning(false);
+  };
+
+  function clampPreviewPan(nextPan: { x: number; y: number }, zoomPercent: number): { x: number; y: number } {
+    if (zoomPercent <= MIN_PREVIEW_ZOOM) return { x: 0, y: 0 };
+    const viewport = previewViewportRef.current;
+    const image = previewImageRef.current;
+    if (!viewport || !image) return nextPan;
+    const scale = zoomPercent / 100;
+    const viewportRect = viewport.getBoundingClientRect();
+    const scaledWidth = image.offsetWidth * scale;
+    const scaledHeight = image.offsetHeight * scale;
+    const maxX = Math.max(0, (scaledWidth - viewportRect.width) / 2);
+    const maxY = Math.max(0, (scaledHeight - viewportRect.height) / 2);
+    return {
+      x: clamp(nextPan.x, -maxX, maxX),
+      y: clamp(nextPan.y, -maxY, maxY),
+    };
+  }
 
   const beginPaintStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!paintMode || working) return;
@@ -675,7 +755,7 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
 
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_340px]">
             <div className="min-h-0 bg-black p-4">
-              <div className="relative flex h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:18px_18px]">
+              <div ref={previewViewportRef} className="relative flex h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:18px_18px]">
                 {!isCreate && sourceUrl && (
                   <div className="absolute left-3 top-3 z-30 flex items-center gap-2">
                     <button
@@ -715,8 +795,53 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
                     )}
                   </div>
                 )}
+                {sourceUrl && (
+                  <div className="absolute right-3 top-3 z-30 flex h-9 items-center gap-1 rounded-md border border-white/10 bg-black/75 px-1.5 text-slate-200 shadow-xl backdrop-blur">
+                    <Search size={14} className="mx-1 text-slate-400" />
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 items-center justify-center rounded text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => updatePreviewZoom(PREVIEW_ZOOM_STEP)}
+                      disabled={previewZoom >= MAX_PREVIEW_ZOOM}
+                      title="Zoom in"
+                      aria-label="Zoom in"
+                    >
+                      <Plus size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="h-7 min-w-12 rounded px-2 text-center text-xs font-semibold tabular-nums text-slate-100 hover:bg-white/10"
+                      onClick={resetPreviewZoom}
+                      title="Reset zoom"
+                      aria-label="Reset zoom"
+                    >
+                      {previewZoom}%
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 items-center justify-center rounded text-slate-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => updatePreviewZoom(-PREVIEW_ZOOM_STEP)}
+                      disabled={previewZoom <= MIN_PREVIEW_ZOOM}
+                      title="Zoom out"
+                      aria-label="Zoom out"
+                    >
+                      <Minus size={14} />
+                    </button>
+                  </div>
+                )}
                 {sourceUrl ? (
-                  <div className="relative inline-flex max-h-full max-w-full">
+                  <div
+                    className={`relative inline-flex max-h-full max-w-full ${previewCanPan ? previewPanning ? 'cursor-grabbing' : 'cursor-grab' : ''}`}
+                    style={{
+                      transform: `translate3d(${previewPan.x}px, ${previewPan.y}px, 0) scale(${previewScale})`,
+                      transformOrigin: 'center center',
+                      transition: previewPanning ? 'none' : 'transform 120ms ease-out',
+                    }}
+                    onPointerDown={beginPreviewPan}
+                    onPointerMove={continuePreviewPan}
+                    onPointerUp={endPreviewPan}
+                    onPointerCancel={endPreviewPan}
+                  >
                     <img ref={previewImageRef} src={sourceUrl} alt={form.name} draggable={false} className="block max-h-full max-w-full select-none object-contain" />
                     {paintMode && !isCreate && (
                       <canvas
@@ -1082,6 +1207,10 @@ function extensionForMime(mimeType: string): string {
 
 function uniqueIds(ids: string[]): string[] {
   return [...new Set(ids)];
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function formatGenerationError(err: unknown): string {
