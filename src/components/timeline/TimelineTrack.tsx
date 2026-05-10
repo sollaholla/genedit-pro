@@ -20,7 +20,7 @@ type Props = {
   onGroupTrackMouseDown: (trackId: string, e: React.MouseEvent) => void;
   onGroupTrackDoubleClick: (trackId: string) => void;
   onGroupTrackContextMenu: (trackId: string, e: React.MouseEvent) => void;
-  bridgeGap: BridgeGap | null;
+  bridgeGaps: BridgeGap[];
   onBridgeGapClick: (gap: BridgeGap, e: React.MouseEvent) => void;
   /** Fired when the user mousedowns on empty track area (not on a clip).
    *  The Timeline uses this to start a marquee selection. */
@@ -41,7 +41,7 @@ export function TimelineTrack({
   onGroupTrackMouseDown,
   onGroupTrackDoubleClick,
   onGroupTrackContextMenu,
-  bridgeGap,
+  bridgeGaps,
   onBridgeGapClick,
   onEmptyMouseDown,
 }: Props) {
@@ -76,13 +76,14 @@ export function TimelineTrack({
         if (e.target === e.currentTarget) onEmptyMouseDown(track.id, e);
       }}
     >
-      {bridgeGap && bridgeGap.trackId === track.id && (
+      {bridgeGaps.map((bridgeGap) => (
         <BridgeGapOverlay
+          key={`${bridgeGap.trackId}:${bridgeGap.startSec}:${bridgeGap.endSec}`}
           gap={bridgeGap}
           pxPerSec={pxPerSec}
           onClick={onBridgeGapClick}
         />
-      )}
+      ))}
       {track.group && (
         <GroupTrackBlock
           track={track}

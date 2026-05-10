@@ -20,12 +20,17 @@ export type BridgeReferenceSegment = {
 export type BridgeReferencePlan = {
   leftStartSec: number;
   leftDurationSec: number;
+  leftPadStartSec: number;
+  leftOutputDurationSec: number;
   rightStartSec: number;
   rightDurationSec: number;
+  rightPadEndSec: number;
+  rightOutputDurationSec: number;
   totalDurationSec: number;
 };
 
-const MAX_REFERENCE_TOTAL_SEC = 14.8;
+const MAX_REFERENCE_TOTAL_SEC = 14;
+const MIN_REFERENCE_INPUT_SEC = 2;
 const MAX_SCAN_FPS = 30;
 const FRAME_SIGNATURE_WIDTH = 32;
 const FRAME_SIGNATURE_HEIGHT = 18;
@@ -41,9 +46,17 @@ function runFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
 }
 
 export function seedanceDurationForGap(gapDurationSec: number): number {
-  if (gapDurationSec <= 5) return 5;
-  if (gapDurationSec <= 10) return 10;
-  return 15;
+  const durations = [5, 10, 15];
+  let best = durations[0]!;
+  let bestDistance = Math.abs(gapDurationSec - best);
+  for (const duration of durations.slice(1)) {
+    const distance = Math.abs(gapDurationSec - duration);
+    if (distance < bestDistance) {
+      best = duration;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 export function sourceEndFrameTimeSec(clip: Clip, fps: number): number {
@@ -55,18 +68,37 @@ export function sourceStartFrameTimeSec(clip: Clip): number {
   return Math.max(0, clip.inSec);
 }
 
-export function planBridgeReferenceSegments(leftClip: Clip, rightClip: Clip): BridgeReferencePlan {
+export function planBridgeReferenceSegments(
+  leftClip: Clip,
+  rightClip: Clip,
+  leftAssetDurationSec?: number,
+  rightAssetDurationSec?: number,
+): BridgeReferencePlan {
   const perSideBudgetSec = MAX_REFERENCE_TOTAL_SEC / 2;
-  const leftAvailableSec = Math.max(0.05, leftClip.outSec - leftClip.inSec);
-  const rightAvailableSec = Math.max(0.05, rightClip.outSec - rightClip.inSec);
+  const leftSourceEndSec = Number.isFinite(leftAssetDurationSec) && (leftAssetDurationSec ?? 0) > 0
+    ? Math.min(leftClip.outSec, leftAssetDurationSec!)
+    : leftClip.outSec;
+  const leftAvailableSec = Math.max(0.05, leftSourceEndSec);
+  const rightSourceEndSec = Number.isFinite(rightAssetDurationSec) && (rightAssetDurationSec ?? 0) > rightClip.inSec
+    ? rightAssetDurationSec!
+    : rightClip.outSec;
+  const rightAvailableSec = Math.max(0.05, rightSourceEndSec - rightClip.inSec);
   const leftDurationSec = Math.min(perSideBudgetSec, leftAvailableSec);
   const rightDurationSec = Math.min(perSideBudgetSec, rightAvailableSec, MAX_REFERENCE_TOTAL_SEC - leftDurationSec);
-  const totalDurationSec = leftDurationSec + rightDurationSec;
+  const leftPadStartSec = Math.max(0, MIN_REFERENCE_INPUT_SEC - leftDurationSec);
+  const rightPadEndSec = Math.max(0, MIN_REFERENCE_INPUT_SEC - rightDurationSec);
+  const leftOutputDurationSec = leftDurationSec + leftPadStartSec;
+  const rightOutputDurationSec = rightDurationSec + rightPadEndSec;
+  const totalDurationSec = leftOutputDurationSec + rightOutputDurationSec;
   return {
-    leftStartSec: Math.max(leftClip.inSec, leftClip.outSec - leftDurationSec),
+    leftStartSec: Math.max(0, leftClip.outSec - leftDurationSec),
     leftDurationSec,
+    leftPadStartSec,
+    leftOutputDurationSec,
     rightStartSec: rightClip.inSec,
     rightDurationSec,
+    rightPadEndSec,
+    rightOutputDurationSec,
     totalDurationSec,
   };
 }
@@ -84,25 +116,27 @@ export async function extractBridgeReferenceSegments({
   rightClip: Clip;
   onStatus?: (message: string) => void;
 }): Promise<[BridgeReferenceSegment, BridgeReferenceSegment]> {
-  const plan = planBridgeReferenceSegments(leftClip, rightClip);
+  const plan = planBridgeReferenceSegments(leftClip, rightClip, leftAsset.durationSec, rightAsset.durationSec);
 
   onStatus?.('Preparing bridge references...');
   const leftFile = await extractVideoSegmentFile({
     asset: leftAsset,
     startSec: plan.leftStartSec,
     durationSec: plan.leftDurationSec,
+    padStartSec: plan.leftPadStartSec,
     name: `bridge_video_1_${Date.now()}.mp4`,
   });
   const rightFile = await extractVideoSegmentFile({
     asset: rightAsset,
     startSec: plan.rightStartSec,
     durationSec: plan.rightDurationSec,
+    padEndSec: plan.rightPadEndSec,
     name: `bridge_video_2_${Date.now()}.mp4`,
   });
 
   return [
-    { file: leftFile, sourceStartSec: plan.leftStartSec, durationSec: plan.leftDurationSec },
-    { file: rightFile, sourceStartSec: plan.rightStartSec, durationSec: plan.rightDurationSec },
+    { file: leftFile, sourceStartSec: plan.leftStartSec, durationSec: plan.leftOutputDurationSec },
+    { file: rightFile, sourceStartSec: plan.rightStartSec, durationSec: plan.rightOutputDurationSec },
   ];
 }
 
@@ -176,11 +210,15 @@ async function extractVideoSegmentFile({
   asset,
   startSec,
   durationSec,
+  padStartSec = 0,
+  padEndSec = 0,
   name,
 }: {
   asset: MediaAsset;
   startSec: number;
   durationSec: number;
+  padStartSec?: number;
+  padEndSec?: number;
   name: string;
 }): Promise<File> {
   return runFfmpegJob(async () => {
@@ -200,13 +238,17 @@ async function extractVideoSegmentFile({
         '-i', inputFile,
         '-map', '0:v:0',
         '-an',
+      ];
+      const padFilter = tpadFilter(padStartSec, padEndSec);
+      if (padFilter) args.push('-vf', padFilter);
+      args.push(
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
         '-y',
         outputFile,
-      ];
+      );
       const code = await ffmpeg.exec(args);
       if (code !== 0) throw new Error(`Could not prepare ${asset.name} as a bridge reference.`);
       const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
@@ -230,6 +272,13 @@ async function activeBlobForAsset(asset: MediaAsset): Promise<Blob | null> {
 
 function seconds(value: number): string {
   return Math.max(0, value).toFixed(3);
+}
+
+function tpadFilter(padStartSec: number, padEndSec: number): string | null {
+  const parts: string[] = [];
+  if (padStartSec > 0.001) parts.push(`start_duration=${seconds(padStartSec)}`, 'start_mode=clone');
+  if (padEndSec > 0.001) parts.push(`stop_duration=${seconds(padEndSec)}`, 'stop_mode=clone');
+  return parts.length > 0 ? `tpad=${parts.join(':')}` : null;
 }
 
 function extensionForMime(mimeType: string): string {

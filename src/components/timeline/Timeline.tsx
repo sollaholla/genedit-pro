@@ -129,8 +129,8 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
   const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; trackId: string } | null>(null);
   const [replaceClipId, setReplaceClipId] = useState<string | null>(null);
-  const [bridgeGap, setBridgeGap] = useState<BridgeGap | null>(null);
   const [bridgeDialogGap, setBridgeDialogGap] = useState<BridgeGap | null>(null);
+  const [bridgeModifierHeld, setBridgeModifierHeld] = useState(false);
   const [marquee, setMarquee] = useState<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
   const [dragTrackId, setDragTrackId] = useState<string | null>(null);
   const [trackDropTarget, setTrackDropTarget] = useState<{ trackId: string; position: 'before' | 'after' } | null>(null);
@@ -168,6 +168,16 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
   const contentWidth = Math.max(viewportWidth, visibleDuration * pxPerSec);
   const tracks = sortedTracks(project);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
+  const bridgeGapsByTrack = useMemo(() => {
+    const byTrack = new Map<string, BridgeGap[]>();
+    if (!bridgeModifierHeld) return byTrack;
+    for (const gap of bridgeGapsForProject(project, assetById)) {
+      const trackGaps = byTrack.get(gap.trackId) ?? [];
+      trackGaps.push(gap);
+      byTrack.set(gap.trackId, trackGaps);
+    }
+    return byTrack;
+  }, [assetById, bridgeModifierHeld, project]);
   const selectedClip = selectedClipId ? project.clips.find((c) => c.id === selectedClipId) ?? null : null;
   const visibleKeyframeKeySet = useMemo(() => new Set(visibleKeyframeComponentKeys), [visibleKeyframeComponentKeys]);
   const keyframeLanesByTrack = useMemo(() => {
@@ -238,6 +248,9 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
   const isTrackEditorHovered = useCallback(() => (
     trackEditorHoverRef.current || Boolean(trackEditorRef.current?.matches(':hover'))
   ), []);
+  const syncBridgeModifier = useCallback((held: boolean) => {
+    setBridgeModifierHeld((current) => (current === held ? current : held));
+  }, []);
 
   // Zoom on Cmd/Ctrl+wheel
   useEffect(() => {
@@ -259,6 +272,27 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [pxPerSec, setPxPerSec]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.key === 'Meta' || event.key === 'Control') {
+        setBridgeModifierHeld(true);
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey) setBridgeModifierHeld(false);
+      if (event.key === 'Meta' || event.key === 'Control') setBridgeModifierHeld(false);
+    };
+    const onBlur = () => setBridgeModifierHeld(false);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
 
   const groupSelectedTracks = useCallback((trackIds: string[]): string | null => {
     const selectedIds = new Set(trackIds);
@@ -626,7 +660,7 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
   }, [assetById, updateActive]);
 
   // ---- Marquee selection from empty track area ----
-  const handleEmptyMouseDown = useCallback((trackId: string | null, e: React.MouseEvent) => {
+  const handleEmptyMouseDown = useCallback((_trackId: string | null, e: React.MouseEvent) => {
     if (e.button !== 0) return;
     // Ctrl/Cmd-click on empty area starts an additive marquee; otherwise replaces.
     const additive = e.ctrlKey || e.metaKey;
@@ -635,18 +669,6 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
     const rect = el.getBoundingClientRect();
     const startX = e.clientX - rect.left + el.scrollLeft;
     const startY = e.clientY - rect.top + el.scrollTop;
-    if (additive && trackId) {
-      const candidateGap = bridgeGapAtTime(project, trackId, startX / pxPerSec, assetById);
-      if (candidateGap) {
-        e.preventDefault();
-        e.stopPropagation();
-        setBridgeGap(candidateGap);
-        setSelectedKeyframe(null);
-        return;
-      }
-    } else {
-      setBridgeGap(null);
-    }
     const marqueeMode = isKeyframeContentY(startY, tracks, keyframeLanesByTrack) ? 'keyframes' : 'clips';
     const clipBaseline = additive ? usePlaybackStore.getState().selectedClipIds : [];
     const keyframeBaseline = additive ? selectedKeyframes : [];
@@ -705,7 +727,7 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
-  }, [assetById, commitClipSelection, keyframeLanesByTrack, project, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, setTrackSelection, trackIndexFromContentY, tracks]);
+  }, [commitClipSelection, keyframeLanesByTrack, project, pxPerSec, selectClip, selectKeyframes, selectedKeyframes, setClipSelection, setSelectedKeyframe, setTrackSelection, trackIndexFromContentY, tracks]);
 
   const labelForTrack = (trackId: string) => {
     const track = project.tracks.find((t) => t.id === trackId);
@@ -852,14 +874,16 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
       onPointerEnter={() => {
         trackEditorHoverRef.current = true;
       }}
-      onPointerMove={() => {
+      onPointerMove={(event) => {
         trackEditorHoverRef.current = true;
+        syncBridgeModifier(event.metaKey || event.ctrlKey);
       }}
       onPointerLeave={() => {
         trackEditorHoverRef.current = false;
       }}
-      onMouseMove={() => {
+      onMouseMove={(event) => {
         trackEditorHoverRef.current = true;
+        syncBridgeModifier(event.metaKey || event.ctrlKey);
       }}
       onMouseLeave={() => {
         trackEditorHoverRef.current = false;
@@ -998,7 +1022,7 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
                     onGroupTrackMouseDown={handleGroupTrackMouseDown}
                     onGroupTrackDoubleClick={(trackId) => enterGroupTrack(trackId)}
                     onGroupTrackContextMenu={handleGroupTrackContextMenu}
-                    bridgeGap={bridgeGap?.trackId === track.id ? bridgeGap : null}
+                    bridgeGaps={bridgeGapsByTrack.get(track.id) ?? []}
                     onBridgeGapClick={(gap, event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -1152,40 +1176,39 @@ function buildSnapTargets(
   return [...targets];
 }
 
-function bridgeGapAtTime(
+function bridgeGapsForProject(
   project: Project,
-  trackId: string,
-  timeSec: number,
   assetById: Map<string, MediaAsset>,
-): BridgeGap | null {
-  const track = project.tracks.find((candidate) => candidate.id === trackId);
-  if (!track || track.kind !== 'video' || track.group) return null;
-  const clips = project.clips
-    .filter((clip) => clip.trackId === trackId)
-    .sort((first, second) => first.startSec - second.startSec);
-  for (let index = 0; index < clips.length - 1; index += 1) {
-    const leftClip = clips[index]!;
-    const rightClip = clips[index + 1]!;
-    const leftEndSec = leftClip.startSec + clipTimelineDurationSec(leftClip);
-    const rightStartSec = rightClip.startSec;
-    const gapDurationSec = rightStartSec - leftEndSec;
-    if (gapDurationSec <= 1) continue;
-    if (timeSec < leftEndSec || timeSec > rightStartSec) continue;
-    const leftAsset = assetById.get(leftClip.assetId);
-    const rightAsset = assetById.get(rightClip.assetId);
-    if (leftAsset?.kind !== 'video' || rightAsset?.kind !== 'video') continue;
-    if (leftAsset.generation?.status === 'generating' || rightAsset.generation?.status === 'generating') continue;
-    if (!leftAsset.blobKey || !rightAsset.blobKey) continue;
-    return {
-      trackId,
-      startSec: leftEndSec,
-      endSec: rightStartSec,
-      durationSec: gapDurationSec,
-      leftClip,
-      rightClip,
-    };
+): BridgeGap[] {
+  const gaps: BridgeGap[] = [];
+  for (const track of project.tracks) {
+    if (track.kind !== 'video' || track.group) continue;
+    const clips = project.clips
+      .filter((clip) => clip.trackId === track.id)
+      .sort((first, second) => first.startSec - second.startSec);
+    for (let index = 0; index < clips.length - 1; index += 1) {
+      const leftClip = clips[index]!;
+      const rightClip = clips[index + 1]!;
+      const leftEndSec = leftClip.startSec + clipTimelineDurationSec(leftClip);
+      const rightStartSec = rightClip.startSec;
+      const gapDurationSec = rightStartSec - leftEndSec;
+      if (gapDurationSec <= 1) continue;
+      const leftAsset = assetById.get(leftClip.assetId);
+      const rightAsset = assetById.get(rightClip.assetId);
+      if (leftAsset?.kind !== 'video' || rightAsset?.kind !== 'video') continue;
+      if (leftAsset.generation?.status === 'generating' || rightAsset.generation?.status === 'generating') continue;
+      if (!leftAsset.blobKey || !rightAsset.blobKey) continue;
+      gaps.push({
+        trackId: track.id,
+        startSec: leftEndSec,
+        endSec: rightStartSec,
+        durationSec: gapDurationSec,
+        leftClip,
+        rightClip,
+      });
+    }
   }
-  return null;
+  return gaps;
 }
 
 function trimClipLeftFromBaseline(project: Project, baselineClip: Clip, newStartSec: number): Project {

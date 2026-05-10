@@ -50,6 +50,8 @@ type Props = {
 };
 
 const RESOLUTION_OPTIONS = ['480p', '720p', '1080p'] as const;
+const DURATION_OPTIONS = [5, 10, 15] as const;
+type DurationMode = 'auto' | 'manual';
 
 export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlightMediaAsset }: Props) {
   const project = useProjectStore((s) => s.project);
@@ -64,7 +66,8 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const rightAsset = assets.find((asset) => asset.id === gap.rightClip.assetId) ?? null;
   const [prompt, setPrompt] = useState(() => defaultBridgePrompt(gap));
   const [resolution, setResolution] = useState<(typeof RESOLUTION_OPTIONS)[number]>('720p');
-  const [durationSec, setDurationSec] = useState(seedanceDurationForGap(gap.durationSec));
+  const [durationMode, setDurationMode] = useState<DurationMode>('auto');
+  const [manualDurationSec, setManualDurationSec] = useState(seedanceDurationForGap(gap.durationSec));
   const [working, setWorking] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -72,10 +75,14 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const [lastMatch, setLastMatch] = useState<BridgeFrameMatch | null>(null);
 
   const aspect = useMemo(() => aspectForProject(project), [project]);
+  const autoDurationSec = useMemo(() => seedanceDurationForGap(gap.durationSec), [gap.durationSec]);
+  const durationSec = durationMode === 'auto' ? autoDurationSec : manualDurationSec;
   const estimatedCostUsd = useMemo(() => estimateSeedanceCostUsd(resolution, durationSec), [durationSec, resolution]);
   const fitAsset = fitAssetId ? assets.find((asset) => asset.id === fitAssetId) ?? null : null;
-  const referencePlan = useMemo(() => planBridgeReferenceSegments(gap.leftClip, gap.rightClip), [gap.leftClip, gap.rightClip]);
-  const sameSourceAsset = Boolean(leftAsset && rightAsset && leftAsset.id === rightAsset.id);
+  const referencePlan = useMemo(
+    () => planBridgeReferenceSegments(gap.leftClip, gap.rightClip, leftAsset?.durationSec, rightAsset?.durationSec),
+    [gap.leftClip, gap.rightClip, leftAsset?.durationSec, rightAsset?.durationSec],
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -287,6 +294,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               fps={project.fps}
               contextStartSec={referencePlan.leftStartSec}
               contextDurationSec={referencePlan.leftDurationSec}
+              holdSec={referencePlan.leftPadStartSec}
             />
             <div className="flex min-w-[112px] flex-col items-center justify-center rounded-md border border-brand-400/30 bg-brand-500/10 px-3 text-center">
               <div className="text-[10px] font-semibold uppercase tracking-wide text-brand-400">Gap</div>
@@ -300,14 +308,8 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               fps={project.fps}
               contextStartSec={referencePlan.rightStartSec}
               contextDurationSec={referencePlan.rightDurationSec}
+              holdSec={referencePlan.rightPadEndSec}
             />
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-700 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400">
-            <span>
-              Input videos {referencePlan.leftDurationSec.toFixed(1)}s + {referencePlan.rightDurationSec.toFixed(1)}s = {referencePlan.totalDurationSec.toFixed(1)}s / 15s
-            </span>
-            {sameSourceAsset && <span className="rounded bg-brand-500/15 px-2 py-0.5 text-brand-400">Same source</span>}
           </div>
 
           <label className="block rounded-md border border-surface-700 bg-surface-900 focus-within:border-brand-400">
@@ -329,9 +331,19 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
             />
             <PillGroup
               label="Duration"
-              value={`${durationSec}s`}
-              options={[5, 10, 15].map((value) => ({ value: `${value}`, label: `${value}s` }))}
-              onChange={(value) => setDurationSec(Number(value))}
+              value={durationMode === 'auto' ? 'auto' : `${manualDurationSec}s`}
+              options={[
+                { value: 'auto', label: `Auto ${autoDurationSec}s` },
+                ...DURATION_OPTIONS.map((value) => ({ value: `${value}s`, label: `${value}s` })),
+              ]}
+              onChange={(value) => {
+                if (value === 'auto') {
+                  setDurationMode('auto');
+                  return;
+                }
+                setDurationMode('manual');
+                setManualDurationSec(Number(value.replace(/s$/i, '')));
+              }}
               disabled={working}
             />
             <div className="ml-auto rounded bg-surface-950 px-2 py-1 text-[11px] text-slate-400">
@@ -642,6 +654,7 @@ function BridgeEndpoint({
   fps,
   contextStartSec,
   contextDurationSec,
+  holdSec,
 }: {
   asset: MediaAsset | null;
   clip: Clip;
@@ -650,9 +663,37 @@ function BridgeEndpoint({
   fps: number;
   contextStartSec: number;
   contextDurationSec: number;
+  holdSec: number;
 }) {
+  const objectUrlFor = useMediaStore((s) => s.objectUrlFor);
+  const [edgeFrameUrl, setEdgeFrameUrl] = useState<string | null>(null);
   const edgeTimeSec = edge === 'end' ? sourceEndFrameTimeSec(clip, fps) : sourceStartFrameTimeSec(clip);
   const contextEndSec = contextStartSec + contextDurationSec;
+  const assetId = asset?.id;
+  const assetKind = asset?.kind;
+  const assetBlobKey = asset?.blobKey;
+
+  useEffect(() => {
+    let cancelled = false;
+    setEdgeFrameUrl(null);
+    if (!assetId || assetKind !== 'video') return () => {
+      cancelled = true;
+    };
+
+    void objectUrlFor(assetId)
+      .then((url) => (url ? captureVideoFrameDataUrl(url, edgeTimeSec) : null))
+      .then((frameUrl) => {
+        if (!cancelled) setEdgeFrameUrl(frameUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setEdgeFrameUrl(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assetBlobKey, assetId, assetKind, edgeTimeSec, objectUrlFor]);
+
   return (
     <div className="min-w-0 rounded-md border border-surface-700 bg-surface-900/70 p-2">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -660,8 +701,8 @@ function BridgeEndpoint({
         {label}
       </div>
       <div className="flex min-w-0 items-center gap-2">
-        {asset?.thumbnailDataUrl ? (
-          <img src={asset.thumbnailDataUrl} alt="" className="h-12 w-16 shrink-0 rounded object-cover" />
+        {edgeFrameUrl || asset?.thumbnailDataUrl ? (
+          <img src={edgeFrameUrl ?? asset?.thumbnailDataUrl} alt="" className="h-12 w-16 shrink-0 rounded object-cover" />
         ) : (
           <div className="flex h-12 w-16 shrink-0 items-center justify-center rounded bg-surface-950 text-slate-500">
             <Film size={16} />
@@ -675,10 +716,56 @@ function BridgeEndpoint({
           <div className="truncate font-mono text-[10px] text-slate-600">
             Context {formatTimecode(contextStartSec, fps)}-{formatTimecode(contextEndSec, fps)}
           </div>
+          {holdSec > 0.001 && (
+            <div className="font-mono text-[10px] text-slate-500">Hold {holdSec.toFixed(1)}s</div>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+async function captureVideoFrameDataUrl(url: string, timeSec: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+
+    let settled = false;
+    const done = (dataUrl: string | null) => {
+      if (settled) return;
+      settled = true;
+      video.removeAttribute('src');
+      video.load();
+      resolve(dataUrl);
+    };
+
+    video.onloadedmetadata = () => {
+      const maxTime = Number.isFinite(video.duration) && video.duration > 0
+        ? Math.max(0, video.duration - 0.001)
+        : timeSec;
+      try {
+        video.currentTime = clamp(timeSec, 0, maxTime);
+      } catch {
+        done(null);
+      }
+    };
+    video.onseeked = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.min(240, video.videoWidth || 240));
+      canvas.height = Math.max(1, Math.round(canvas.width * ((video.videoHeight || 135) / (video.videoWidth || 240))));
+      const context = canvas.getContext('2d');
+      if (!context) {
+        done(null);
+        return;
+      }
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      done(canvas.toDataURL('image/jpeg', 0.78));
+    };
+    video.onerror = () => done(null);
+    video.src = url;
+  });
 }
 
 function EndpointThumb({ asset, label }: { asset: MediaAsset | null; label: string }) {
