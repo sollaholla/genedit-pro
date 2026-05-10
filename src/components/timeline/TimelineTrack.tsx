@@ -3,7 +3,7 @@ import { TRACK_HEIGHT_PX, pxToTime, timeToPx } from '@/lib/timeline/geometry';
 import { TimelineClip, type ClipDragSide } from './TimelineClip';
 import { useMediaStore } from '@/state/mediaStore';
 import { groupTrackDurationSec } from '@/lib/timeline/operations';
-import { Plus, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import type { BridgeGap } from './BridgeGenerateDialog';
 
 type Props = {
@@ -126,7 +126,7 @@ function BridgeGapOverlay({
 
   return (
     <div
-      className="absolute top-1 z-10 flex items-center justify-center rounded-sm border border-amber-200/80 bg-amber-400/20 text-amber-50 shadow-[0_0_18px_rgba(251,191,36,0.28)] ring-1 ring-amber-300/40"
+      className="absolute top-1 z-10 flex items-center justify-center rounded-sm border border-brand-400/80 bg-brand-500/20 text-white shadow-[0_0_18px_rgba(99,102,241,0.25)] ring-1 ring-brand-400/40"
       style={{ left, width, height: TRACK_HEIGHT_PX - 8 }}
       data-bridge-gap="true"
       onMouseDown={(event) => {
@@ -136,13 +136,12 @@ function BridgeGapOverlay({
     >
       <button
         type="button"
-        className="relative inline-flex h-8 w-8 items-center justify-center rounded-full border border-amber-100/70 bg-amber-300 text-surface-950 shadow-lg transition hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-100"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/40 bg-brand-500 text-white shadow-lg transition hover:bg-brand-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
         title="Bridge Generate"
         aria-label="Bridge Generate"
         onClick={(event) => onClick(gap, event)}
       >
-        <Sparkles size={13} className="absolute -translate-x-1.5 -translate-y-1.5" />
-        <Plus size={15} className="translate-x-1 translate-y-1" />
+        <Sparkles size={15} />
       </button>
     </div>
   );

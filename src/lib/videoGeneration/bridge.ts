@@ -17,7 +17,15 @@ export type BridgeReferenceSegment = {
   durationSec: number;
 };
 
-const MAX_REFERENCE_TOTAL_SEC = 15;
+export type BridgeReferencePlan = {
+  leftStartSec: number;
+  leftDurationSec: number;
+  rightStartSec: number;
+  rightDurationSec: number;
+  totalDurationSec: number;
+};
+
+const MAX_REFERENCE_TOTAL_SEC = 14.8;
 const MAX_SCAN_FPS = 30;
 const FRAME_SIGNATURE_WIDTH = 32;
 const FRAME_SIGNATURE_HEIGHT = 18;
@@ -47,6 +55,22 @@ export function sourceStartFrameTimeSec(clip: Clip): number {
   return Math.max(0, clip.inSec);
 }
 
+export function planBridgeReferenceSegments(leftClip: Clip, rightClip: Clip): BridgeReferencePlan {
+  const perSideBudgetSec = MAX_REFERENCE_TOTAL_SEC / 2;
+  const leftAvailableSec = Math.max(0.05, leftClip.outSec - leftClip.inSec);
+  const rightAvailableSec = Math.max(0.05, rightClip.outSec - rightClip.inSec);
+  const leftDurationSec = Math.min(perSideBudgetSec, leftAvailableSec);
+  const rightDurationSec = Math.min(perSideBudgetSec, rightAvailableSec, MAX_REFERENCE_TOTAL_SEC - leftDurationSec);
+  const totalDurationSec = leftDurationSec + rightDurationSec;
+  return {
+    leftStartSec: Math.max(leftClip.inSec, leftClip.outSec - leftDurationSec),
+    leftDurationSec,
+    rightStartSec: rightClip.inSec,
+    rightDurationSec,
+    totalDurationSec,
+  };
+}
+
 export async function extractBridgeReferenceSegments({
   leftAsset,
   leftClip,
@@ -60,31 +84,25 @@ export async function extractBridgeReferenceSegments({
   rightClip: Clip;
   onStatus?: (message: string) => void;
 }): Promise<[BridgeReferenceSegment, BridgeReferenceSegment]> {
-  const perSideBudgetSec = MAX_REFERENCE_TOTAL_SEC / 2;
-  const leftAvailableSec = Math.max(0.05, leftClip.outSec - leftClip.inSec);
-  const rightAvailableSec = Math.max(0.05, rightClip.outSec - rightClip.inSec);
-  const leftDurationSec = Math.min(perSideBudgetSec, leftAvailableSec);
-  const rightDurationSec = Math.min(perSideBudgetSec, rightAvailableSec, MAX_REFERENCE_TOTAL_SEC - leftDurationSec);
-  const leftStartSec = Math.max(leftClip.inSec, leftClip.outSec - leftDurationSec);
-  const rightStartSec = rightClip.inSec;
+  const plan = planBridgeReferenceSegments(leftClip, rightClip);
 
   onStatus?.('Preparing bridge references...');
   const leftFile = await extractVideoSegmentFile({
     asset: leftAsset,
-    startSec: leftStartSec,
-    durationSec: leftDurationSec,
+    startSec: plan.leftStartSec,
+    durationSec: plan.leftDurationSec,
     name: `bridge_video_1_${Date.now()}.mp4`,
   });
   const rightFile = await extractVideoSegmentFile({
     asset: rightAsset,
-    startSec: rightStartSec,
-    durationSec: rightDurationSec,
+    startSec: plan.rightStartSec,
+    durationSec: plan.rightDurationSec,
     name: `bridge_video_2_${Date.now()}.mp4`,
   });
 
   return [
-    { file: leftFile, sourceStartSec: leftStartSec, durationSec: leftDurationSec },
-    { file: rightFile, sourceStartSec: rightStartSec, durationSec: rightDurationSec },
+    { file: leftFile, sourceStartSec: plan.leftStartSec, durationSec: plan.leftDurationSec },
+    { file: rightFile, sourceStartSec: plan.rightStartSec, durationSec: plan.rightDurationSec },
   ];
 }
 

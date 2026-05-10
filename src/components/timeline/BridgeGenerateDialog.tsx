@@ -6,7 +6,10 @@ import { formatTimecode } from '@/lib/timeline/geometry';
 import {
   extractBridgeReferenceSegments,
   matchBridgeFrames,
+  planBridgeReferenceSegments,
   seedanceDurationForGap,
+  sourceEndFrameTimeSec,
+  sourceStartFrameTimeSec,
   type BridgeFrameMatch,
 } from '@/lib/videoGeneration/bridge';
 import { hostLitterboxFile } from '@/lib/videoGeneration/litterbox';
@@ -71,6 +74,8 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const aspect = useMemo(() => aspectForProject(project), [project]);
   const estimatedCostUsd = useMemo(() => estimateSeedanceCostUsd(resolution, durationSec), [durationSec, resolution]);
   const fitAsset = fitAssetId ? assets.find((asset) => asset.id === fitAssetId) ?? null : null;
+  const referencePlan = useMemo(() => planBridgeReferenceSegments(gap.leftClip, gap.rightClip), [gap.leftClip, gap.rightClip]);
+  const sameSourceAsset = Boolean(leftAsset && rightAsset && leftAsset.id === rightAsset.id);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -257,7 +262,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
       <div className="w-[min(760px,94vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 text-slate-100 shadow-2xl">
         <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
-            <Sparkles size={16} className="text-amber-300" />
+            <Sparkles size={16} className="text-brand-400" />
             Bridge Generate
           </div>
           <button
@@ -274,15 +279,38 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
         <div className="space-y-3 p-4">
           <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-2">
-            <BridgeEndpoint asset={leftAsset} clip={gap.leftClip} label="Video 1" />
-            <div className="flex min-w-[112px] flex-col items-center justify-center rounded-md border border-amber-300/25 bg-amber-500/10 px-3 text-center">
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-200">Gap</div>
-              <div className="font-mono text-xs text-amber-50">{formatTimecode(gap.durationSec, project.fps)}</div>
+            <BridgeEndpoint
+              asset={leftAsset}
+              clip={gap.leftClip}
+              label="Video 1"
+              edge="end"
+              fps={project.fps}
+              contextStartSec={referencePlan.leftStartSec}
+              contextDurationSec={referencePlan.leftDurationSec}
+            />
+            <div className="flex min-w-[112px] flex-col items-center justify-center rounded-md border border-brand-400/30 bg-brand-500/10 px-3 text-center">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-brand-400">Gap</div>
+              <div className="font-mono text-xs text-slate-100">{formatTimecode(gap.durationSec, project.fps)}</div>
             </div>
-            <BridgeEndpoint asset={rightAsset} clip={gap.rightClip} label="Video 2" />
+            <BridgeEndpoint
+              asset={rightAsset}
+              clip={gap.rightClip}
+              label="Video 2"
+              edge="start"
+              fps={project.fps}
+              contextStartSec={referencePlan.rightStartSec}
+              contextDurationSec={referencePlan.rightDurationSec}
+            />
           </div>
 
-          <label className="block rounded-md border border-surface-700 bg-surface-900 focus-within:border-amber-300/70">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-surface-700 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400">
+            <span>
+              Input videos {referencePlan.leftDurationSec.toFixed(1)}s + {referencePlan.rightDurationSec.toFixed(1)}s = {referencePlan.totalDurationSec.toFixed(1)}s / 15s
+            </span>
+            {sameSourceAsset && <span className="rounded bg-brand-500/15 px-2 py-0.5 text-brand-400">Same source</span>}
+          </div>
+
+          <label className="block rounded-md border border-surface-700 bg-surface-900 focus-within:border-brand-400">
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -339,7 +367,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
           <div className="flex items-center justify-between gap-3 border-t border-surface-800 pt-3">
             <div className="min-w-0 text-[11px] text-slate-500">
-              {working ? status || 'Working...' : 'Seedance track completion uses the neighboring clip tails as video references.'}
+              {working ? status || 'Working...' : 'Seedance track completion uses trimmed neighboring clip context as video references.'}
             </div>
             <button
               type="button"
@@ -472,7 +500,7 @@ function TimelineFittingModal({
       <div className="w-[min(980px,96vw)] overflow-hidden rounded-lg border border-white/15 bg-surface-950 text-slate-100 shadow-2xl">
         <div className="flex items-center justify-between border-b border-surface-700 px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
-            <Clapperboard size={16} className="text-amber-300" />
+            <Clapperboard size={16} className="text-brand-400" />
             Timeline Fitting
           </div>
           <button type="button" className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-white" onClick={onCancel} title="Cancel" aria-label="Cancel">
@@ -484,21 +512,21 @@ function TimelineFittingModal({
           <div className="space-y-4">
             <div className="grid grid-cols-[86px_minmax(160px,1fr)_86px] gap-2">
               <EndpointThumb asset={leftAsset} label="Video 1" />
-              <div className="rounded-md border border-amber-300/25 bg-amber-500/10 p-3">
-                <div className="mb-2 flex items-center justify-between text-[11px] text-amber-100">
+              <div className="rounded-md border border-brand-400/25 bg-brand-500/10 p-3">
+                <div className="mb-2 flex items-center justify-between text-[11px] text-slate-300">
                   <span>Timeline gap</span>
                   <span className="font-mono">{formatTimecode(gap.durationSec, project.fps)}</span>
                 </div>
-                <div ref={targetRef} className="relative h-14 rounded bg-surface-950 ring-1 ring-amber-300/25">
+                <div ref={targetRef} className="relative h-14 rounded bg-surface-950 ring-1 ring-brand-400/25">
                   <div
-                    className="absolute inset-y-2 rounded border border-amber-200/70 bg-amber-400/30 shadow-[0_0_16px_rgba(251,191,36,0.20)]"
+                    className="absolute inset-y-2 rounded border border-brand-400/70 bg-brand-500/30 shadow-[0_0_16px_rgba(99,102,241,0.18)]"
                     style={{ left: `${targetLeftPct}%`, width: `${targetWidthPct}%` }}
                     onPointerDown={(event) => startTargetDrag('move', event)}
                   >
                     <button
                       type="button"
                       aria-label="Resize bridge start"
-                      className="absolute inset-y-0 left-0 flex w-3 cursor-ew-resize items-center justify-center rounded-l bg-amber-200/70 text-amber-950"
+                      className="absolute inset-y-0 left-0 flex w-3 cursor-ew-resize items-center justify-center rounded-l bg-brand-400/80 text-white"
                       onPointerDown={(event) => startTargetDrag('left', event)}
                     >
                       <GripVertical size={10} />
@@ -506,14 +534,14 @@ function TimelineFittingModal({
                     <button
                       type="button"
                       aria-label="Move bridge"
-                      className="flex h-full w-full cursor-grab items-center justify-center text-[11px] font-semibold text-amber-50 active:cursor-grabbing"
+                      className="flex h-full w-full cursor-grab items-center justify-center text-[11px] font-semibold text-white active:cursor-grabbing"
                     >
                       {asset.name}
                     </button>
                     <button
                       type="button"
                       aria-label="Resize bridge end"
-                      className="absolute inset-y-0 right-0 flex w-3 cursor-ew-resize items-center justify-center rounded-r bg-amber-200/70 text-amber-950"
+                      className="absolute inset-y-0 right-0 flex w-3 cursor-ew-resize items-center justify-center rounded-r bg-brand-400/80 text-white"
                       onPointerDown={(event) => startTargetDrag('right', event)}
                     >
                       <GripVertical size={10} />
@@ -531,14 +559,14 @@ function TimelineFittingModal({
               </div>
               <div ref={sourceRef} className="relative h-12 rounded bg-surface-950 ring-1 ring-surface-700">
                 <div
-                  className="absolute inset-y-2 rounded border border-brand-300/70 bg-brand-500/30"
+                  className="absolute inset-y-2 rounded border border-brand-400/70 bg-brand-500/30"
                   style={{ left: `${sourceLeftPct}%`, width: `${sourceWidthPct}%` }}
                   onPointerDown={(event) => startSourceDrag('move', event)}
                 >
                   <button
                     type="button"
                     aria-label="Trim source start"
-                    className="absolute inset-y-0 left-0 flex w-3 cursor-ew-resize items-center justify-center rounded-l bg-brand-200/80 text-surface-950"
+                    className="absolute inset-y-0 left-0 flex w-3 cursor-ew-resize items-center justify-center rounded-l bg-brand-400/80 text-white"
                     onPointerDown={(event) => startSourceDrag('left', event)}
                   >
                     <GripVertical size={10} />
@@ -551,7 +579,7 @@ function TimelineFittingModal({
                   <button
                     type="button"
                     aria-label="Trim source end"
-                    className="absolute inset-y-0 right-0 flex w-3 cursor-ew-resize items-center justify-center rounded-r bg-brand-200/80 text-surface-950"
+                    className="absolute inset-y-0 right-0 flex w-3 cursor-ew-resize items-center justify-center rounded-r bg-brand-400/80 text-white"
                     onPointerDown={(event) => startSourceDrag('right', event)}
                   >
                     <GripVertical size={10} />
@@ -567,7 +595,7 @@ function TimelineFittingModal({
               <Metric label="Source out" value={formatTimecode(sourceOutSec, project.fps)} />
             </div>
             {!lastMatch && (
-              <div className="rounded-md border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              <div className="rounded-md border border-surface-600 bg-surface-900/70 px-3 py-2 text-xs text-slate-300">
                 Matching endpoints were not found automatically.
               </div>
             )}
@@ -606,7 +634,25 @@ function TimelineFittingModal({
   );
 }
 
-function BridgeEndpoint({ asset, clip, label }: { asset: MediaAsset | null; clip: Clip; label: string }) {
+function BridgeEndpoint({
+  asset,
+  clip,
+  label,
+  edge,
+  fps,
+  contextStartSec,
+  contextDurationSec,
+}: {
+  asset: MediaAsset | null;
+  clip: Clip;
+  label: string;
+  edge: 'start' | 'end';
+  fps: number;
+  contextStartSec: number;
+  contextDurationSec: number;
+}) {
+  const edgeTimeSec = edge === 'end' ? sourceEndFrameTimeSec(clip, fps) : sourceStartFrameTimeSec(clip);
+  const contextEndSec = contextStartSec + contextDurationSec;
   return (
     <div className="min-w-0 rounded-md border border-surface-700 bg-surface-900/70 p-2">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -623,7 +669,12 @@ function BridgeEndpoint({ asset, clip, label }: { asset: MediaAsset | null; clip
         )}
         <div className="min-w-0">
           <div className="truncate text-xs font-medium text-slate-100">{asset?.name ?? 'Missing asset'}</div>
-          <div className="font-mono text-[10px] text-slate-500">{formatTimecode(clip.startSec, 30)}</div>
+          <div className="font-mono text-[10px] text-slate-500">
+            Source {edge} {formatTimecode(edgeTimeSec, fps)}
+          </div>
+          <div className="truncate font-mono text-[10px] text-slate-600">
+            Context {formatTimecode(contextStartSec, fps)}-{formatTimecode(contextEndSec, fps)}
+          </div>
         </div>
       </div>
     </div>
