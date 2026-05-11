@@ -1,3 +1,4 @@
+import { getFFmpeg, resetFFmpeg } from '@/lib/ffmpeg/client';
 import { activeEditIteration } from '@/lib/media/editTrail';
 import { getBlob } from '@/lib/media/storage';
 import type { MediaAsset } from '@/types';
@@ -19,15 +20,25 @@ type HostedReference = {
   expiresAt: number;
 };
 
+export type HostLitterboxReferenceOptions = {
+  forceMp4Video?: boolean;
+};
+
 const hostedReferenceCache = new Map<string, HostedReference>();
 const inFlightReferenceUploads = new Map<string, Promise<string>>();
 let uploadQueue: Promise<void> = Promise.resolve();
+let referenceFfmpegQueue: Promise<unknown> = Promise.resolve();
 
-export async function hostLitterboxReference(asset: MediaAsset, label: string): Promise<string> {
+export async function hostLitterboxReference(
+  asset: MediaAsset,
+  label: string,
+  options: HostLitterboxReferenceOptions = {},
+): Promise<string> {
   const blobKey = activeEditIteration(asset)?.blobKey ?? asset.blobKey;
   if (!blobKey) throw new Error(`${label} "${asset.name}" is missing local media data.`);
 
-  const cacheKey = `${asset.id}:${blobKey}`;
+  const forceMp4Video = Boolean(options.forceMp4Video && asset.kind === 'video');
+  const cacheKey = `${asset.id}:${blobKey}:${forceMp4Video ? 'video-mp4' : 'original'}`;
   const cached = hostedReferenceCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.url;
 
@@ -39,17 +50,19 @@ export async function hostLitterboxReference(asset: MediaAsset, label: string): 
   const pending = inFlightReferenceUploads.get(cacheKey);
   if (pending) return pending;
 
-  const file = new File([blob], safeReferenceFileName(asset), {
-    type: blob.type || asset.mimeType || 'application/octet-stream',
-  });
-
-  const upload = enqueueLitterboxUpload(file).then((url) => {
+  const upload = (async () => {
+    const file = forceMp4Video
+      ? await mp4VideoReferenceFile(asset, blob, label)
+      : new File([blob], safeReferenceFileName(asset), {
+        type: blob.type || asset.mimeType || 'application/octet-stream',
+      });
+    const url = await enqueueLitterboxUpload(file);
     hostedReferenceCache.set(cacheKey, {
       url,
       expiresAt: Date.now() + LITTERBOX_REFERENCE_TTL_MS - CACHE_SAFETY_WINDOW_MS,
     });
     return url;
-  }).finally(() => {
+  })().finally(() => {
     inFlightReferenceUploads.delete(cacheKey);
   });
   inFlightReferenceUploads.set(cacheKey, upload);
@@ -151,14 +164,68 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function safeReferenceFileName(asset: MediaAsset): string {
+async function mp4VideoReferenceFile(asset: MediaAsset, blob: Blob, label: string): Promise<File> {
+  const outputName = safeReferenceFileName(asset, 'mp4');
+  if (isMp4VideoReference(asset, blob)) {
+    return new File([blob], outputName, { type: 'video/mp4' });
+  }
+
+  return transcodeVideoReferenceToMp4(asset, blob, label, outputName);
+}
+
+function transcodeVideoReferenceToMp4(asset: MediaAsset, blob: Blob, label: string, outputName: string): Promise<File> {
+  return runReferenceFfmpegJob(async () => {
+    const ffmpeg = await getFFmpeg();
+    const inputFile = `reference-input-${asset.id}-${Date.now()}.${sourceVideoExtension(asset, blob)}`;
+    const outputFile = `reference-output-${asset.id}-${Date.now()}.mp4`;
+    let resetEncoder = false;
+    try {
+      await ffmpeg.writeFile(inputFile, new Uint8Array(await blob.arrayBuffer()));
+      const code = await ffmpeg.exec([
+        '-hide_banner',
+        '-i', inputFile,
+        '-map', '0:v:0',
+        '-map', '0:a?',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-movflags', '+faststart',
+        '-y',
+        outputFile,
+      ]);
+      if (code !== 0) throw new Error(`Could not convert ${label} "${asset.name}" to an MP4 reference.`);
+      const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
+      return new File([data.slice()], outputName, { type: 'video/mp4' });
+    } catch (error) {
+      resetEncoder = isFfmpegMemoryError(error);
+      throw error;
+    } finally {
+      await ffmpeg.deleteFile(inputFile).catch(() => undefined);
+      await ffmpeg.deleteFile(outputFile).catch(() => undefined);
+      if (resetEncoder) resetFFmpeg();
+    }
+  });
+}
+
+function runReferenceFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
+  const run = referenceFfmpegQueue.catch(() => undefined).then(job);
+  referenceFfmpegQueue = run.catch(() => undefined);
+  return run;
+}
+
+function safeReferenceFileName(asset: MediaAsset, forcedExtension?: string): string {
   const name = asset.name.trim() || `${asset.kind}-reference`;
-  const withExtension = /\.[a-z0-9]{2,8}$/i.test(name) ? name : `${name}.${extensionForMime(asset.mimeType)}`;
+  const baseName = forcedExtension ? name.replace(/\.[a-z0-9]{2,8}$/i, '') : name;
+  const withExtension = forcedExtension
+    ? `${baseName}.${forcedExtension}`
+    : /\.[a-z0-9]{2,8}$/i.test(name) ? name : `${name}.${extensionForMime(asset.mimeType)}`;
   const safe = withExtension
     .replace(/[^\w.-]+/g, '_')
     .replace(/_{2,}/g, '_')
     .replace(/^_+|_+$/g, '');
-  return safe || `${asset.kind}-reference.${extensionForMime(asset.mimeType)}`;
+  return safe || `${asset.kind}-reference.${forcedExtension ?? extensionForMime(asset.mimeType)}`;
 }
 
 function extensionForMime(mimeType: string): string {
@@ -170,6 +237,30 @@ function extensionForMime(mimeType: string): string {
   if (/webm/i.test(mimeType)) return 'webm';
   if (/mp4|mpeg4/i.test(mimeType)) return 'mp4';
   return 'bin';
+}
+
+function sourceVideoExtension(asset: MediaAsset, blob: Blob): string {
+  const extension = fileExtension(asset.name);
+  if (extension) return extension;
+  const mimeExtension = extensionForMime(blob.type || asset.mimeType || '');
+  return mimeExtension === 'bin' ? 'mp4' : mimeExtension;
+}
+
+function isMp4VideoReference(asset: MediaAsset, blob: Blob): boolean {
+  const mimeType = blob.type || asset.mimeType || '';
+  if (/mp4|mpeg4/i.test(mimeType)) return true;
+  if (/quicktime|mov|webm/i.test(mimeType)) return false;
+  return /\.mp4$/i.test(asset.name);
+}
+
+function fileExtension(name: string): string | null {
+  const match = /\.([a-z0-9]{2,8})$/i.exec(name.trim());
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+function isFfmpegMemoryError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /memory access out of bounds|out of memory|Cannot enlarge memory/i.test(message);
 }
 
 function isLitterboxUrl(value: string): boolean {

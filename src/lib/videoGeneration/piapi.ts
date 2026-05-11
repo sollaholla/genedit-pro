@@ -24,7 +24,15 @@ export type PiApiCreateTaskRequest = {
   body: Record<string, unknown>;
 };
 
-export type PiApiReferenceUrlResolver = (asset: MediaAsset, label: string) => Promise<string>;
+export type PiApiReferenceUrlOptions = {
+  forceMp4Video?: boolean;
+};
+
+export type PiApiReferenceUrlResolver = (
+  asset: MediaAsset,
+  label: string,
+  options?: PiApiReferenceUrlOptions,
+) => Promise<string>;
 
 export type PiApiCreateTaskOptions = {
   resolveReferenceUrl?: PiApiReferenceUrlResolver;
@@ -235,7 +243,7 @@ async function buildPiApiKlingOmniRequest(
   const imageEntries: PiApiImageEntry[] = [...referenceImageEntries, ...frameImageEntries];
   const videoEntries: PiApiVideoEntry[] = await mapSequential(sourceVideos, async (asset, index) => ({
     token: `video${index + 1}`,
-    url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options),
+    url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options, { forceMp4Video: true }),
   }));
 
   const input: Record<string, unknown> = {
@@ -293,7 +301,7 @@ async function buildPiApiSeedanceRequest(
     }),
   );
   const videoUrls = await mapSequential(sourceVideos, (asset, index) => (
-    resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options)
+    resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options, { forceMp4Video: true })
   ));
 
   const mode = imageEntries.length > 0 || videoUrls.length > 0
@@ -589,10 +597,14 @@ async function resolvePiApiReferenceUrl(
   asset: MediaAsset,
   label: string,
   options: PiApiCreateTaskOptions,
+  referenceOptions: PiApiReferenceUrlOptions = {},
 ): Promise<string> {
   const url = piApiReferenceUrl(asset);
-  if (url) return url;
-  if (options.resolveReferenceUrl) return options.resolveReferenceUrl(asset, label);
+  if (url && (!referenceOptions.forceMp4Video || isMp4Url(url))) return url;
+  if (options.resolveReferenceUrl) return options.resolveReferenceUrl(asset, label, referenceOptions);
+  if (url && referenceOptions.forceMp4Video) {
+    throw new Error(`${label} "${asset.name}" has a hosted URL, but PiAPI requires video references to be MP4 URLs.`);
+  }
   throw new Error(`${label} "${asset.name}" needs an active hosted URL or temporary reference host.`);
 }
 
@@ -603,6 +615,14 @@ function piApiReferenceUrl(asset: MediaAsset, now = Date.now()): string | null {
   const expiresAt = asset.generation?.providerArtifactExpiresAt;
   if (expiresAt && expiresAt <= now) return null;
   return uri;
+}
+
+function isMp4Url(value: string): boolean {
+  try {
+    return /\.mp4$/i.test(new URL(value).pathname);
+  } catch {
+    return /\.mp4(?:$|[?#])/i.test(value);
+  }
 }
 
 function normalizeStatus(status: string | undefined): string {

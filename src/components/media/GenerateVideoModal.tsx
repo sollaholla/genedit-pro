@@ -706,7 +706,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       const request = await buildPiApiCreateTaskRequest(mutation, {
         resolveReferenceUrl: async (asset, label) => {
           updateGenerationProgress(id, uploadProgress);
-          const url = await hostLitterboxReference(asset, label);
+          const url = await hostLitterboxReference(asset, label, { forceMp4Video: asset.kind === 'video' });
           uploadProgress = Math.min(15, uploadProgress + 4);
           updateGenerationProgress(id, uploadProgress);
           return url;
