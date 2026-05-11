@@ -12,6 +12,7 @@ const LITTERBOX_UPLOAD_COOLDOWN_MS = 2000;
 const LITTERBOX_UPLOAD_MAX_ATTEMPTS = 4;
 const LITTERBOX_UPLOAD_RETRY_BASE_MS = 1500;
 const LITTERBOX_UPLOAD_RETRY_MAX_MS = 12_000;
+const LITTERBOX_UPLOAD_TIMEOUT_MS = 180_000;
 const MAX_ERROR_DETAIL_LENGTH = 180;
 const RETRYABLE_UPLOAD_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
@@ -22,7 +23,14 @@ type HostedReference = {
 
 export type HostLitterboxReferenceOptions = {
   forceMp4Video?: boolean;
+  onStatus?: (status: HostLitterboxReferenceStatus) => void;
 };
+
+export type HostLitterboxReferenceStatus =
+  | { stage: 'converting'; name: string }
+  | { stage: 'converted'; name: string; sizeBytes: number }
+  | { stage: 'uploading'; name: string; sizeBytes: number }
+  | { stage: 'uploaded'; name: string; url: string };
 
 const hostedReferenceCache = new Map<string, HostedReference>();
 const inFlightReferenceUploads = new Map<string, Promise<string>>();
@@ -52,11 +60,28 @@ export async function hostLitterboxReference(
 
   const upload = (async () => {
     const file = forceMp4Video
-      ? await mp4VideoReferenceFile(asset, blob, label)
+      ? await mp4VideoReferenceFile(asset, blob, label, options)
       : new File([blob], safeReferenceFileName(asset), {
         type: blob.type || asset.mimeType || 'application/octet-stream',
       });
+    options.onStatus?.({ stage: 'uploading', name: file.name, sizeBytes: file.size });
+    if (import.meta.env.DEV) {
+      console.debug('[GenEdit] Uploading Litterbox reference', {
+        label,
+        name: file.name,
+        type: file.type,
+        sizeBytes: file.size,
+      });
+    }
     const url = await enqueueLitterboxUpload(file);
+    options.onStatus?.({ stage: 'uploaded', name: file.name, url });
+    if (import.meta.env.DEV) {
+      console.debug('[GenEdit] Uploaded Litterbox reference', {
+        label,
+        name: file.name,
+        url,
+      });
+    }
     hostedReferenceCache.set(cacheKey, {
       url,
       expiresAt: Date.now() + LITTERBOX_REFERENCE_TTL_MS - CACHE_SAFETY_WINDOW_MS,
@@ -118,10 +143,26 @@ async function uploadLitterboxFileOnce(file: File): Promise<string> {
   form.set('time', LITTERBOX_TIME);
   form.set('fileToUpload', file);
 
-  const response = await fetch(LITTERBOX_API_URL, {
-    method: 'POST',
-    body: form,
-  });
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), LITTERBOX_UPLOAD_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(LITTERBOX_API_URL, {
+      method: 'POST',
+      body: form,
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    const isAbort = error instanceof DOMException && error.name === 'AbortError';
+    throw new LitterboxUploadError(
+      isAbort
+        ? 'Litterbox temporary upload timed out before returning a URL.'
+        : error instanceof Error ? error.message : 'Litterbox temporary upload failed.',
+      true,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
   const text = (await response.text().catch(() => '')).trim();
   if (!response.ok) {
     if (import.meta.env.DEV) {
@@ -164,13 +205,21 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function mp4VideoReferenceFile(asset: MediaAsset, blob: Blob, label: string): Promise<File> {
+async function mp4VideoReferenceFile(
+  asset: MediaAsset,
+  blob: Blob,
+  label: string,
+  options: HostLitterboxReferenceOptions,
+): Promise<File> {
   const outputName = safeReferenceFileName(asset, 'mp4');
   if (isMp4VideoReference(asset, blob)) {
     return new File([blob], outputName, { type: 'video/mp4' });
   }
 
-  return transcodeVideoReferenceToMp4(asset, blob, label, outputName);
+  options.onStatus?.({ stage: 'converting', name: asset.name });
+  const file = await transcodeVideoReferenceToMp4(asset, blob, label, outputName);
+  options.onStatus?.({ stage: 'converted', name: file.name, sizeBytes: file.size });
+  return file;
 }
 
 function transcodeVideoReferenceToMp4(asset: MediaAsset, blob: Blob, label: string, outputName: string): Promise<File> {
@@ -247,10 +296,12 @@ function sourceVideoExtension(asset: MediaAsset, blob: Blob): string {
 }
 
 function isMp4VideoReference(asset: MediaAsset, blob: Blob): boolean {
+  const extension = fileExtension(asset.name);
+  if (extension) return extension === 'mp4';
   const mimeType = blob.type || asset.mimeType || '';
   if (/mp4|mpeg4/i.test(mimeType)) return true;
   if (/quicktime|mov|webm/i.test(mimeType)) return false;
-  return /\.mp4$/i.test(asset.name);
+  return false;
 }
 
 function fileExtension(name: string): string | null {

@@ -704,9 +704,20 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       if (!apiKey) throw new Error(`Missing ${providerNameForModel(selectedModel)} API key.`);
       let uploadProgress = 2;
       const request = await buildPiApiCreateTaskRequest(mutation, {
-        resolveReferenceUrl: async (asset, label) => {
-          updateGenerationProgress(id, uploadProgress);
-          const url = await hostLitterboxReference(asset, label, { forceMp4Video: asset.kind === 'video' });
+        resolveReferenceUrl: async (asset, label, referenceOptions) => {
+          const advanceUploadProgress = (next: number) => {
+            uploadProgress = Math.max(uploadProgress, Math.min(15, next));
+            updateGenerationProgress(id, uploadProgress);
+          };
+          advanceUploadProgress(uploadProgress);
+          const url = await hostLitterboxReference(asset, label, {
+            forceMp4Video: referenceOptions?.forceMp4Video ?? false,
+            onStatus: (status) => {
+              if (status.stage === 'converting') advanceUploadProgress(5);
+              if (status.stage === 'converted') advanceUploadProgress(9);
+              if (status.stage === 'uploading') advanceUploadProgress(12);
+            },
+          });
           uploadProgress = Math.min(15, uploadProgress + 4);
           updateGenerationProgress(id, uploadProgress);
           return url;
