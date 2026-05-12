@@ -17,6 +17,7 @@ export type ReferenceAssetData = {
   resolution: string;
   updatedAt: number;
   sourceImageAssetIds?: string[];
+  sourceVideoAssetIds?: string[];
 };
 
 export type CharacterAssetData = ReferenceAssetData & {

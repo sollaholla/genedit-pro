@@ -16,6 +16,7 @@ type Props = {
   pickerMode: MediaPickerMode;
   selectedModel?: VideoModelDefinition;
   allowCharacterReferences?: boolean;
+  allowVideoReferences?: boolean;
   title?: string;
   helperText?: string;
   importLabel?: string;
@@ -30,6 +31,7 @@ export function MediaPicker({
   pickerMode,
   selectedModel,
   allowCharacterReferences = true,
+  allowVideoReferences = false,
   title,
   helperText,
   importLabel = 'Import',
@@ -39,13 +41,16 @@ export function MediaPicker({
   const [sortKey, setSortKey] = useState<SortKey>('recent');
   const visibleAssets = useMemo(() => {
     if (pickerMode === 'reference') {
-      return assets.filter((asset) => isReferenceImageAsset(asset) && (allowCharacterReferences || !isReferenceAssetKind(asset.kind)));
+      return assets.filter((asset) => {
+        if (isReferenceImageAsset(asset)) return allowCharacterReferences || !isReferenceAssetKind(asset.kind);
+        return allowVideoReferences && isReferenceVideoAsset(asset);
+      });
     }
     if (pickerMode === 'source-video') {
       return assets.filter((asset) => selectedModel ? isSourceVideoReferenceValid(selectedModel, asset) : asset.kind === 'video');
     }
     return assets.filter((asset) => asset.kind === 'image');
-  }, [allowCharacterReferences, assets, pickerMode, selectedModel]);
+  }, [allowCharacterReferences, allowVideoReferences, assets, pickerMode, selectedModel]);
   const filteredAssets = useMemo(() => {
     const q = query.trim().toLowerCase();
     return [...visibleAssets]
@@ -68,8 +73,12 @@ export function MediaPicker({
   }, [query, sortKey, visibleAssets]);
   const resolvedHelperText = helperText ?? (pickerMode === 'reference'
     ? allowCharacterReferences
-      ? 'Choose image, character, object, or environment references supported by the selected model.'
-      : 'Choose image references from media or import new images.'
+      ? allowVideoReferences
+        ? 'Choose image, video, character, object, or environment references supported by the selected model.'
+        : 'Choose image, character, object, or environment references supported by the selected model.'
+      : allowVideoReferences
+        ? 'Choose image or video references from media, or import new media.'
+        : 'Choose image references from media or import new images.'
     : pickerMode === 'source-video'
       ? 'Choose one video reference.'
       : 'Only image assets are valid for frame slots.');
@@ -78,7 +87,11 @@ export function MediaPicker({
     : pickerMode === 'reference'
       ? 'Pick references'
       : 'Pick frame image');
-  const inputKindLabel = pickerMode === 'source-video' ? 'Video reference' : pickerMode === 'reference' ? 'Image input' : 'Frame image';
+  const inputKindLabel = pickerMode === 'source-video'
+    ? 'Video reference'
+    : pickerMode === 'reference'
+      ? allowVideoReferences ? 'Image or video input' : 'Image input'
+      : 'Frame image';
 
   return (
     <div className={`fixed inset-0 ${zIndexClassName} flex items-center justify-center bg-black/55 p-4`}>
@@ -282,6 +295,10 @@ function PickerAssetIcon({ asset }: { asset: MediaAsset }) {
   if (asset.kind === 'object') return <Box size={26} />;
   if (asset.kind === 'environment') return <Mountain size={26} />;
   return <ImageIcon size={26} />;
+}
+
+function isReferenceVideoAsset(asset: MediaAsset): boolean {
+  return asset.kind === 'video' && asset.generation?.status !== 'generating' && Boolean(asset.blobKey);
 }
 
 function isSourceVideoReferenceValid(model: VideoModelDefinition, asset: MediaAsset): boolean {

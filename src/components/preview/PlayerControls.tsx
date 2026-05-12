@@ -51,8 +51,8 @@ export function PlayerControls({
   const step = (dir: 1 | -1) => setCurrentTime(Math.max(0, Math.min(duration, currentTime + dir / fps)));
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-surface-700 bg-surface-900 px-3 py-1.5">
-      <div className="flex shrink-0 items-center gap-1">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-surface-700 bg-surface-900 px-2 py-1.5 sm:px-3">
+      <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
         <button
           className="rounded p-1.5 text-slate-300 hover:bg-surface-700"
           onClick={() => setCurrentTime(0)}
@@ -90,6 +90,7 @@ export function PlayerControls({
         </button>
       </div>
       <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
+        <div className="hidden items-center gap-1.5 sm:flex">
         <select
           className="w-16 rounded border border-surface-600 bg-surface-800 px-1.5 py-1 text-[11px] text-slate-200 outline-none hover:border-surface-500 focus:border-brand-400"
           value={aspectPreset}
@@ -120,9 +121,12 @@ export function PlayerControls({
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
-        <div className="shrink-0 font-mono text-[11px] tabular-nums text-slate-300">
-          {formatTimecode(currentTime, fps)} <span className="text-slate-500">/</span>{' '}
-          {formatTimecode(duration, fps)}
+        </div>
+        <div className="shrink-0 font-mono text-[10px] tabular-nums text-slate-300 sm:text-[11px]">
+          {formatTimecode(currentTime, fps)}
+          <span className="hidden sm:inline">
+            {' '}<span className="text-slate-500">/</span> {formatTimecode(duration, fps)}
+          </span>
         </div>
         <button
           className="rounded p-1.5 text-slate-300 hover:bg-surface-700"

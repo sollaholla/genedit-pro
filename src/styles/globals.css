@@ -42,6 +42,15 @@
   .btn-ghost {
     @apply btn bg-surface-700 hover:bg-surface-600 text-slate-100;
   }
+  .mobile-editor-button {
+    @apply flex h-10 items-center justify-center gap-1.5 rounded-md bg-surface-800 px-2 text-xs font-semibold text-slate-100 transition-colors hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+  .mobile-editor-button-primary {
+    @apply mobile-editor-button bg-brand-500 text-white hover:bg-brand-400;
+  }
+  .mobile-editor-button-danger {
+    @apply mobile-editor-button text-rose-200 hover:bg-rose-500/15 hover:text-rose-100;
+  }
   .panel {
     @apply bg-surface-900 border border-surface-700;
   }

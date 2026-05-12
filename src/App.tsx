@@ -139,6 +139,15 @@ export default function App() {
           />
         )}
         statusBar={<StatusBar />}
+        mobileActions={{
+          onImportClick: openImport,
+          onGenerateClick: () => {
+            setRecipeToOpen(null);
+            setSequenceToGenerate(null);
+            setGenerateOpen(true);
+          },
+          onExportClick: () => setExportOpen(true),
+        }}
       />
       <MediaImporter ref={importerRef} />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />

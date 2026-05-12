@@ -21,28 +21,28 @@ export function StatusBar() {
       : `${formatBytes(metrics.memoryUsedBytes)} / ${formatBytes(metrics.memoryTotalBytes)}`;
 
   return (
-    <footer className="flex h-7 items-center justify-between border-t border-surface-700 bg-surface-900 px-3 text-[11px] text-slate-400">
-      <div className="flex min-w-0 items-center gap-4">
+    <footer className="flex h-7 items-center justify-between gap-3 overflow-hidden border-t border-surface-700 bg-surface-900 px-2 text-[11px] text-slate-400 sm:px-3">
+      <div className="flex min-w-0 items-center gap-3 sm:gap-4">
         <span>
           {project.width}×{project.height} · {project.fps}fps
         </span>
-        <span>{project.tracks.length} tracks</span>
+        <span className="hidden sm:inline">{project.tracks.length} tracks</span>
         <span>{project.clips.length} clips</span>
-        <span>${generationCostUsd.toFixed(2)}</span>
+        <span className="hidden sm:inline">${generationCostUsd.toFixed(2)}</span>
       </div>
-      <div className="flex min-w-0 items-center gap-4 font-mono tabular-nums">
-        <span title="Browser storage used by this app origin">
+      <div className="flex min-w-0 items-center gap-3 font-mono tabular-nums sm:gap-4">
+        <span className="hidden md:inline" title="Browser storage used by this app origin">
           Storage {storageText}
         </span>
         {memoryText && (
-          <span title="Current JavaScript heap usage reported by Chromium">
+          <span className="hidden lg:inline" title="Current JavaScript heap usage reported by Chromium">
             Memory {memoryText}
           </span>
         )}
-        <span>
+        <span className="hidden sm:inline">
           {formatTimecode(currentTime, project.fps)} / {formatTimecode(duration, project.fps)}
         </span>
-        <span>{pxPerSec.toFixed(0)} px/s</span>
+        <span className="hidden md:inline">{pxPerSec.toFixed(0)} px/s</span>
       </div>
     </footer>
   );

@@ -8,6 +8,7 @@ export type ImageModelCapabilities = {
   outputFormats: string[];
   defaultOutputFormat: string;
   imageInputs: boolean;
+  videoInputs: boolean;
 };
 
 export type ImageModelDefinition = {
@@ -40,6 +41,7 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,
+      videoInputs: true,
     },
   },
   {
@@ -54,6 +56,7 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
       outputFormats: ['png', 'jpg', 'webp'],
       defaultOutputFormat: 'png',
       imageInputs: true,
+      videoInputs: false,
     },
   },
   {
@@ -68,6 +71,7 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,
+      videoInputs: false,
     },
   },
   {
@@ -82,6 +86,7 @@ export const DEFAULT_IMAGE_MODELS: ImageModelDefinition[] = [
       outputFormats: ['png', 'jpeg'],
       defaultOutputFormat: 'png',
       imageInputs: true,
+      videoInputs: false,
     },
   },
 ];

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Box, Check, Copy, Image as ImageIcon, Minus, Mountain, Paintbrush, Plus, Save, Search, Sparkles, Trash2, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
+import { Box, Check, Copy, Film, Image as ImageIcon, Minus, Mountain, Paintbrush, Plus, Save, Search, Sparkles, Trash2, Upload, UserRound, X, type LucideIcon } from 'lucide-react';
 import {
   CHARACTER_IMAGE_ASPECT_RATIO,
   CHARACTER_IMAGE_RESOLUTION,
@@ -102,6 +102,8 @@ const PAINT_BRUSH_SIZE = 10;
 const MIN_PREVIEW_ZOOM = 100;
 const MAX_PREVIEW_ZOOM = 400;
 const PREVIEW_ZOOM_STEP = 25;
+const VIDEO_REFERENCE_FRAME_COUNT: number = 3;
+const VIDEO_REFERENCE_MAX_EDGE_PX = 1280;
 
 export function CharacterEditor({ assetId, referenceKind = 'character', folderId = null, onClose, onOpenSettings, onGenerationQueued }: Props) {
   const assets = useMediaStore((state) => state.assets);
@@ -159,10 +161,10 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   } | null>(null);
 
   const selectedModel = imageModelById(form.model) ?? defaultImageModel();
+  const supportsVideoReferences = selectedModel.capabilities.videoInputs;
   const estimatedCostUsd = estimateImageCostUsd(selectedModel);
   const isCreate = !assetId;
   const promptForGeneration = form.description.trim();
-  const providerPrompt = buildReferenceImagePrompt(promptForGeneration, form.style, effectiveKind);
   const pendingEditTrailGeneration = asset?.editTrailGeneration ?? null;
   const editTrailGenerating = pendingEditTrailGeneration?.status === 'generating';
   const working = localWorking || editTrailGenerating;
@@ -177,7 +179,14 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const previewCanPan = previewZoom > MIN_PREVIEW_ZOOM && !paintMode;
   const referenceAssets = useMemo(() => referenceAssetIds
     .map((id) => assets.find((candidate) => candidate.id === id))
-    .filter((candidate): candidate is MediaAsset => Boolean(candidate && candidate.kind === 'image' && isReferenceImageAsset(candidate))), [assets, referenceAssetIds]);
+    .filter((candidate): candidate is MediaAsset => Boolean(candidate && (
+      isReferenceImageAsset(candidate) || (supportsVideoReferences && isReferenceVideoAsset(candidate))
+    ))), [assets, referenceAssetIds, supportsVideoReferences]);
+  const videoReferenceCount = referenceAssets.filter((reference) => reference.kind === 'video').length;
+  const providerPrompt = addReferenceMediaPromptGuidance(
+    buildReferenceImagePrompt(promptForGeneration, form.style, effectiveKind),
+    videoReferenceCount,
+  );
 
   useEffect(() => {
     if (!asset || asset.generation?.status === 'generating') return;
@@ -207,7 +216,10 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
       resolution: CHARACTER_IMAGE_RESOLUTION,
     });
-    setReferenceAssetIds(reference?.sourceImageAssetIds ?? []);
+    setReferenceAssetIds(uniqueIds([
+      ...(reference?.sourceImageAssetIds ?? []),
+      ...(reference?.sourceVideoAssetIds ?? []),
+    ]));
     setSlugTouched(false);
   }, [asset, assetId, assets, effectiveKind, referenceKind]);
 
@@ -292,7 +304,8 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     model: selectedModel.id,
     aspectRatio: CHARACTER_IMAGE_ASPECT_RATIO,
     resolution: CHARACTER_IMAGE_RESOLUTION,
-    sourceImageAssetIds: referenceAssets.map((reference) => reference.id),
+    sourceImageAssetIds: referenceAssets.filter((reference) => reference.kind !== 'video').map((reference) => reference.id),
+    sourceVideoAssetIds: referenceAssets.filter((reference) => reference.kind === 'video').map((reference) => reference.id),
     updatedAt: Date.now(),
   });
   const characterData = (referenceId: string): CharacterAssetData => ({
@@ -320,32 +333,36 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     setForm((current) => ({ ...current, name, characterId: referenceId }));
   };
 
-  const importReferenceImages = async () => {
+  const importReferenceMedia = async () => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*';
+    input.accept = supportsVideoReferences ? 'image/*,video/*' : 'image/*';
     input.multiple = true;
     input.onchange = async () => {
       const files = Array.from(input.files ?? []);
       if (!files.length) return;
       try {
         const imported = await importFiles(files, asset?.folderId ?? folderId);
-        const imageIds = imported.filter((candidate) => candidate.kind === 'image' && candidate.blobKey).map((candidate) => candidate.id);
-        if (!imageIds.length) return;
-        setReferenceAssetIds((current) => uniqueIds([...current, ...imageIds]));
+        const mediaIds = imported
+          .filter((candidate) => (
+            (candidate.kind === 'image' || (supportsVideoReferences && candidate.kind === 'video')) && candidate.blobKey
+          ))
+          .map((candidate) => candidate.id);
+        if (!mediaIds.length) return;
+        setReferenceAssetIds((current) => uniqueIds([...current, ...mediaIds]));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed importing reference images.');
+        setError(err instanceof Error ? err.message : 'Failed importing reference media.');
       }
     };
     input.click();
   };
 
-  const removeReferenceImage = (assetIdToRemove: string) => {
+  const removeReferenceAsset = (assetIdToRemove: string) => {
     setReferenceAssetIds((current) => current.filter((id) => id !== assetIdToRemove));
   };
 
-  const attachReferenceImage = (reference: MediaAsset) => {
-    if (reference.kind !== 'image' || !isReferenceImageAsset(reference)) return;
+  const attachReferenceAsset = (reference: MediaAsset) => {
+    if (!isReferenceImageAsset(reference) && !(supportsVideoReferences && isReferenceVideoAsset(reference))) return;
     setReferenceAssetIds((current) => uniqueIds([...current, reference.id]));
     setReferencePickerOpen(false);
   };
@@ -587,7 +604,10 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       setLocalWorking(false);
       return;
     }
-    const editProviderPrompt = buildPaintEditPrompt(editPromptText, effectiveKind, paintHasInk);
+    const editProviderPrompt = addReferenceMediaPromptGuidance(
+      buildPaintEditPrompt(editPromptText, effectiveKind, paintHasInk),
+      videoReferenceCount,
+    );
     startEditTrailGeneration(characterAsset.id, {
       prompt: editProviderPrompt,
       model: selectedModel.id,
@@ -927,7 +947,9 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
 
                 <div className="rounded-md border border-surface-700 bg-surface-950/60 p-2.5">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Reference Images</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      {supportsVideoReferences ? 'Reference Media' : 'Reference Images'}
+                    </div>
                     <button
                       type="button"
                       className="inline-flex h-7 items-center gap-1.5 rounded bg-surface-800 px-2 text-xs text-slate-200 hover:bg-surface-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -947,14 +969,19 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
                               <img src={reference.thumbnailDataUrl} alt={reference.name} className="h-full w-full object-cover" draggable={false} />
                             ) : (
                               <div className="flex h-full w-full items-center justify-center text-slate-500">
-                                <ImageIcon size={18} />
+                                {reference.kind === 'video' ? <Film size={18} /> : <ImageIcon size={18} />}
                               </div>
                             )}
                           </div>
+                          {reference.kind === 'video' && (
+                            <div className="absolute left-1 top-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                              Video
+                            </div>
+                          )}
                           <button
                             type="button"
                             className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/70 text-slate-200 opacity-0 transition hover:bg-red-500 hover:text-white group-hover:opacity-100 focus-visible:opacity-100"
-                            onClick={() => removeReferenceImage(reference.id)}
+                            onClick={() => removeReferenceAsset(reference.id)}
                             title="Remove reference"
                             aria-label={`Remove ${reference.name}`}
                             disabled={working}
@@ -969,7 +996,7 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
                     </div>
                   ) : (
                     <div className="rounded border border-dashed border-surface-700 px-2 py-3 text-center text-xs font-normal normal-case tracking-normal text-slate-500">
-                      No reference images
+                      {supportsVideoReferences ? 'No reference media' : 'No reference images'}
                     </div>
                   )}
                 </div>
@@ -1023,12 +1050,15 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
           assets={assets}
           pickerMode="reference"
           allowCharacterReferences={false}
-          title="Pick Reference Images"
-          helperText={`Choose existing image assets or import new images for this ${config.label.toLowerCase()}.`}
-          importLabel="Import Images"
+          allowVideoReferences={supportsVideoReferences}
+          title={supportsVideoReferences ? 'Pick Reference Media' : 'Pick Reference Images'}
+          helperText={supportsVideoReferences
+            ? `Choose existing image or video assets, or import new media for this ${config.label.toLowerCase()}.`
+            : `Choose existing image assets or import new images for this ${config.label.toLowerCase()}.`}
+          importLabel={supportsVideoReferences ? 'Import Media' : 'Import Images'}
           zIndexClassName="z-[120]"
-          onPick={attachReferenceImage}
-          onImportFromComputer={() => void importReferenceImages()}
+          onPick={attachReferenceAsset}
+          onImportFromComputer={() => void importReferenceMedia()}
           onClose={() => setReferencePickerOpen(false)}
         />
       )}
@@ -1062,6 +1092,14 @@ function setFormForModel(modelId: string, setForm: (updater: (current: Character
 function buildReferenceImagePrompt(basePrompt: string, style: CharacterVisualStyle, referenceKind: ReferenceAssetKind): string {
   const stylePrompt = CHARACTER_STYLE_OPTIONS.find((option) => option.value === style)?.prompt;
   return [basePrompt.trim(), stylePrompt, REFERENCE_CONFIG[referenceKind].sheetTemplate].filter(Boolean).join('\n\n');
+}
+
+function addReferenceMediaPromptGuidance(prompt: string, videoReferenceCount: number): string {
+  if (videoReferenceCount <= 0) return prompt;
+  return [
+    prompt,
+    `Use the attached sampled frames from ${videoReferenceCount === 1 ? 'the reference video' : 'the reference videos'} to infer motion continuity, recurring details, material behavior, lighting changes, and spatial context. Treat these frames as visual references, not as storyboard panels to copy verbatim.`,
+  ].join('\n\n');
 }
 
 function buildPaintEditPrompt(editPrompt: string, referenceKind: ReferenceAssetKind, hasPaintGuide: boolean): string {
@@ -1150,11 +1188,17 @@ async function buildReferenceInput(
   objectUrlFor: (assetId: string) => Promise<string | null>,
 ): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
   if (assets.length === 0) return {};
+  const imageAssets = assets.filter(isReferenceImageAsset);
+  const videoAssets = model.capabilities.videoInputs ? assets.filter(isReferenceVideoAsset) : [];
   if (isGptImageModel(model)) {
-    const referenceFiles = await Promise.all(assets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
+    const referenceFiles = await Promise.all(imageAssets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
     return { referenceFiles: referenceFiles.filter((file): file is File => Boolean(file)) };
   }
-  return { referenceUrls: await hostLitterboxReferences(assets, 'Reference image') };
+  const imageUrls = imageAssets.length > 0
+    ? await hostLitterboxReferences(imageAssets, 'Reference image')
+    : [];
+  const videoFrameUrls = await hostVideoReferenceFrameUrls(videoAssets, objectUrlFor);
+  return { referenceUrls: [...imageUrls, ...videoFrameUrls] };
 }
 
 async function buildPaintEditInput(
@@ -1164,21 +1208,142 @@ async function buildPaintEditInput(
   model: ImageModelDefinition,
   objectUrlFor: (assetId: string) => Promise<string | null>,
 ): Promise<{ referenceUrls?: string[]; referenceFiles?: File[] }> {
+  const imageReferences = referenceAssets.filter(isReferenceImageAsset);
+  const videoReferences = model.capabilities.videoInputs ? referenceAssets.filter(isReferenceVideoAsset) : [];
   if (isGptImageModel(model)) {
     const sourceFile = await referenceFileForAsset(sourceAsset, objectUrlFor);
-    const referenceFiles = await Promise.all(referenceAssets.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
+    const referenceFiles = await Promise.all(imageReferences.map((asset) => referenceFileForAsset(asset, objectUrlFor)));
     return {
       referenceFiles: [sourceFile, paintGuideFile, ...referenceFiles].filter((file): file is File => Boolean(file)),
     };
   }
 
-  const sourceAndReferenceUrls = await hostLitterboxReferences([sourceAsset, ...referenceAssets], 'Edit reference image');
-  if (!paintGuideFile) return { referenceUrls: sourceAndReferenceUrls };
+  const sourceAndReferenceUrls = await hostLitterboxReferences([sourceAsset, ...imageReferences], 'Edit reference image');
+  const videoFrameUrls = await hostVideoReferenceFrameUrls(videoReferences, objectUrlFor);
+  if (!paintGuideFile) return { referenceUrls: [...sourceAndReferenceUrls, ...videoFrameUrls] };
   const guideUrl = await hostLitterboxFile(paintGuideFile);
   const [sourceUrl, ...referenceUrls] = sourceAndReferenceUrls;
   return {
-    referenceUrls: [sourceUrl, guideUrl, ...referenceUrls].filter((url): url is string => Boolean(url)),
+    referenceUrls: [sourceUrl, guideUrl, ...referenceUrls, ...videoFrameUrls].filter((url): url is string => Boolean(url)),
   };
+}
+
+async function hostVideoReferenceFrameUrls(
+  videoAssets: MediaAsset[],
+  objectUrlFor: (assetId: string) => Promise<string | null>,
+): Promise<string[]> {
+  const urls: string[] = [];
+  for (const asset of videoAssets) {
+    const frameFiles = await videoReferenceFrameFilesForAsset(asset, objectUrlFor);
+    for (const file of frameFiles) urls.push(await hostLitterboxFile(file));
+  }
+  return urls;
+}
+
+async function videoReferenceFrameFilesForAsset(
+  asset: MediaAsset,
+  objectUrlFor: (assetId: string) => Promise<string | null>,
+): Promise<File[]> {
+  const url = await objectUrlFor(asset.id);
+  if (!url) return [];
+
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'metadata';
+  video.crossOrigin = 'anonymous';
+
+  const metadataReady = waitForVideoEvent(video, 'loadedmetadata', `Could not read metadata from reference video "${asset.name}".`);
+  video.src = url;
+  video.load();
+  await metadataReady;
+  const durationSec = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : asset.durationSec;
+  const times = videoReferenceFrameTimes(durationSec);
+  const frames: File[] = [];
+
+  for (let index = 0; index < times.length; index += 1) {
+    await seekVideo(video, times[index]!);
+    const frame = await videoFrameFile(video, asset, index);
+    if (frame) frames.push(frame);
+  }
+
+  video.removeAttribute('src');
+  video.load();
+  return frames;
+}
+
+function videoReferenceFrameTimes(durationSec: number): number[] {
+  if (!Number.isFinite(durationSec) || durationSec <= 0.25) return [0];
+  const rawTimes = VIDEO_REFERENCE_FRAME_COUNT === 1
+    ? [durationSec / 2]
+    : [0.12, 0.5, 0.88].slice(0, VIDEO_REFERENCE_FRAME_COUNT).map((ratio) => durationSec * ratio);
+  const maxTime = Math.max(0, durationSec - 0.05);
+  const uniqueTimes: number[] = [];
+  for (const timeSec of rawTimes) {
+    const clampedTime = clamp(timeSec, 0, maxTime);
+    if (!uniqueTimes.some((existing) => Math.abs(existing - clampedTime) < 0.1)) uniqueTimes.push(clampedTime);
+  }
+  return uniqueTimes.length > 0 ? uniqueTimes : [0];
+}
+
+async function seekVideo(video: HTMLVideoElement, timeSec: number): Promise<void> {
+  const targetTime = Math.max(0, timeSec);
+  if (Math.abs(video.currentTime - targetTime) < 0.02 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
+  const seeked = waitForVideoEvent(video, 'seeked', 'Could not sample a reference video frame.');
+  video.currentTime = targetTime;
+  await seeked;
+}
+
+async function videoFrameFile(video: HTMLVideoElement, asset: MediaAsset, index: number): Promise<File | null> {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (sourceWidth <= 0 || sourceHeight <= 0) return null;
+
+  const scale = Math.min(1, VIDEO_REFERENCE_MAX_EDGE_PX / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(video, 0, 0, width, height);
+  const blob = await canvasToBlob(canvas);
+  if (!blob) return null;
+  return new File([blob], referenceVideoFrameFileName(asset, index), { type: 'image/png' });
+}
+
+function waitForVideoEvent(video: HTMLVideoElement, eventName: keyof HTMLMediaElementEventMap, fallbackMessage: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(fallbackMessage));
+    }, 15_000);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener(eventName, onEvent);
+      video.removeEventListener('error', onError);
+    };
+    const onEvent = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error(fallbackMessage));
+    };
+    video.addEventListener(eventName, onEvent, { once: true });
+    video.addEventListener('error', onError, { once: true });
+  });
+}
+
+function referenceVideoFrameFileName(asset: MediaAsset, index: number): string {
+  const base = (referenceDataForAsset(asset)?.referenceId ?? asset.name.replace(/\.[a-z0-9]{2,8}$/i, '') ?? asset.id)
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${base || asset.id}-video-frame-${index + 1}.png`;
 }
 
 async function referenceFileForAsset(asset: MediaAsset, objectUrlFor: (assetId: string) => Promise<string | null>): Promise<File | null> {
@@ -1207,6 +1372,10 @@ function extensionForMime(mimeType: string): string {
 
 function uniqueIds(ids: string[]): string[] {
   return [...new Set(ids)];
+}
+
+function isReferenceVideoAsset(asset: MediaAsset): boolean {
+  return asset.kind === 'video' && asset.generation?.status !== 'generating' && Boolean(asset.blobKey);
 }
 
 function clamp(value: number, min: number, max: number): number {

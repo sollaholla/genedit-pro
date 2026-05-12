@@ -75,18 +75,18 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
   }, []);
 
   return (
-    <header className="flex h-12 items-center justify-between border-b border-surface-700 bg-surface-900 px-4">
-      <div ref={navRef} className="flex min-w-0 items-center gap-3">
+    <header className="flex h-12 items-center justify-between gap-2 border-b border-surface-700 bg-surface-900 px-2 sm:px-4">
+      <div ref={navRef} className="flex min-w-0 items-center gap-2 sm:gap-3">
         <button className="rounded p-1.5 text-slate-400 hover:bg-surface-800 hover:text-slate-100" onClick={onSettingsClick} title="Settings">
           <Cog size={14} />
         </button>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand-500 text-white">
+        <div className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand-500 text-white sm:flex">
           <Clapperboard size={16} />
         </div>
         {titleVisible && (
-          <div ref={titleRef} className="whitespace-nowrap text-sm font-semibold tracking-tight">GenEdit Pro</div>
+          <div ref={titleRef} className="hidden whitespace-nowrap text-sm font-semibold tracking-tight sm:block">GenEdit Pro</div>
         )}
-        <div className="h-5 w-px shrink-0 bg-surface-700" />
+        <div className="hidden h-5 w-px shrink-0 bg-surface-700 sm:block" />
         <ProjectSelector
           activeProjectId={project.id}
           projects={projectCards}
@@ -102,23 +102,23 @@ export function TopBar({ onImportClick, onExportClick, onNewProject, onSettingsC
           type="text"
           value={project.name}
           onChange={(e) => rename(e.target.value)}
-          className="w-56 rounded bg-transparent px-2 py-1 text-sm text-slate-200 outline-none ring-1 ring-transparent transition-colors focus:bg-surface-800 focus:ring-surface-600"
+          className="hidden w-56 rounded bg-transparent px-2 py-1 text-sm text-slate-200 outline-none ring-1 ring-transparent transition-colors focus:bg-surface-800 focus:ring-surface-600 lg:block"
           title="Project name"
           spellCheck={false}
         />
       </div>
-      <div className="flex items-center gap-2">
-        <button className="btn-ghost" onClick={onNewProject} title="New Project">
+      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+        <button className="btn-ghost hidden sm:inline-flex" onClick={onNewProject} title="New Project">
           <FilePlus2 size={14} />
           New
         </button>
-        <button className="btn-ghost" onClick={onImportClick} title="Import media">
+        <button className="btn-ghost hidden sm:inline-flex" onClick={onImportClick} title="Import media">
           <Upload size={14} />
           Import
         </button>
-        <button className="btn-primary" onClick={onExportClick} title={exportBusy ? 'Show background export' : 'Export video'}>
+        <button className="btn-primary px-2 sm:px-3" onClick={onExportClick} title={exportBusy ? 'Show background export' : 'Export video'}>
           {exportBusy ? <Loader2 size={14} className="animate-spin" /> : exportReady ? <CheckCircle2 size={14} /> : <Download size={14} />}
-          {exportLabel}
+          <span className="hidden sm:inline">{exportLabel}</span>
         </button>
       </div>
     </header>
@@ -164,7 +164,7 @@ function ProjectSelector({
     <div ref={ref} className="relative shrink-0">
       <button
         type="button"
-        className="flex h-9 w-72 items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 text-left text-slate-200 shadow-inner hover:border-surface-500 hover:bg-surface-800 focus:border-brand-400 focus:outline-none"
+        className="flex h-9 w-44 items-center gap-2 rounded-md border border-surface-700 bg-surface-950 px-2 text-left text-slate-200 shadow-inner hover:border-surface-500 hover:bg-surface-800 focus:border-brand-400 focus:outline-none sm:w-72"
         title="Switch project"
         onClick={() => setOpen((next) => !next)}
       >
@@ -179,7 +179,7 @@ function ProjectSelector({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-40 mt-2 w-[520px] overflow-hidden rounded-md border border-surface-600 bg-surface-950 shadow-2xl">
+        <div className="absolute left-0 top-full z-40 mt-2 w-[calc(100vw-1rem)] overflow-hidden rounded-md border border-surface-600 bg-surface-950 shadow-2xl sm:w-[520px]">
           <div className="flex items-center justify-between border-b border-surface-700 bg-surface-900 px-3 py-2">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Projects</div>
