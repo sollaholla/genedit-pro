@@ -99,6 +99,7 @@ type MentionSuggestion = {
 };
 
 type PromptMode = 'freeform' | 'structured';
+type GenerationStage = 'idle' | 'converting' | 'uploading' | 'generating';
 
 type VideoProviderCredentialAvailability = {
   piapi: boolean;
@@ -161,6 +162,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const [hoveredToken, setHoveredToken] = useState<RefToken | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStage, setGenerationStage] = useState<GenerationStage>('idle');
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [loadedRecipeId, setLoadedRecipeId] = useState<string | null>(null);
   const [recipePickerOpen, setRecipePickerOpen] = useState(false);
@@ -676,6 +678,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       return;
     }
     setIsGenerating(true);
+    setGenerationStage('generating');
     const generationCostUsd = estimatedCostUsd || undefined;
     let actualCostUsd = generationCostUsd;
     const generationRecipe = buildCurrentRecipe();
@@ -714,9 +717,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
             forceMp4Video: referenceOptions?.forceMp4Video ?? false,
             maxVideoPixels: referenceOptions?.maxVideoPixels,
             onStatus: (status) => {
-              if (status.stage === 'converting') advanceUploadProgress(5);
+              if (status.stage === 'converting') {
+                setGenerationStage('converting');
+                advanceUploadProgress(5);
+              }
               if (status.stage === 'converted') advanceUploadProgress(9);
-              if (status.stage === 'uploading') advanceUploadProgress(12);
+              if (status.stage === 'uploading') {
+                setGenerationStage('uploading');
+                advanceUploadProgress(12);
+              }
             },
           });
           uploadProgress = Math.min(15, uploadProgress + 4);
@@ -731,6 +740,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
           input: request.body.input,
         });
       }
+      setGenerationStage('generating');
       const initialTask = await createPiApiVideoTask(request, { apiKey });
       if (!initialTask.task_id) throw new VideoGenerationProviderError('InternalError', 'PiAPI did not return a task id.');
       taskAccepted = true;
@@ -742,6 +752,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
         providerTaskCreatedAt: Date.now(),
       });
       setIsGenerating(false);
+      setGenerationStage('idle');
       onGenerationQueued?.(id);
       onClose();
       const finalTask = await pollPiApiVideoTask({
@@ -776,6 +787,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       if (!taskAccepted) setGenerationError(message);
     } finally {
       setIsGenerating(false);
+      setGenerationStage('idle');
     }
   }
 
@@ -1080,7 +1092,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               disabled={generateDisabled}
               className="btn-primary h-9 px-4 text-sm font-semibold"
             >
-              {isGenerating ? 'Generating...' : (
+              {isGenerating ? generationStageLabel(generationStage) : (
                 <>
                   Generate
                   {estimatedCostUsd > 0 && (
@@ -1501,6 +1513,12 @@ function isAudioLockedOnModel(model: VideoModelDefinition): boolean {
 function providerNameForModel(model: VideoModelDefinition): string {
   if (isPiApiKlingModel(model) || isPiApiSeedanceModel(model) || isPiApiVeoModel(model)) return 'PiAPI';
   return 'this provider';
+}
+
+function generationStageLabel(stage: GenerationStage): string {
+  if (stage === 'converting') return 'Converting...';
+  if (stage === 'uploading') return 'Uploading...';
+  return 'Generating...';
 }
 
 function readVideoProviderCredentialAvailability(): VideoProviderCredentialAvailability {
