@@ -712,6 +712,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
           advanceUploadProgress(uploadProgress);
           const url = await hostLitterboxReference(asset, label, {
             forceMp4Video: referenceOptions?.forceMp4Video ?? false,
+            maxVideoPixels: referenceOptions?.maxVideoPixels,
             onStatus: (status) => {
               if (status.stage === 'converting') advanceUploadProgress(5);
               if (status.stage === 'converted') advanceUploadProgress(9);

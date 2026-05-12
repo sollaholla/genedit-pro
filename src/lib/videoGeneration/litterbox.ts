@@ -23,6 +23,7 @@ type HostedReference = {
 
 export type HostLitterboxReferenceOptions = {
   forceMp4Video?: boolean;
+  maxVideoPixels?: number;
   onStatus?: (status: HostLitterboxReferenceStatus) => void;
 };
 
@@ -46,7 +47,12 @@ export async function hostLitterboxReference(
   if (!blobKey) throw new Error(`${label} "${asset.name}" is missing local media data.`);
 
   const forceMp4Video = Boolean(options.forceMp4Video && asset.kind === 'video');
-  const cacheKey = `${asset.id}:${blobKey}:${forceMp4Video ? 'video-mp4' : 'original'}`;
+  const cacheKey = [
+    asset.id,
+    blobKey,
+    forceMp4Video ? 'video-mp4-v2' : 'original',
+    forceMp4Video && options.maxVideoPixels ? `max-pixels-${options.maxVideoPixels}` : null,
+  ].filter(Boolean).join(':');
   const cached = hostedReferenceCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.url;
 
@@ -212,17 +218,23 @@ async function mp4VideoReferenceFile(
   options: HostLitterboxReferenceOptions,
 ): Promise<File> {
   const outputName = safeReferenceFileName(asset, 'mp4');
-  if (isMp4VideoReference(asset, blob)) {
+  if (!shouldTranscodeVideoReference(asset, blob, options)) {
     return new File([blob], outputName, { type: 'video/mp4' });
   }
 
   options.onStatus?.({ stage: 'converting', name: asset.name });
-  const file = await transcodeVideoReferenceToMp4(asset, blob, label, outputName);
+  const file = await transcodeVideoReferenceToMp4(asset, blob, label, outputName, options.maxVideoPixels);
   options.onStatus?.({ stage: 'converted', name: file.name, sizeBytes: file.size });
   return file;
 }
 
-function transcodeVideoReferenceToMp4(asset: MediaAsset, blob: Blob, label: string, outputName: string): Promise<File> {
+function transcodeVideoReferenceToMp4(
+  asset: MediaAsset,
+  blob: Blob,
+  label: string,
+  outputName: string,
+  maxVideoPixels?: number,
+): Promise<File> {
   return runReferenceFfmpegJob(async () => {
     const ffmpeg = await getFFmpeg();
     const inputFile = `reference-input-${asset.id}-${Date.now()}.${sourceVideoExtension(asset, blob)}`;
@@ -230,11 +242,15 @@ function transcodeVideoReferenceToMp4(asset: MediaAsset, blob: Blob, label: stri
     let resetEncoder = false;
     try {
       await ffmpeg.writeFile(inputFile, new Uint8Array(await blob.arrayBuffer()));
-      const code = await ffmpeg.exec([
+      const args = [
         '-hide_banner',
         '-i', inputFile,
         '-map', '0:v:0',
         '-map', '0:a?',
+      ];
+      const scaleFilter = videoReferenceScaleFilter(asset, maxVideoPixels);
+      if (scaleFilter) args.push('-vf', scaleFilter);
+      args.push(
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-pix_fmt', 'yuv420p',
@@ -243,7 +259,8 @@ function transcodeVideoReferenceToMp4(asset: MediaAsset, blob: Blob, label: stri
         '-movflags', '+faststart',
         '-y',
         outputFile,
-      ]);
+      );
+      const code = await ffmpeg.exec(args);
       if (code !== 0) throw new Error(`Could not convert ${label} "${asset.name}" to an MP4 reference.`);
       const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
       return new File([data.slice()], outputName, { type: 'video/mp4' });
@@ -302,6 +319,56 @@ function isMp4VideoReference(asset: MediaAsset, blob: Blob): boolean {
   if (/mp4|mpeg4/i.test(mimeType)) return true;
   if (/quicktime|mov|webm/i.test(mimeType)) return false;
   return false;
+}
+
+function shouldTranscodeVideoReference(asset: MediaAsset, blob: Blob, options: HostLitterboxReferenceOptions): boolean {
+  if (!isMp4VideoReference(asset, blob)) return true;
+  if (!options.maxVideoPixels) return false;
+  const dimensions = videoReferenceDimensions(asset);
+  if (!dimensions) return true;
+  return dimensions.width * dimensions.height > options.maxVideoPixels;
+}
+
+function videoReferenceScaleFilter(asset: MediaAsset, maxVideoPixels?: number): string | null {
+  if (!maxVideoPixels) return null;
+  const dimensions = videoReferenceDimensions(asset);
+  if (dimensions && dimensions.width * dimensions.height <= maxVideoPixels) return null;
+  const box = videoReferenceBoundingBox(dimensions, maxVideoPixels);
+  return `scale=w=${box.width}:h=${box.height}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1`;
+}
+
+function videoReferenceBoundingBox(
+  dimensions: { width: number; height: number } | null,
+  maxVideoPixels: number,
+): { width: number; height: number } {
+  const maxLongEdge = 1920;
+  if (!dimensions) return { width: maxLongEdge, height: 1080 };
+  const aspectRatio = dimensions.width / dimensions.height;
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) return { width: maxLongEdge, height: 1080 };
+
+  if (aspectRatio >= 1) {
+    const maxWidthByPixels = Math.floor(Math.sqrt(maxVideoPixels * aspectRatio));
+    const width = even(Math.min(dimensions.width, maxLongEdge, maxWidthByPixels));
+    const height = even(Math.max(2, Math.floor(width / aspectRatio)));
+    return { width, height };
+  }
+
+  const maxHeightByPixels = Math.floor(Math.sqrt(maxVideoPixels / aspectRatio));
+  const height = even(Math.min(dimensions.height, maxLongEdge, maxHeightByPixels));
+  const width = even(Math.max(2, Math.floor(height * aspectRatio)));
+  return { width, height };
+}
+
+function videoReferenceDimensions(asset: MediaAsset): { width: number; height: number } | null {
+  const iteration = activeEditIteration(asset);
+  const width = iteration?.width ?? asset.width;
+  const height = iteration?.height ?? asset.height;
+  if (!width || !height || width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+function even(value: number): number {
+  return Math.max(2, Math.floor(value / 2) * 2);
 }
 
 function fileExtension(name: string): string | null {

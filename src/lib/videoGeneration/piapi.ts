@@ -15,6 +15,7 @@ import { assetsByRole, type VideoGenerationMutation } from './mutations';
 export const PIAPI_API_BASE_URL = 'https://api.piapi.ai';
 export const PIAPI_BILLING_URL = 'https://piapi.ai/workspace/billing';
 export const PIAPI_ARTIFACT_TTL_MS = 48 * 60 * 60 * 1000;
+const PIAPI_VIDEO_REFERENCE_MAX_PIXELS = 2_086_876;
 
 export type PiApiCredentials = {
   apiKey: string;
@@ -26,6 +27,7 @@ export type PiApiCreateTaskRequest = {
 
 export type PiApiReferenceUrlOptions = {
   forceMp4Video?: boolean;
+  maxVideoPixels?: number;
 };
 
 export type PiApiReferenceUrlResolver = (
@@ -243,7 +245,10 @@ async function buildPiApiKlingOmniRequest(
   const imageEntries: PiApiImageEntry[] = [...referenceImageEntries, ...frameImageEntries];
   const videoEntries: PiApiVideoEntry[] = await mapSequential(sourceVideos, async (asset, index) => ({
     token: `video${index + 1}`,
-    url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options, { forceMp4Video: true }),
+    url: await resolvePiApiReferenceUrl(asset, 'Kling video reference', options, {
+      forceMp4Video: true,
+      maxVideoPixels: PIAPI_VIDEO_REFERENCE_MAX_PIXELS,
+    }),
   }));
 
   const input: Record<string, unknown> = {
@@ -301,7 +306,10 @@ async function buildPiApiSeedanceRequest(
     }),
   );
   const videoUrls = await mapSequential(sourceVideos, (asset, index) => (
-    resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options, { forceMp4Video: true })
+    resolvePiApiReferenceUrl(asset, `Seedance video reference ${index + 1}`, options, {
+      forceMp4Video: true,
+      maxVideoPixels: PIAPI_VIDEO_REFERENCE_MAX_PIXELS,
+    })
   ));
 
   const mode = imageEntries.length > 0 || videoUrls.length > 0
@@ -600,7 +608,7 @@ async function resolvePiApiReferenceUrl(
   referenceOptions: PiApiReferenceUrlOptions = {},
 ): Promise<string> {
   const url = piApiReferenceUrl(asset);
-  if (url && (!referenceOptions.forceMp4Video || isMp4Url(url))) return url;
+  if (url && canUseHostedReferenceUrl(asset, url, referenceOptions)) return url;
   if (options.resolveReferenceUrl) return options.resolveReferenceUrl(asset, label, referenceOptions);
   if (url && referenceOptions.forceMp4Video) {
     throw new Error(`${label} "${asset.name}" has a hosted URL, but PiAPI requires video references to be MP4 URLs.`);
@@ -615,6 +623,19 @@ function piApiReferenceUrl(asset: MediaAsset, now = Date.now()): string | null {
   const expiresAt = asset.generation?.providerArtifactExpiresAt;
   if (expiresAt && expiresAt <= now) return null;
   return uri;
+}
+
+function canUseHostedReferenceUrl(asset: MediaAsset, url: string, options: PiApiReferenceUrlOptions): boolean {
+  if (!options.forceMp4Video) return true;
+  if (!isMp4Url(url)) return false;
+  if (!options.maxVideoPixels) return true;
+  const pixels = mediaAssetPixels(asset);
+  return pixels !== null && pixels <= options.maxVideoPixels;
+}
+
+function mediaAssetPixels(asset: MediaAsset): number | null {
+  if (!asset.width || !asset.height || asset.width <= 0 || asset.height <= 0) return null;
+  return asset.width * asset.height;
 }
 
 function isMp4Url(value: string): boolean {
