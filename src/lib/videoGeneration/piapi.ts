@@ -55,6 +55,16 @@ export type PiApiTaskData = {
   };
 };
 
+export class PiApiTaskStillProcessingError extends Error {
+  task: PiApiTaskData;
+
+  constructor(task: PiApiTaskData) {
+    super('PiAPI generation is still processing.');
+    this.name = 'PiApiTaskStillProcessingError';
+    this.task = task;
+  }
+}
+
 type PiApiEnvelope<T> = {
   code?: number;
   message?: string;
@@ -130,7 +140,7 @@ export async function pollPiApiVideoTask({
     task = await getPiApiVideoTask(taskId, credentials);
   }
 
-  throw new VideoGenerationProviderError('InternalError', 'PiAPI generation timed out before returning a video.');
+  throw new PiApiTaskStillProcessingError(task);
 }
 
 export function generatedPiApiVideoFromTask(task: PiApiTaskData): { url?: string } {

@@ -20,6 +20,7 @@ import {
   generatedPiApiVideoFromTask,
   PIAPI_ARTIFACT_TTL_MS,
   PIAPI_BILLING_URL,
+  PiApiTaskStillProcessingError,
   pollPiApiVideoTask,
 } from '@/lib/videoGeneration/piapi';
 import { buildVideoGenerationMutation } from '@/lib/videoGeneration/mutations';
@@ -260,6 +261,19 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
 
       setFitAssetId(assetId);
     } catch (err) {
+      if (err instanceof PiApiTaskStillProcessingError && taskAccepted) {
+        const taskId = err.task.task_id ?? useMediaStore.getState().assets.find((asset) => asset.id === assetId)?.generation?.providerTaskId;
+        updateGenerationTask(assetId, {
+          provider: 'piapi',
+          providerTaskId: taskId,
+          providerTaskEndpoint: taskId ? `/api/v1/task/${taskId}` : '/api/v1/task',
+          providerTaskStatus: err.task.status,
+        });
+        updateGenerationProgress(assetId, 95);
+        setStatus('Generation is still processing in PiAPI.');
+        onClose();
+        return;
+      }
       const message = formatBridgeGenerationError(err);
       failGeneratedAsset(assetId, {
         actualCostUsd,

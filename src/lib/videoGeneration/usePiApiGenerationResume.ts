@@ -138,15 +138,22 @@ async function resumePiApiGeneration(asset: MediaAsset, apiKey: string): Promise
 }
 
 function isResumablePiApiGeneration(asset: MediaAsset): boolean {
-  return asset.generation?.status === 'generating' &&
-    asset.generation.provider === 'piapi' &&
-    Boolean(asset.generation.providerTaskId);
+  const generation = asset.generation;
+  if (generation?.provider !== 'piapi' || !generation.providerTaskId) return false;
+  return generation.status === 'generating' || isTimedOutPiApiGeneration(asset);
 }
 
 function isResumablePiApiImageGeneration(asset: MediaAsset): boolean {
   return asset.generation?.status === 'generating' &&
     asset.generation.provider === 'piapi-gemini' &&
     Boolean(asset.generation.providerTaskId);
+}
+
+function isTimedOutPiApiGeneration(asset: MediaAsset): boolean {
+  const generation = asset.generation;
+  return generation?.status === 'error' &&
+    generation.errorType === 'InternalError' &&
+    /timed out before returning a video/i.test(generation.errorMessage ?? '');
 }
 
 async function readPiApiKey(): Promise<string | null> {
