@@ -73,6 +73,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const updateProject = useProjectStore((s) => s.update);
   const assets = useMediaStore((s) => s.assets);
   const addGeneratedAsset = useMediaStore((s) => s.addGeneratedAsset);
+  const removeAsset = useMediaStore((s) => s.removeAsset);
   const updateGenerationProgress = useMediaStore((s) => s.updateGenerationProgress);
   const updateGenerationTask = useMediaStore((s) => s.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((s) => s.finalizeGeneratedAssetWithBlob);
@@ -277,13 +278,17 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
         return;
       }
       const message = formatBridgeGenerationError(err);
-      failGeneratedAsset(assetId, {
-        actualCostUsd,
-        errorMessage: message,
-        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
-      });
-      if (!taskAccepted) setError(message);
-      else setError(message);
+      if (!taskAccepted) {
+        await removeAsset(assetId).catch(() => {});
+        setError(message);
+      } else {
+        failGeneratedAsset(assetId, {
+          actualCostUsd,
+          errorMessage: message,
+          errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+        });
+        setError(message);
+      }
     } finally {
       setWorking(false);
       setStatus('');

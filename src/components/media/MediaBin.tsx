@@ -1,6 +1,6 @@
 import { type ComponentType, type DragEvent, type MouseEvent, type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookOpen, Box, Clapperboard, Copy, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Mountain, Music, Pencil, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import { BookOpen, Box, Clapperboard, Copy, ExternalLink, Film, Folder, FolderPlus, Image as ImageIcon, Mountain, Music, Pencil, Plus, RefreshCw, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import { isEditableMedia } from '@/lib/media/editTrail';
 import { isReferenceAssetKind, referenceTokenForAsset } from '@/lib/media/characterReferences';
 import { isBillingErrorText } from '@/lib/videoGeneration/errors';
@@ -21,6 +21,7 @@ type Props = {
   onOpenReference: (asset: MediaAsset) => void;
   onOpenRecipe: (asset: MediaAsset) => void;
   onGenerateFromSequence: (asset: MediaAsset) => void;
+  onRetryGeneration?: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
 };
 
@@ -40,7 +41,7 @@ const MEDIA_CONTEXT_MENU_WIDTH_PX = 210;
 const MEDIA_CONTEXT_MENU_MAX_HEIGHT_PX = 270;
 const MEDIA_CONTEXT_MENU_MARGIN_PX = 8;
 
-export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
+export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, onRetryGeneration, highlightedAssetId = null }: Props) {
   const assets = useMediaStore((s) => s.assets);
   const folders = useMediaStore((s) => s.folders);
   const createFolder = useMediaStore((s) => s.createFolder);
@@ -329,6 +330,7 @@ export function MediaBin({ onImportClick, onGenerateClick, onCreateReference, on
                 onOpenSequence={() => setSequenceEditor({ kind: 'edit', assetId: asset.id })}
                 onAddToTimeline={() => addAssetToTimeline(asset)}
                 onOpenPreview={() => setPreviewAssetId(asset.id)}
+                onRetry={() => onRetryGeneration?.(asset)}
                 menuOpen={openAssetMenuId === asset.id}
                 onMenuOpen={() => setOpenAssetMenuId(asset.id)}
                 onMenuClose={() => setOpenAssetMenuId((currentId) => (currentId === asset.id ? null : currentId))}
@@ -899,6 +901,7 @@ function MediaTile({
   onOpenSequence,
   onAddToTimeline,
   onOpenPreview,
+  onRetry,
   menuOpen,
   onMenuOpen,
   onMenuClose,
@@ -914,6 +917,7 @@ function MediaTile({
   onOpenSequence: () => void;
   onAddToTimeline: () => void;
   onOpenPreview: () => void;
+  onRetry?: () => void;
   menuOpen: boolean;
   onMenuOpen: () => void;
   onMenuClose: () => void;
@@ -1138,6 +1142,20 @@ function MediaTile({
                   Billing
                   <ExternalLink size={10} />
                 </a>
+              )}
+              {onRetry && (
+                <button
+                  type="button"
+                  className="mt-1 inline-flex items-center gap-1 rounded bg-white/20 px-2 py-0.5 text-[10px] font-medium text-white transition hover:bg-white/35 active:scale-95"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRetry();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <RefreshCw size={10} />
+                  Retry
+                </button>
               )}
             </div>
           </div>

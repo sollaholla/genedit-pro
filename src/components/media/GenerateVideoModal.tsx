@@ -79,6 +79,7 @@ type Props = {
   initialRecipeAsset?: MediaAsset | null;
   initialSequenceAsset?: MediaAsset | null;
   folderId?: string | null;
+  autoSubmit?: boolean;
 };
 
 type RefToken = {
@@ -142,10 +143,21 @@ function persistGenerationAspect(value: Aspect) {
   }
 }
 
-export function GenerateVideoModal({ open, onClose, onOpenSettings, onGenerationQueued, initialRecipeAsset = null, initialSequenceAsset = null, folderId = null }: Props) {
+export function GenerateVideoModal({
+  open,
+  onClose,
+  onOpenSettings,
+  onGenerationQueued,
+  initialRecipeAsset = null,
+  initialSequenceAsset = null,
+  folderId = null,
+  autoSubmit = false,
+}: Props) {
   const assets = useMediaStore((s) => s.assets);
   const importFiles = useMediaStore((s) => s.importFiles);
   const addGeneratedAsset = useMediaStore((s) => s.addGeneratedAsset);
+  const removeAsset = useMediaStore((s) => s.removeAsset);
+  const resetGeneration = useMediaStore((s) => s.resetGeneration);
   const updateGenerationProgress = useMediaStore((s) => s.updateGenerationProgress);
   const updateGenerationTask = useMediaStore((s) => s.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((s) => s.finalizeGeneratedAssetWithBlob);
@@ -439,6 +451,16 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     audioLockedOn,
   ]);
 
+  useEffect(() => {
+    if (open && autoSubmit) {
+      const timer = setTimeout(() => {
+        void generate();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, autoSubmit]);
+
   const sourceVideoToken = useMemo<RefToken | null>(() => sourceVideo ? {
     id: `${sourceVideo.id}-video-reference`,
     token: 'video1',
@@ -685,12 +707,19 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     const generationCostUsd = estimatedCostUsd || undefined;
     let actualCostUsd = generationCostUsd;
     const generationRecipe = buildCurrentRecipe();
-    const id = addGeneratedAsset(
-      `Generating_${Date.now()}.mp4`,
-      folderId,
-      generationCostUsd,
-      generationRecipe,
-    );
+    const isRetry = initialRecipeAsset?.generation?.status === 'error';
+    const id = isRetry
+      ? initialRecipeAsset.id
+      : addGeneratedAsset(
+          `Generating_${Date.now()}.mp4`,
+          folderId,
+          generationCostUsd,
+          generationRecipe,
+        );
+
+    if (isRetry) {
+      resetGeneration(id, generationRecipe, generationCostUsd);
+    }
     let taskAccepted = false;
     try {
       const mutation = buildVideoGenerationMutation({
@@ -794,11 +823,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
         return;
       }
       const message = formatGenerationError(err);
-      failGeneratedAsset(id, {
-        actualCostUsd,
-        errorMessage: message,
-        errorType: generationErrorType(err),
-      });
+      if (isRetry) {
+        failGeneratedAsset(id, {
+          actualCostUsd,
+          errorMessage: message,
+          errorType: generationErrorType(err),
+        });
+      } else {
+        await removeAsset(id).catch(() => {});
+      }
       if (!taskAccepted) setGenerationError(message);
     } finally {
       setIsGenerating(false);

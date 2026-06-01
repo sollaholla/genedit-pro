@@ -218,6 +218,7 @@ type MediaState = {
       errorType?: GenerationErrorType;
     },
   ) => void;
+  resetGeneration: (id: string, recipe?: GenerateRecipe, estimatedCostUsd?: number) => void;
   updateCharacterAsset: (id: string, patch: Partial<CharacterAssetData>) => void;
   updateReferenceAsset: (id: string, patch: Partial<ReferenceAssetData>) => void;
   saveRecipeAsset: (name: string, recipe: GenerateRecipe, existingId?: string | null) => string;
@@ -936,6 +937,21 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             errorType: failure.errorType ?? a.generation?.errorType ?? 'InternalError',
             errorMessage: failure.errorMessage ?? a.generation?.errorMessage ?? 'Generation failed.',
             failedAt: Date.now(),
+          },
+        }
+      : a)));
+  },
+
+  resetGeneration: (id, recipe, estimatedCostUsd) => {
+    const projectId = projectIdForAssetMutation(get(), id);
+    updateAssetsForProject(get, set, projectId, (assets) => assets.map((a) => (a.id === id
+      ? {
+          ...a,
+          recipe: recipe ?? a.recipe,
+          generation: {
+            status: 'generating' as const,
+            progress: 0,
+            estimatedCostUsd: estimatedCostUsd ?? a.generation?.estimatedCostUsd,
           },
         }
       : a)));

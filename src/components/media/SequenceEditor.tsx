@@ -61,6 +61,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
   const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
   const failGeneratedAsset = useMediaStore((state) => state.failGeneratedAsset);
+  const removeAsset = useMediaStore((state) => state.removeAsset);
   const updateSequenceAsset = useMediaStore((state) => state.updateSequenceAsset);
   const createSequenceAsset = useMediaStore((state) => state.createSequenceAsset);
   const sequenceModels = useMemo(() => sortModelsByPriority(DEFAULT_VIDEO_MODELS.filter((model) => isPiApiSeedanceModel(model) || isPiApiKlingModel(model))), []);
@@ -472,6 +473,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
 
     attachGeneratedAssetToMarker();
 
+    let taskAccepted = false;
     try {
       const referenceAssetsForShot = shotImageReferenceAssets(sequence, marker, assets);
       const referenceInput = await buildImageReferenceInput(referenceAssetsForShot, selectedImageModel, objectUrlFor);
@@ -481,6 +483,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
           providerTaskStatus: 'requesting',
           providerTaskCreatedAt: Date.now(),
         });
+        taskAccepted = true;
         const result = await generatePiApiImage({
           model: selectedImageModel,
           prompt,
@@ -507,13 +510,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
         resolution: CHARACTER_IMAGE_RESOLUTION,
         outputFormat: selectedImageModel.capabilities.defaultOutputFormat,
         ...referenceInput,
-        onTaskAccepted: (task) => updateGenerationTask(generatedAssetId, {
-          provider: selectedImageModel.provider,
-          providerTaskId: task.task_id,
-          providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : undefined,
-          providerTaskStatus: task.status,
-          providerTaskCreatedAt: Date.now(),
-        }),
+        onTaskAccepted: (task) => {
+          taskAccepted = true;
+          updateGenerationTask(generatedAssetId, {
+            provider: selectedImageModel.provider,
+            providerTaskId: task.task_id,
+            providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : undefined,
+            providerTaskStatus: task.status,
+            providerTaskCreatedAt: Date.now(),
+          });
+        },
         onProgress: (progress) => updateGenerationProgress(generatedAssetId, progress),
       }, { apiKey });
       updateGenerationTask(generatedAssetId, {
@@ -526,11 +532,16 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     } catch (err) {
       const message = formatGenerationError(err);
       setImageGenerationError(message);
-      failGeneratedAsset(generatedAssetId, {
-        actualCostUsd: estimatedCostUsd,
-        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
-        errorMessage: message,
-      });
+      if (!taskAccepted) {
+        await removeAsset(generatedAssetId).catch(() => {});
+        updateMarker(markerId, { imageAssetId: null });
+      } else {
+        failGeneratedAsset(generatedAssetId, {
+          actualCostUsd: estimatedCostUsd,
+          errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+          errorMessage: message,
+        });
+      }
     } finally {
       setImageGeneratingMarkerId(null);
     }

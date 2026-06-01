@@ -41,6 +41,7 @@ type Props = {
   onClose: () => void;
   onOpenSettings: () => void;
   onGenerationQueued?: (assetId: string) => void;
+  autoSubmit?: boolean;
 };
 
 type CharacterForm = {
@@ -105,7 +106,7 @@ const PREVIEW_ZOOM_STEP = 25;
 const VIDEO_REFERENCE_FRAME_COUNT: number = 3;
 const VIDEO_REFERENCE_MAX_EDGE_PX = 1280;
 
-export function CharacterEditor({ assetId, referenceKind = 'character', folderId = null, onClose, onOpenSettings, onGenerationQueued }: Props) {
+export function CharacterEditor({ assetId, referenceKind = 'character', folderId = null, onClose, onOpenSettings, onGenerationQueued, autoSubmit = false }: Props) {
   const assets = useMediaStore((state) => state.assets);
   const asset = useMemo(
     () => (assetId ? assets.find((candidate) => candidate.id === assetId && isReferenceAssetKind(candidate.kind)) ?? null : null),
@@ -115,6 +116,8 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
   const config = REFERENCE_CONFIG[effectiveKind];
   const Icon = config.icon;
   const addGeneratedAsset = useMediaStore((state) => state.addGeneratedAsset);
+  const removeAsset = useMediaStore((state) => state.removeAsset);
+  const resetGeneration = useMediaStore((state) => state.resetGeneration);
   const updateGenerationProgress = useMediaStore((state) => state.updateGenerationProgress);
   const updateGenerationTask = useMediaStore((state) => state.updateGenerationTask);
   const finalizeGeneratedAssetWithBlob = useMediaStore((state) => state.finalizeGeneratedAssetWithBlob);
@@ -222,6 +225,16 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     ]));
     setSlugTouched(false);
   }, [asset, assetId, assets, effectiveKind, referenceKind]);
+
+  useEffect(() => {
+    if (autoSubmit) {
+      const timer = setTimeout(() => {
+        void generate();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSubmit]);
 
   useEffect(() => {
     let mounted = true;
@@ -541,28 +554,42 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
     setLocalWorking(true);
     setProgress(2);
     setError(null);
-    if (isCreate) {
-      await createCharacter(apiKey);
+    const isInitialFailureRetry = Boolean(asset && asset.generation?.status === 'error' && !asset.blobKey);
+    if (isCreate || isInitialFailureRetry) {
+      await createCharacter(apiKey, isInitialFailureRetry && asset ? asset.id : null);
     } else if (asset) {
       await regenerateCharacter(asset, apiKey);
     }
   };
 
-  const createCharacter = async (apiKey: string) => {
-    const referenceId = uniqueReferenceId(form.characterId || form.name, assets, effectiveKind);
+  const createCharacter = async (apiKey: string, retryAssetId?: string | null) => {
+    const isRetry = Boolean(retryAssetId);
+    const referenceId = uniqueReferenceId(form.characterId || form.name, assets, effectiveKind, retryAssetId);
     const name = form.name.trim() || referenceId;
     const reference = referenceData(referenceId);
     const character = effectiveKind === 'character' ? characterData(referenceId) : undefined;
-    const generatedAssetId = addGeneratedAsset(name, folderId, estimatedCostUsd, undefined, {
-      kind: effectiveKind,
-      mimeType: 'image/png',
-      durationSec: 5,
-      character,
-      reference,
-    });
+    const generatedAssetId = isRetry && retryAssetId
+      ? retryAssetId
+      : addGeneratedAsset(name, folderId, estimatedCostUsd, undefined, {
+          kind: effectiveKind,
+          mimeType: 'image/png',
+          durationSec: 5,
+          character,
+          reference,
+        });
+
+    if (isRetry) {
+      renameAsset(generatedAssetId, name);
+      if (effectiveKind === 'character' && character) {
+        updateCharacterAsset(generatedAssetId, character);
+      }
+      updateReferenceAsset(generatedAssetId, reference);
+      resetGeneration(generatedAssetId, undefined, estimatedCostUsd);
+    }
     updateGenerationProgress(generatedAssetId, 3);
     onGenerationQueued?.(generatedAssetId);
     onClose();
+    let taskAccepted = false;
     try {
       const referenceInput = await buildReferenceInput(referenceAssets, selectedModel, objectUrlFor);
       const generated = await generatePiApiImage({
@@ -574,14 +601,20 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
         referenceUrls: referenceInput.referenceUrls,
         referenceFiles: referenceInput.referenceFiles,
         onProgress: (value) => updateGenerationProgress(generatedAssetId, value),
-        onTaskAccepted: (task) => updateGenerationTask(generatedAssetId, {
-          provider: 'piapi-gemini',
-          providerTaskId: task.task_id,
-          providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : '/api/v1/task',
-          providerTaskStatus: task.status,
-          providerTaskCreatedAt: Date.now(),
-        }),
+        onTaskAccepted: (task) => {
+          taskAccepted = true;
+          updateGenerationTask(generatedAssetId, {
+            provider: 'piapi-gemini',
+            providerTaskId: task.task_id,
+            providerTaskEndpoint: task.task_id ? `/api/v1/task/${task.task_id}` : '/api/v1/task',
+            providerTaskStatus: task.status,
+            providerTaskCreatedAt: Date.now(),
+          });
+        },
       }, { apiKey });
+      if (isGptImageModel(selectedModel)) {
+        taskAccepted = true;
+      }
       const file = await downloadGeneratedImageFile(generated.url, (value) => updateGenerationProgress(generatedAssetId, value));
       await finalizeGeneratedAssetWithBlob(generatedAssetId, file, {
         actualCostUsd: generated.actualCostUsd ?? estimatedCostUsd,
@@ -590,11 +623,23 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
         providerArtifactExpiresAt: generated.providerArtifactExpiresAt,
       });
     } catch (err) {
-      failGeneratedAsset(generatedAssetId, {
-        actualCostUsd: estimatedCostUsd,
-        errorMessage: formatGenerationError(err),
-        errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
-      });
+      if (isRetry) {
+        failGeneratedAsset(generatedAssetId, {
+          actualCostUsd: estimatedCostUsd,
+          errorMessage: formatGenerationError(err),
+          errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+        });
+      } else {
+        if (!taskAccepted) {
+          await removeAsset(generatedAssetId).catch(() => {});
+        } else {
+          failGeneratedAsset(generatedAssetId, {
+            actualCostUsd: estimatedCostUsd,
+            errorMessage: formatGenerationError(err),
+            errorType: err instanceof VideoGenerationProviderError ? err.type : 'InternalError',
+          });
+        }
+      }
     }
   };
 

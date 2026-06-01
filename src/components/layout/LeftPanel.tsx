@@ -11,12 +11,13 @@ type Props = {
   onOpenReference: (asset: MediaAsset) => void;
   onOpenRecipe: (asset: MediaAsset) => void;
   onGenerateFromSequence: (asset: MediaAsset) => void;
+  onRetryGeneration?: (asset: MediaAsset) => void;
   highlightedAssetId?: string | null;
 };
 
 type Tab = 'media' | 'inspector';
 
-export function LeftPanel({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, highlightedAssetId = null }: Props) {
+export function LeftPanel({ onImportClick, onGenerateClick, onCreateReference, onOpenReference, onOpenRecipe, onGenerateFromSequence, onRetryGeneration, highlightedAssetId = null }: Props) {
   const [tab, setTab] = useState<Tab>('media');
   const selectedClipIds = usePlaybackStore((s) => s.selectedClipIds);
   const hasSelection = selectedClipIds.length > 0;
@@ -47,6 +48,7 @@ export function LeftPanel({ onImportClick, onGenerateClick, onCreateReference, o
             onOpenReference={onOpenReference}
             onOpenRecipe={onOpenRecipe}
             onGenerateFromSequence={onGenerateFromSequence}
+            onRetryGeneration={onRetryGeneration}
             highlightedAssetId={highlightedAssetId}
           />
         ) : (

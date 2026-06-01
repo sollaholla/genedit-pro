@@ -16,6 +16,7 @@ import { usePlaybackStore } from '@/state/playbackStore';
 import { useExportStore } from '@/state/exportStore';
 import { useMediaStore } from '@/state/mediaStore';
 import type { MediaAsset, ReferenceAssetKind } from '@/types';
+import { isReferenceAssetKind } from '@/lib/media/characterReferences';
 import { usePiApiGenerationResume } from '@/lib/videoGeneration/usePiApiGenerationResume';
 
 export default function App() {
@@ -24,9 +25,10 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
-  const [referenceEditor, setReferenceEditor] = useState<{ assetId: string | null; folderId: string | null; kind: ReferenceAssetKind } | null>(null);
+  const [referenceEditor, setReferenceEditor] = useState<{ assetId: string | null; folderId: string | null; kind: ReferenceAssetKind; autoSubmit?: boolean } | null>(null);
   const [recipeToOpen, setRecipeToOpen] = useState<MediaAsset | null>(null);
   const [sequenceToGenerate, setSequenceToGenerate] = useState<MediaAsset | null>(null);
+  const [autoSubmitGeneration, setAutoSubmitGeneration] = useState(false);
   const [highlightedMediaAssetId, setHighlightedMediaAssetId] = useState<string | null>(null);
   const projectId = useProjectStore((s) => s.project.id);
   const createProject = useProjectStore((s) => s.createProject);
@@ -125,6 +127,21 @@ export default function App() {
               setSequenceToGenerate(asset);
               setGenerateOpen(true);
             }}
+            onRetryGeneration={(asset) => {
+              if (isReferenceAssetKind(asset.kind)) {
+                setReferenceEditor({
+                  assetId: asset.id,
+                  folderId: asset.folderId ?? null,
+                  kind: asset.kind as ReferenceAssetKind,
+                  autoSubmit: true,
+                });
+              } else {
+                setRecipeToOpen(asset);
+                setSequenceToGenerate(null);
+                setAutoSubmitGeneration(true);
+                setGenerateOpen(true);
+              }
+            }}
             onCreateReference={(kind, folderId) => setReferenceEditor({ assetId: null, folderId, kind })}
             onOpenReference={(asset) => setReferenceEditor({ assetId: asset.id, folderId: asset.folderId ?? null, kind: asset.kind as ReferenceAssetKind })}
             highlightedAssetId={highlightedMediaAssetId}
@@ -154,14 +171,22 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <GenerateVideoModal
         open={generateOpen}
-        onClose={() => setGenerateOpen(false)}
+        onClose={() => {
+          setGenerateOpen(false);
+          setAutoSubmitGeneration(false);
+        }}
         onOpenSettings={() => {
           setGenerateOpen(false);
+          setAutoSubmitGeneration(false);
           setSettingsOpen(true);
         }}
-        onGenerationQueued={(assetId) => setHighlightedMediaAssetId(assetId)}
+        onGenerationQueued={(assetId) => {
+          setHighlightedMediaAssetId(assetId);
+          setAutoSubmitGeneration(false);
+        }}
         initialRecipeAsset={recipeToOpen}
         initialSequenceAsset={sequenceToGenerate}
+        autoSubmit={autoSubmitGeneration}
       />
       {referenceEditor && (
         <CharacterEditor
@@ -174,6 +199,7 @@ export default function App() {
             setSettingsOpen(true);
           }}
           onGenerationQueued={(assetId) => setHighlightedMediaAssetId(assetId)}
+          autoSubmit={referenceEditor.autoSubmit}
         />
       )}
     </>
