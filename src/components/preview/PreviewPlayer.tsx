@@ -955,6 +955,7 @@ export function PreviewPlayer() {
     if (asset.kind === 'image') {
       removeVideoElement(clip.id);
       removeAudioElement(clip.id);
+      const isGif = asset.mimeType === 'image/gif' || asset.name.toLowerCase().endsWith('.gif');
       const existing = imagePool.current.get(clip.id);
       if (!existing) {
         const img = document.createElement('img');
@@ -962,14 +963,38 @@ export function PreviewPlayer() {
         img.alt = '';
         img.decoding = 'async';
         img.className = 'absolute max-w-none object-contain';
-        img.style.display = 'none';
-        img.style.visibility = 'hidden';
+        if (isGif) {
+          img.style.display = 'block';
+          img.style.visibility = 'visible';
+          img.style.position = 'absolute';
+          img.style.top = '-9999px';
+          img.style.left = '-9999px';
+          img.style.width = '1px';
+          img.style.height = '1px';
+          img.style.opacity = '0.001';
+          img.style.pointerEvents = 'none';
+        } else {
+          img.style.display = 'none';
+          img.style.visibility = 'hidden';
+        }
         videoHostRef.current?.appendChild(img);
         imagePool.current.set(clip.id, img);
       } else if (clipAssetRef.current.get(clip.id) !== mediaKey) {
         existing.src = url;
-        existing.style.display = 'none';
-        existing.style.visibility = 'hidden';
+        if (isGif) {
+          existing.style.display = 'block';
+          existing.style.visibility = 'visible';
+          existing.style.position = 'absolute';
+          existing.style.top = '-9999px';
+          existing.style.left = '-9999px';
+          existing.style.width = '1px';
+          existing.style.height = '1px';
+          existing.style.opacity = '0.001';
+          existing.style.pointerEvents = 'none';
+        } else {
+          existing.style.display = 'none';
+          existing.style.visibility = 'hidden';
+        }
       }
       clipAssetRef.current.set(clip.id, mediaKey);
       return imagePool.current.get(clip.id) ?? null;
@@ -1494,9 +1519,24 @@ export function PreviewPlayer() {
           hideVideoElement(videoEl);
         }
       }
-      for (const img of imagePool.current.values()) {
-        img.style.display = 'none';
-        img.style.visibility = 'hidden';
+      for (const [clipId, img] of imagePool.current.entries()) {
+        const clip = flattenedTimeline.clips.find((c) => c.id === clipId);
+        const asset = clip ? assetsById.get(clip.assetId) : null;
+        const isGif = asset?.mimeType === 'image/gif' || asset?.name.toLowerCase().endsWith('.gif');
+        if (isGif) {
+          img.style.display = 'block';
+          img.style.visibility = 'visible';
+          img.style.position = 'absolute';
+          img.style.top = '-9999px';
+          img.style.left = '-9999px';
+          img.style.width = '1px';
+          img.style.height = '1px';
+          img.style.opacity = '0.001';
+          img.style.pointerEvents = 'none';
+        } else {
+          img.style.display = 'none';
+          img.style.visibility = 'hidden';
+        }
         img.style.transform = '';
         img.style.filter = '';
         img.style.opacity = '';

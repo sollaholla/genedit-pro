@@ -8,7 +8,6 @@ import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
 import { useProjectStore } from '@/state/projectStore';
-import { getFFmpeg, resetFFmpeg } from '@/lib/ffmpeg/client';
 
 const LEGACY_ASSETS_KEY = 'genedit-pro:assets';
 const LEGACY_FOLDERS_KEY = 'genedit-pro:folders';
@@ -149,7 +148,7 @@ type MediaState = {
   folders: MediaFolder[];
   importing: boolean;
   setActiveProject: (projectId: string) => void;
-  importFiles: (files: File[], folderId?: string | null, options?: { transcodeGifs?: boolean }) => Promise<MediaAsset[]>;
+  importFiles: (files: File[], folderId?: string | null) => Promise<MediaAsset[]>;
   removeAsset: (id: string) => Promise<void>;
   renameAsset: (id: string, name: string) => void;
   moveAssetToFolder: (id: string, folderId: string | null) => void;
@@ -425,100 +424,6 @@ async function buildManualEditIteration(
 
 const initialMediaProjectId = currentProjectId();
 
-let mediaStoreFfmpegQueue: Promise<unknown> = Promise.resolve();
-function runMediaStoreFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
-  const run = mediaStoreFfmpegQueue.catch(() => undefined).then(job);
-  mediaStoreFfmpegQueue = run.catch(() => undefined);
-  return run;
-}
-
-async function transcodeGifToVideo(file: File): Promise<File> {
-  return runMediaStoreFfmpegJob(async () => {
-    const ffmpeg = await getFFmpeg();
-    const inputExt = 'gif';
-    const inputName = `gif-input-${nanoid(6)}.${inputExt}`;
-    const outputFileWebm = `gif-output-${nanoid(6)}.webm`;
-    const outputFileMp4 = `gif-output-${nanoid(6)}.mp4`;
-    let resetEncoder = false;
-    try {
-      const buffer = await file.arrayBuffer();
-      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
-      
-      // Try VP9 WebM first to keep transparency
-      try {
-        const argsVp9 = [
-          '-hide_banner',
-          '-i', inputName,
-          '-c:v', 'libvpx-vp9',
-          '-pix_fmt', 'yuva420p',
-          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-          '-y',
-          outputFileWebm,
-        ];
-        const code = await ffmpeg.exec(argsVp9);
-        if (code === 0) {
-          const data = (await ffmpeg.readFile(outputFileWebm)) as Uint8Array;
-          const baseName = file.name.replace(/\.gif$/i, '');
-          return new File([data.slice()], `${baseName}.webm`, { type: 'video/webm' });
-        }
-      } catch (errVp9) {
-        console.warn('VP9 transcoding failed, trying VP8...', errVp9);
-      }
-
-      // Try VP8 WebM next
-      try {
-        const argsVp8 = [
-          '-hide_banner',
-          '-i', inputName,
-          '-c:v', 'libvpx',
-          '-pix_fmt', 'yuva420p',
-          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-          '-y',
-          outputFileWebm,
-        ];
-        const code = await ffmpeg.exec(argsVp8);
-        if (code === 0) {
-          const data = (await ffmpeg.readFile(outputFileWebm)) as Uint8Array;
-          const baseName = file.name.replace(/\.gif$/i, '');
-          return new File([data.slice()], `${baseName}.webm`, { type: 'video/webm' });
-        }
-      } catch (errVp8) {
-        console.warn('VP8 transcoding failed, falling back to MP4...', errVp8);
-      }
-
-      // Fall back to standard MP4
-      const argsMp4 = [
-        '-hide_banner',
-        '-i', inputName,
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-        '-movflags', '+faststart',
-        '-y',
-        outputFileMp4,
-      ];
-      const code = await ffmpeg.exec(argsMp4);
-      if (code !== 0) {
-        throw new Error(`FFmpeg MP4 fallback transcoding exited with code ${code}`);
-      }
-      const data = (await ffmpeg.readFile(outputFileMp4)) as Uint8Array;
-      const baseName = file.name.replace(/\.gif$/i, '');
-      return new File([data.slice()], `${baseName}.mp4`, { type: 'video/mp4' });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/memory access out of bounds|out of memory|Cannot enlarge memory/i.test(msg)) {
-        resetEncoder = true;
-      }
-      throw err;
-    } finally {
-      await ffmpeg.deleteFile(inputName).catch(() => undefined);
-      await ffmpeg.deleteFile(outputFileWebm).catch(() => undefined);
-      await ffmpeg.deleteFile(outputFileMp4).catch(() => undefined);
-      if (resetEncoder) resetFFmpeg();
-    }
-  });
-}
-
 export const useMediaStore = create<MediaState>((set, get) => ({
   activeProjectId: initialMediaProjectId,
   assets: loadAssets(initialMediaProjectId),
@@ -536,19 +441,12 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     });
   },
 
-  importFiles: async (files: File[], folderId = null, options = {}) => {
+  importFiles: async (files: File[], folderId = null) => {
     set({ importing: true });
     const projectId = get().activeProjectId;
     const added: MediaAsset[] = [];
-    for (let file of files) {
+    for (const file of files) {
       try {
-        if (options.transcodeGifs !== false && (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif'))) {
-          try {
-            file = await transcodeGifToVideo(file);
-          } catch (transcodeErr) {
-            console.error('Failed to transcode GIF to video, importing as static image instead:', transcodeErr);
-          }
-        }
         const probed = await probe(file);
         const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
         const asset: MediaAsset = {

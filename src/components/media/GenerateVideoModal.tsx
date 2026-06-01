@@ -662,7 +662,7 @@ export function GenerateVideoModal({
     input.onchange = async () => {
       const files = Array.from(input.files ?? []);
       if (!files.length) return;
-      const imported = await importFiles(files, null, { transcodeGifs: pickerMode === 'source-video' });
+      const imported = await importFiles(files);
       const first = imported[0];
       if (!first) return;
       if (pickerMode === 'start') {

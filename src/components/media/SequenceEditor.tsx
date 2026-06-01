@@ -425,7 +425,7 @@ export function SequenceEditor({ assetId, draftFolderId = null, onClose, onGener
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const imported = await importFiles([file], null, { transcodeGifs: false });
+      const imported = await importFiles([file]);
       const image = imported.find((candidate) => candidate.kind === 'image');
       if (!image) return;
       updateMarker(imagePickerMarker.id, { imageAssetId: image.id });

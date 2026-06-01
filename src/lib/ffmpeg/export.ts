@@ -502,7 +502,10 @@ async function exportProjectInternal(
       if (!track || !asset) continue;
 
       const timelineDurationSec = clipTimelineDurationSec(clip);
-      if (asset.kind === 'image') {
+      const isGif = asset.mimeType === 'image/gif' || asset.name.toLowerCase().endsWith('.gif');
+      if (isGif) {
+        args.push('-ignore_loop', '0', '-t', seconds(timelineDurationSec));
+      } else if (asset.kind === 'image') {
         args.push('-loop', '1', '-framerate', String(project.fps), '-t', seconds(timelineDurationSec));
       } else {
         args.push('-ss', seconds(clip.inSec), '-t', seconds(clipSourceDurationSec(clip)));
