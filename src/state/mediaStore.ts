@@ -432,17 +432,62 @@ function runMediaStoreFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function transcodeGifToMp4(file: File): Promise<File> {
+async function transcodeGifToVideo(file: File): Promise<File> {
   return runMediaStoreFfmpegJob(async () => {
     const ffmpeg = await getFFmpeg();
     const inputExt = 'gif';
     const inputName = `gif-input-${nanoid(6)}.${inputExt}`;
-    const outputFile = `gif-output-${nanoid(6)}.mp4`;
+    const outputFileWebm = `gif-output-${nanoid(6)}.webm`;
+    const outputFileMp4 = `gif-output-${nanoid(6)}.mp4`;
     let resetEncoder = false;
     try {
       const buffer = await file.arrayBuffer();
       await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
-      const args = [
+      
+      // Try VP9 WebM first to keep transparency
+      try {
+        const argsVp9 = [
+          '-hide_banner',
+          '-i', inputName,
+          '-c:v', 'libvpx-vp9',
+          '-pix_fmt', 'yuva420p',
+          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-y',
+          outputFileWebm,
+        ];
+        const code = await ffmpeg.exec(argsVp9);
+        if (code === 0) {
+          const data = (await ffmpeg.readFile(outputFileWebm)) as Uint8Array;
+          const baseName = file.name.replace(/\.gif$/i, '');
+          return new File([data.slice()], `${baseName}.webm`, { type: 'video/webm' });
+        }
+      } catch (errVp9) {
+        console.warn('VP9 transcoding failed, trying VP8...', errVp9);
+      }
+
+      // Try VP8 WebM next
+      try {
+        const argsVp8 = [
+          '-hide_banner',
+          '-i', inputName,
+          '-c:v', 'libvpx',
+          '-pix_fmt', 'yuva420p',
+          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-y',
+          outputFileWebm,
+        ];
+        const code = await ffmpeg.exec(argsVp8);
+        if (code === 0) {
+          const data = (await ffmpeg.readFile(outputFileWebm)) as Uint8Array;
+          const baseName = file.name.replace(/\.gif$/i, '');
+          return new File([data.slice()], `${baseName}.webm`, { type: 'video/webm' });
+        }
+      } catch (errVp8) {
+        console.warn('VP8 transcoding failed, falling back to MP4...', errVp8);
+      }
+
+      // Fall back to standard MP4
+      const argsMp4 = [
         '-hide_banner',
         '-i', inputName,
         '-c:v', 'libx264',
@@ -450,13 +495,13 @@ async function transcodeGifToMp4(file: File): Promise<File> {
         '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
         '-movflags', '+faststart',
         '-y',
-        outputFile,
+        outputFileMp4,
       ];
-      const code = await ffmpeg.exec(args);
+      const code = await ffmpeg.exec(argsMp4);
       if (code !== 0) {
-        throw new Error(`FFmpeg exited with code ${code}`);
+        throw new Error(`FFmpeg MP4 fallback transcoding exited with code ${code}`);
       }
-      const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
+      const data = (await ffmpeg.readFile(outputFileMp4)) as Uint8Array;
       const baseName = file.name.replace(/\.gif$/i, '');
       return new File([data.slice()], `${baseName}.mp4`, { type: 'video/mp4' });
     } catch (err) {
@@ -467,7 +512,8 @@ async function transcodeGifToMp4(file: File): Promise<File> {
       throw err;
     } finally {
       await ffmpeg.deleteFile(inputName).catch(() => undefined);
-      await ffmpeg.deleteFile(outputFile).catch(() => undefined);
+      await ffmpeg.deleteFile(outputFileWebm).catch(() => undefined);
+      await ffmpeg.deleteFile(outputFileMp4).catch(() => undefined);
       if (resetEncoder) resetFFmpeg();
     }
   });
@@ -498,9 +544,9 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       try {
         if (options.transcodeGifs !== false && (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif'))) {
           try {
-            file = await transcodeGifToMp4(file);
+            file = await transcodeGifToVideo(file);
           } catch (transcodeErr) {
-            console.error('Failed to transcode GIF to MP4, importing as static image instead:', transcodeErr);
+            console.error('Failed to transcode GIF to video, importing as static image instead:', transcodeErr);
           }
         }
         const probed = await probe(file);
