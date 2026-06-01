@@ -15,6 +15,7 @@ export type VideoGenerationMutation = {
     durationSeconds: number;
     resolution: string;
     audioEnabled: boolean;
+    lessRestriction?: boolean;
   };
   assets: GenerationAssetMutation[];
 };
@@ -30,6 +31,7 @@ export function buildVideoGenerationMutation({
   endFrame,
   sourceVideo,
   referenceImages,
+  lessRestriction,
 }: {
   modelId: string;
   prompt: string;
@@ -41,6 +43,7 @@ export function buildVideoGenerationMutation({
   endFrame: MediaAsset | null;
   sourceVideo: MediaAsset | null;
   referenceImages: MediaAsset[];
+  lessRestriction?: boolean;
 }): VideoGenerationMutation {
   const assets: GenerationAssetMutation[] = [];
   if (startFrame) assets.push({ role: 'start-frame', asset: startFrame });
@@ -56,6 +59,7 @@ export function buildVideoGenerationMutation({
       durationSeconds: parseVideoDurationSeconds(duration),
       resolution,
       audioEnabled,
+      lessRestriction,
     },
     assets,
   };

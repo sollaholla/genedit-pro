@@ -126,6 +126,7 @@ export type GenerateRecipe = {
   resolution: string;
   duration: string;
   audioEnabled: boolean;
+  lessRestriction?: boolean;
   startFrameAssetId?: string | null;
   endFrameAssetId?: string | null;
   sourceVideoAssetId?: string | null;

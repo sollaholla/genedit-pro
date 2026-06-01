@@ -160,6 +160,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
   const [resolution, setResolution] = useState('720p');
   const [duration, setDuration] = useState('4s');
   const [audioEnabled, setAudioEnabled] = useState(false);
+  const [lessRestrictionEnabled, setLessRestrictionEnabled] = useState(true);
   const [hoveredToken, setHoveredToken] = useState<RefToken | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [isGenerating, setIsGenerating] = useState(false);
@@ -230,8 +231,8 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     (promptMode === 'structured' ? missingStructuredRequired.length > 0 || !activePrompt.trim() : !prompt.trim());
   const estimatedCostUsd = useMemo(() => {
     const seconds = Number(duration.replace('s', ''));
-    return estimatePiApiCostUsd(selectedModel, resolution, seconds, audioEnabled);
-  }, [audioEnabled, duration, resolution, selectedModel]);
+    return estimatePiApiCostUsd(selectedModel, resolution, seconds, audioEnabled, lessRestrictionEnabled);
+  }, [audioEnabled, duration, resolution, selectedModel, lessRestrictionEnabled]);
   const baseImageReferenceLimit = sourceVideo
     ? isKlingModel(selectedModel)
       ? Math.min(selectedModel.capabilities.assetInputs.imageReferencesMax, 4)
@@ -346,6 +347,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
+    setLessRestrictionEnabled(recipe.lessRestriction !== false);
     const nextSourceVideo = recipe.sourceVideoAssetId
       ? assets.find((a) => a.id === recipe.sourceVideoAssetId && a.kind === 'video') ?? null
       : null;
@@ -702,6 +704,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
         endFrame,
         sourceVideo,
         referenceImages: includedReferenceImageAssets,
+        lessRestriction: isPiApiSeedanceModel(selectedModel) ? lessRestrictionEnabled : undefined,
       });
 
       const apiKey = await readPiApiKey();
@@ -813,6 +816,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
       resolution,
       duration,
       audioEnabled,
+      lessRestriction: isPiApiSeedanceModel(selectedModel) ? lessRestrictionEnabled : undefined,
       startFrameAssetId: startFrame?.id ?? null,
       endFrameAssetId: endFrame?.id ?? null,
       sourceVideoAssetId: sourceVideo?.id ?? null,
@@ -845,6 +849,7 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
     setResolution(recipe.resolution || '720p');
     setDuration(recipe.duration || '4s');
     setAudioEnabled(Boolean(recipe.audioEnabled));
+    setLessRestrictionEnabled(recipe.lessRestriction !== false);
     const nextSourceVideo = recipe.sourceVideoAssetId
       ? assets.find((a) => a.id === recipe.sourceVideoAssetId && a.kind === 'video') ?? null
       : null;
@@ -1040,7 +1045,20 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
 
           <div className="space-y-2 rounded-md border border-surface-700 bg-surface-900/70 p-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <ModelSelect value={model} onChange={setModel} options={selectableModels} loading={loadingModels} disabled={!hasConfiguredProviderModels} emptyLabel="Connect provider" />
+              <ModelSelect
+                value={model}
+                onChange={(newModelId) => {
+                  setModel(newModelId);
+                  const newModel = models.find((m) => m.id === newModelId) ?? DEFAULT_VIDEO_MODELS[0];
+                  if (isPiApiSeedanceModel(newModel)) {
+                    setLessRestrictionEnabled(true);
+                  }
+                }}
+                options={selectableModels}
+                loading={loadingModels}
+                disabled={!hasConfiguredProviderModels}
+                emptyLabel="Connect provider"
+              />
               <PillOptionGroup label="Aspect" value={aspect} options={selectedModel.capabilities.aspects.map((v) => ({ value: v, label: v }))} onChange={(v) => setAspect(v as Aspect)} />
               <PillOptionGroup label="Resolution" value={resolution} options={resolutionOptions.map((v) => ({ value: v, label: v }))} onChange={setResolution} />
               <PillOptionGroup label="Duration" value={duration} options={durationOptions.map((v) => ({ value: v, label: v }))} onChange={setDuration} />
@@ -1055,6 +1073,15 @@ export function GenerateVideoModal({ open, onClose, onOpenSettings, onGeneration
               >
                 Audio {audioEnabled ? 'On' : 'Off'}
               </button>
+              {isPiApiSeedanceModel(selectedModel) && (
+                <button
+                  type="button"
+                  className={`inline-flex h-8 items-center rounded-md border px-3 text-xs transition ${lessRestrictionEnabled ? 'border-amber-400/60 bg-amber-500/10 text-amber-200' : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500 hover:bg-surface-800'}`}
+                  onClick={() => setLessRestrictionEnabled((v) => !v)}
+                >
+                  Less restrictive {lessRestrictionEnabled ? 'On' : 'Off'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -1573,6 +1600,7 @@ function estimatePiApiCostUsd(
   resolution: string,
   seconds: number,
   audioEnabled: boolean,
+  lessRestriction?: boolean,
 ): number {
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
   let rate = 0;
@@ -1592,7 +1620,11 @@ function estimatePiApiCostUsd(
     else if (resolution === '720p') rate = 0.2;
     else rate = 0.1;
   }
-  return rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
+  let cost = rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
+  if (lessRestriction && isPiApiSeedanceModel(model)) {
+    cost = Number((cost * 1.25).toFixed(2));
+  }
+  return cost;
 }
 
 function formatGenerationError(err: unknown): string {

@@ -335,10 +335,13 @@ async function buildPiApiSeedanceRequest(
   if (imageEntries.length > 0) input.image_urls = imageEntries.map((entry) => entry.url);
   if (videoUrls.length > 0) input.video_urls = videoUrls;
 
+  const baseTaskType = mutation.modelId === PIAPI_SEEDANCE_2_FAST_MODEL_ID ? 'seedance-2-fast' : 'seedance-2';
+  const task_type = mutation.config.lessRestriction ? `${baseTaskType}-less-restriction` : baseTaskType;
+
   return {
     body: {
       model: 'seedance',
-      task_type: mutation.modelId === PIAPI_SEEDANCE_2_FAST_MODEL_ID ? 'seedance-2-fast' : 'seedance-2',
+      task_type,
       input,
       config: {
         service_mode: 'public',

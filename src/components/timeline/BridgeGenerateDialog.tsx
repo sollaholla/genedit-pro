@@ -88,6 +88,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const [resolution, setResolution] = useState(() => defaultResolutionForModel(DEFAULT_BRIDGE_MODEL));
   const [durationMode, setDurationMode] = useState<DurationMode>('auto');
   const [manualDurationSec, setManualDurationSec] = useState(() => durationForGap(DEFAULT_BRIDGE_MODEL, gap.durationSec));
+  const [lessRestriction, setLessRestriction] = useState(true);
   const [working, setWorking] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -101,8 +102,8 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
   const autoDurationSec = useMemo(() => durationForGap(selectedModel, gap.durationSec), [gap.durationSec, selectedModel]);
   const durationSec = durationMode === 'auto' ? autoDurationSec : manualDurationSec;
   const estimatedCostUsd = useMemo(
-    () => estimateBridgeCostUsd(selectedModel, resolution, durationSec),
-    [durationSec, resolution, selectedModel],
+    () => estimateBridgeCostUsd(selectedModel, resolution, durationSec, lessRestriction),
+    [durationSec, resolution, selectedModel, lessRestriction],
   );
   const fitAsset = fitAssetId ? assets.find((asset) => asset.id === fitAssetId) ?? null : null;
   const referencePlan = useMemo(
@@ -187,6 +188,7 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
         endFrame: endFrameAsset,
         sourceVideo: null,
         referenceImages: [],
+        lessRestriction: isPiApiSeedanceModel(selectedModel) ? lessRestriction : undefined,
       });
       const request = await buildPiApiCreateTaskRequest(mutation, {
         resolveReferenceUrl: async (asset) => {
@@ -374,7 +376,13 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
             <ModelSelect
               value={selectedModel.id}
               options={BRIDGE_MODELS}
-              onChange={setModelId}
+              onChange={(newModelId) => {
+                setModelId(newModelId);
+                const nextModel = BRIDGE_MODELS.find((m) => m.id === newModelId);
+                if (nextModel && isPiApiSeedanceModel(nextModel)) {
+                  setLessRestriction(true);
+                }
+              }}
               disabled={working}
               showInlineLabel
               className="min-w-[220px] flex-1"
@@ -403,6 +411,19 @@ export function BridgeGenerateDialog({ gap, onClose, onOpenSettings, onHighlight
               }}
               disabled={working}
             />
+            {isPiApiSeedanceModel(selectedModel) && (
+              <button
+                type="button"
+                className={`inline-flex h-8 items-center rounded-md border px-3 text-xs transition ${
+                  lessRestriction
+                    ? 'border-amber-400/60 bg-amber-500/10 text-amber-200'
+                    : 'border-surface-700 bg-surface-950 text-slate-300 hover:border-surface-500 hover:bg-surface-800'
+                }`}
+                onClick={() => setLessRestriction((v) => !v)}
+              >
+                Less restrictive {lessRestriction ? 'On' : 'Off'}
+              </button>
+            )}
             <div className="ml-auto rounded bg-surface-950 px-2 py-1 text-[11px] text-slate-400">
               {aspect} · {selectedModel.label}
             </div>
@@ -1016,7 +1037,12 @@ function bridgeFrameAsset(id: string, name: string): MediaAsset {
   };
 }
 
-function estimateBridgeCostUsd(model: VideoModelDefinition, resolution: string, seconds: number): number {
+function estimateBridgeCostUsd(
+  model: VideoModelDefinition,
+  resolution: string,
+  seconds: number,
+  lessRestriction?: boolean,
+): number {
   if (!Number.isFinite(seconds) || seconds <= 0) return 0;
   let rate = 0;
   const modelId = model.id.toLowerCase();
@@ -1032,7 +1058,11 @@ function estimateBridgeCostUsd(model: VideoModelDefinition, resolution: string, 
     else if (resolution === '720p') rate = 0.2;
     else rate = 0.1;
   }
-  return rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
+  let cost = rate > 0 ? Number((rate * seconds).toFixed(2)) : 0;
+  if (lessRestriction && isPiApiSeedanceModel(model)) {
+    cost = Number((cost * 1.25).toFixed(2));
+  }
+  return cost;
 }
 
 function clamp(value: number, min: number, max: number): number {
