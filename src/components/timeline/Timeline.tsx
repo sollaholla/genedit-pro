@@ -579,7 +579,7 @@ export function Timeline({ onOpenSettings, onMediaAssetHighlight }: TimelineProp
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
     const sourceAsset = assetById.get(clip.assetId);
-    const maxSourceSec = sourceAsset?.durationSec;
+    const maxSourceSec = sourceAsset?.kind === 'image' ? undefined : sourceAsset?.durationSec;
 
     const startX = e.clientX;
     const origStart = clip.startSec;
