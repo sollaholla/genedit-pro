@@ -81,6 +81,9 @@ function computeRms(buf: Float32Array): number {
 type ElementPool = Map<string, HTMLMediaElement>;
 type ImagePool = Map<string, HTMLImageElement>;
 
+const gifFrameCache = new Map<string, { urls: string[]; images: HTMLImageElement[] }>();
+const pendingGifLoads = new Set<string>();
+
 type PreviewDebugCanvasSample = {
   width: number;
   height: number;
@@ -508,13 +511,29 @@ function renderPreviewCanvas(
     if (!source) continue;
     const layerTimelineTimeSec = layerVisualTimelineTime(layer, timelineTimeSec, previewFps, playing);
     const layerSourceTimeSec = layerSourceTimeAt(layer, layerTimelineTimeSec);
-    if (source instanceof HTMLVideoElement) {
-      const tolerance = videoSyncWindow(layer.clip, previewFps, playing);
-      if (!canPaintSyncedVideo(source, layer.clip, layerSourceTimeSec, tolerance)) continue;
+    
+    let finalSource: HTMLVideoElement | HTMLImageElement = source;
+    if (asset.gifFrames && asset.gifFrames.length > 0) {
+      const cacheKey = `${asset.id}:${asset.blobKey}`;
+      const cached = gifFrameCache.get(cacheKey);
+      if (cached && cached.images.length > 0) {
+        const duration = asset.gifFrameDurationSec ?? 0.0833;
+        const totalFrames = cached.images.length;
+        let frameIdx = Math.floor(layerSourceTimeSec / duration) % totalFrames;
+        if (frameIdx < 0) frameIdx += totalFrames;
+        if (cached.images[frameIdx]) {
+          finalSource = cached.images[frameIdx];
+        }
+      }
     }
-    if (source instanceof HTMLImageElement && !source.complete) continue;
+
+    if (finalSource instanceof HTMLVideoElement) {
+      const tolerance = videoSyncWindow(layer.clip, previewFps, playing);
+      if (!canPaintSyncedVideo(finalSource, layer.clip, layerSourceTimeSec, tolerance)) continue;
+    }
+    if (finalSource instanceof HTMLImageElement && !finalSource.complete) continue;
     if (clipOpacityAtTimelineTime(layer.clip, layerTimelineTimeSec) <= 0.001) continue;
-    drawItems.push({ source, asset, clip: layer.clip, timelineTimeSec: layerTimelineTimeSec });
+    drawItems.push({ source: finalSource, asset, clip: layer.clip, timelineTimeSec: layerTimelineTimeSec });
   }
 
   if (drawItems.length === 0) return false;
@@ -1096,6 +1115,32 @@ export function PreviewPlayer() {
   const ensureClipElement = useCallback((clip: Clip, asset: MediaAsset) => {
     if (asset.kind === 'recipe' || asset.kind === 'sequence') return null;
     const mediaKey = `${asset.id}:${asset.blobKey}`;
+
+    if (asset.gifFrames && asset.gifFrames.length > 0 && !gifFrameCache.has(mediaKey) && !pendingGifLoads.has(mediaKey)) {
+      pendingGifLoads.add(mediaKey);
+      void Promise.all(
+        asset.gifFrames.map(async (frameBlobKey) => {
+          const blob = await getBlob(frameBlobKey);
+          if (!blob) return null;
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+          img.src = url;
+          await new Promise<void>((resolve) => {
+            img.onload = () => resolve();
+            img.onerror = () => resolve();
+          });
+          return { url, img };
+        })
+      ).then((results) => {
+        pendingGifLoads.delete(mediaKey);
+        const valid = results.filter((r): r is { url: string; img: HTMLImageElement } => r !== null);
+        gifFrameCache.set(mediaKey, {
+          urls: valid.map((v) => v.url),
+          images: valid.map((v) => v.img),
+        });
+      });
+    }
+
     const existing = imagePool.current.get(clip.id) ?? videoPool.current.get(clip.id) ?? audioPool.current.get(clip.id);
     if (existing && clipAssetRef.current.get(clip.id) === mediaKey) {
       if (asset.kind !== 'video' || (videoPool.current.has(clip.id) && audioPool.current.has(clip.id))) {
@@ -1821,6 +1866,11 @@ export function PreviewPlayer() {
       for (const url of urls.values()) URL.revokeObjectURL(url);
       urls.clear();
       pendingLoads.clear();
+      for (const cached of gifFrameCache.values()) {
+        for (const url of cached.urls) URL.revokeObjectURL(url);
+      }
+      gifFrameCache.clear();
+      pendingGifLoads.clear();
     };
   }, []);
 

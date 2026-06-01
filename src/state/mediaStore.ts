@@ -8,6 +8,7 @@ import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
 import { useProjectStore } from '@/state/projectStore';
+import { getFFmpeg, resetFFmpeg } from '@/lib/ffmpeg/client';
 
 const LEGACY_ASSETS_KEY = 'genedit-pro:assets';
 const LEGACY_FOLDERS_KEY = 'genedit-pro:folders';
@@ -424,6 +425,72 @@ async function buildManualEditIteration(
 
 const initialMediaProjectId = currentProjectId();
 
+let mediaStoreFfmpegQueue: Promise<unknown> = Promise.resolve();
+function runMediaStoreFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
+  const run = mediaStoreFfmpegQueue.catch(() => undefined).then(job);
+  mediaStoreFfmpegQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function extractGifFrames(file: File): Promise<{ frameBlobKeys: string[]; frameDurationSec: number }> {
+  return runMediaStoreFfmpegJob(async () => {
+    const ffmpeg = await getFFmpeg();
+    const inputName = `gif-input-${nanoid(6)}.gif`;
+    let resetEncoder = false;
+    try {
+      const buffer = await file.arrayBuffer();
+      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
+      
+      const fps = 12;
+      const args = [
+        '-hide_banner',
+        '-i', inputName,
+        '-vf', `fps=${fps}`,
+        '-y',
+        'frame_%d.png'
+      ];
+      const code = await ffmpeg.exec(args);
+      if (code !== 0) throw new Error('FFmpeg failed to extract GIF frames.');
+      
+      const frameBlobKeys: string[] = [];
+      let index = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const fileName = `frame_${index}.png`;
+        try {
+          const exists = (await ffmpeg.readFile(fileName)) as Uint8Array;
+          const blob = new Blob([exists as unknown as BlobPart], { type: 'image/png' });
+          const key = `blob_${nanoid(12)}`;
+          await putBlob(key, blob, fileName);
+          frameBlobKeys.push(key);
+          await ffmpeg.deleteFile(fileName).catch(() => undefined);
+          index++;
+        } catch {
+          hasMore = false;
+        }
+      }
+      
+      if (frameBlobKeys.length === 0) {
+        throw new Error('No frames extracted from GIF.');
+      }
+      
+      return {
+        frameBlobKeys,
+        frameDurationSec: 1 / fps,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/memory access out of bounds|out of memory|Cannot enlarge memory/i.test(msg)) {
+        resetEncoder = true;
+      }
+      throw err;
+    } finally {
+      await ffmpeg.deleteFile(inputName).catch(() => undefined);
+      if (resetEncoder) resetFFmpeg();
+    }
+  });
+}
+
 export const useMediaStore = create<MediaState>((set, get) => ({
   activeProjectId: initialMediaProjectId,
   assets: loadAssets(initialMediaProjectId),
@@ -449,17 +516,38 @@ export const useMediaStore = create<MediaState>((set, get) => ({
       try {
         const probed = await probe(file);
         const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
+        
+        const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+        let gifFrames: string[] | undefined;
+        let gifFrameDurationSec: number | undefined;
+        
+        if (isGif) {
+          try {
+            const extracted = await extractGifFrames(file);
+            gifFrames = extracted.frameBlobKeys;
+            gifFrameDurationSec = extracted.frameDurationSec;
+          } catch (e) {
+            console.error('Failed to extract GIF frames, using static fallback:', e);
+          }
+        }
+
+        const durationSec = gifFrames && gifFrameDurationSec
+          ? gifFrames.length * gifFrameDurationSec
+          : (probed.durationSec || 5);
+
         const asset: MediaAsset = {
           id: nanoid(10),
           name: file.name,
           kind: probed.kind,
-          durationSec: probed.durationSec || 5,
+          durationSec,
           width: probed.width,
           height: probed.height,
           mimeType: file.type || 'application/octet-stream',
           blobKey: `blob_${nanoid(12)}`,
           thumbnailDataUrl: thumbnail || undefined,
           folderId,
+          gifFrames,
+          gifFrameDurationSec,
           createdAt: Date.now(),
         };
         await putBlob(asset.blobKey, file, file.name);

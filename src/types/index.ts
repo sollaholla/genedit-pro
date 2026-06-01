@@ -168,6 +168,8 @@ export type MediaAsset = {
   sequence?: SequenceAssetData;
   character?: CharacterAssetData;
   reference?: ReferenceAssetData;
+  gifFrames?: string[];
+  gifFrameDurationSec?: number;
   createdAt: number;
 };
 
