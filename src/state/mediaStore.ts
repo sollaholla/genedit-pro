@@ -8,6 +8,7 @@ import { putBlob, deleteBlob, getBlob } from '@/lib/media/storage';
 import { probe } from '@/lib/media/probe';
 import { generateThumbnail } from '@/lib/media/thumbnail';
 import { useProjectStore } from '@/state/projectStore';
+import { getFFmpeg, resetFFmpeg } from '@/lib/ffmpeg/client';
 
 const LEGACY_ASSETS_KEY = 'genedit-pro:assets';
 const LEGACY_FOLDERS_KEY = 'genedit-pro:folders';
@@ -148,7 +149,7 @@ type MediaState = {
   folders: MediaFolder[];
   importing: boolean;
   setActiveProject: (projectId: string) => void;
-  importFiles: (files: File[], folderId?: string | null) => Promise<MediaAsset[]>;
+  importFiles: (files: File[], folderId?: string | null, options?: { transcodeGifs?: boolean }) => Promise<MediaAsset[]>;
   removeAsset: (id: string) => Promise<void>;
   renameAsset: (id: string, name: string) => void;
   moveAssetToFolder: (id: string, folderId: string | null) => void;
@@ -424,6 +425,54 @@ async function buildManualEditIteration(
 
 const initialMediaProjectId = currentProjectId();
 
+let mediaStoreFfmpegQueue: Promise<unknown> = Promise.resolve();
+function runMediaStoreFfmpegJob<T>(job: () => Promise<T>): Promise<T> {
+  const run = mediaStoreFfmpegQueue.catch(() => undefined).then(job);
+  mediaStoreFfmpegQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function transcodeGifToMp4(file: File): Promise<File> {
+  return runMediaStoreFfmpegJob(async () => {
+    const ffmpeg = await getFFmpeg();
+    const inputExt = 'gif';
+    const inputName = `gif-input-${nanoid(6)}.${inputExt}`;
+    const outputFile = `gif-output-${nanoid(6)}.mp4`;
+    let resetEncoder = false;
+    try {
+      const buffer = await file.arrayBuffer();
+      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
+      const args = [
+        '-hide_banner',
+        '-i', inputName,
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-movflags', '+faststart',
+        '-y',
+        outputFile,
+      ];
+      const code = await ffmpeg.exec(args);
+      if (code !== 0) {
+        throw new Error(`FFmpeg exited with code ${code}`);
+      }
+      const data = (await ffmpeg.readFile(outputFile)) as Uint8Array;
+      const baseName = file.name.replace(/\.gif$/i, '');
+      return new File([data.slice()], `${baseName}.mp4`, { type: 'video/mp4' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/memory access out of bounds|out of memory|Cannot enlarge memory/i.test(msg)) {
+        resetEncoder = true;
+      }
+      throw err;
+    } finally {
+      await ffmpeg.deleteFile(inputName).catch(() => undefined);
+      await ffmpeg.deleteFile(outputFile).catch(() => undefined);
+      if (resetEncoder) resetFFmpeg();
+    }
+  });
+}
+
 export const useMediaStore = create<MediaState>((set, get) => ({
   activeProjectId: initialMediaProjectId,
   assets: loadAssets(initialMediaProjectId),
@@ -441,12 +490,19 @@ export const useMediaStore = create<MediaState>((set, get) => ({
     });
   },
 
-  importFiles: async (files: File[], folderId = null) => {
+  importFiles: async (files: File[], folderId = null, options = {}) => {
     set({ importing: true });
     const projectId = get().activeProjectId;
     const added: MediaAsset[] = [];
-    for (const file of files) {
+    for (let file of files) {
       try {
+        if (options.transcodeGifs !== false && (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif'))) {
+          try {
+            file = await transcodeGifToMp4(file);
+          } catch (transcodeErr) {
+            console.error('Failed to transcode GIF to MP4, importing as static image instead:', transcodeErr);
+          }
+        }
         const probed = await probe(file);
         const thumbnail = await generateThumbnail(file, probed.kind).catch(() => '');
         const asset: MediaAsset = {

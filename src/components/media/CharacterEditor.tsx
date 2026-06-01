@@ -355,7 +355,7 @@ export function CharacterEditor({ assetId, referenceKind = 'character', folderId
       const files = Array.from(input.files ?? []);
       if (!files.length) return;
       try {
-        const imported = await importFiles(files, asset?.folderId ?? folderId);
+        const imported = await importFiles(files, asset?.folderId ?? folderId, { transcodeGifs: supportsVideoReferences });
         const mediaIds = imported
           .filter((candidate) => (
             (candidate.kind === 'image' || (supportsVideoReferences && candidate.kind === 'video')) && candidate.blobKey
